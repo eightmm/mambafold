@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+*.pt
+*.pth
+*.ckpt
+.claude/
+.omc/
+afdb_data
+wandb/
+logs/
+outputs/
+.ruff_cache/
