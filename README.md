@@ -1,53 +1,115 @@
-# MambaFold - Mamba 기반 Single-Chain Protein Structure Prediction
+# MambaFold
 
-Mamba3 (State Space Model) 아키텍처를 활용한 단일 체인 단백질 3D 구조 예측 모델.
+MambaFold is a single-chain protein structure prediction project built around a linear-complexity state space backbone. The goal is to keep the overall folding pipeline close to recent all-atom generative models while replacing the expensive Transformer trunk with Mamba-style sequence modeling.
 
-## 프로젝트 구조
+## Core Idea
 
-```
+This project combines three main ingredients:
+
+- **SimpleFold** provides the overall folding recipe: an all-atom generative pipeline with an atom encoder, a residue-level trunk, and an atom decoder.
+- **Mamba3** provides the sequence backbone: a state space model intended to scale better than quadratic attention on long protein chains.
+- **Equilibrium Matching (EQM)** is an experimental alternative to standard flow matching, aimed at learning an energy-shaped update field without explicit time conditioning.
+
+In short, the working hypothesis is:
+
+1. Keep the strong structural inductive bias of the SimpleFold-style atom-to-residue-to-atom pipeline.
+2. Replace the heavy Transformer trunk with Mamba3 blocks for better length scaling.
+3. Compare standard flow matching against EQM-style training and sampling once the base model is stable.
+
+## Model Overview
+
+The current design follows this high-level path:
+
+1. Encode noisy all-atom coordinates with a lightweight atom encoder.
+2. Pool atom features into residue tokens.
+3. Run a residue trunk based on Mamba3-style SSM blocks.
+4. Broadcast residue features back to atoms.
+5. Decode atom-wise coordinate updates or velocity predictions.
+
+This keeps the architecture close to modern structure generators while making the longest sequence-processing stage cheaper than full attention.
+
+## Why These Papers Matter
+
+### SimpleFold
+
+SimpleFold is the architectural template for the project. Its main relevance here is not just that it predicts structures, but that it does so with a clean decomposition between local atom geometry and residue-level global reasoning. That split maps well onto protein folding, where atom identity and residue context both matter.
+
+The project borrows the following ideas from SimpleFold:
+
+- all-atom coordinate generation rather than a coarse backbone-only target
+- a staged atom encoder / residue trunk / atom decoder pipeline
+- frozen protein language model conditioning
+- structure-aware training losses such as geometric regression plus LDDT-style quality signals
+
+### Mamba3
+
+Mamba3 is the backbone replacement. In a standard SimpleFold-like setup, the residue trunk is the most obvious place where attention cost grows with sequence length. Mamba3 is attractive because it keeps global sequence processing but avoids the full quadratic attention pattern.
+
+For this project, Mamba3 matters in three ways:
+
+- it offers a sequence model that should scale more gracefully to longer proteins
+- it preserves ordered, causal-style sequence processing in a way that fits residue chains naturally
+- it gives a concrete research direction for testing whether modern SSMs can substitute for Transformer trunks in folding models
+
+### Equilibrium Matching (EQM)
+
+EQM is not the first target, but it is an important extension path. Flow matching gives a practical baseline for structure generation, but it requires explicit time conditioning and a prescribed interpolation path. EQM instead learns update directions connected to an equilibrium or energy landscape view.
+
+If EQM works well in this setting, it could be useful because:
+
+- inference can be framed as iterative descent rather than a fixed time-discretized flow
+- compute can be adjusted dynamically at sampling time
+- partially noised or partially initialized structures may be easier to refine
+
+The likely execution order is to get a stable flow-matching model first, then introduce EQM as an ablation or second training regime.
+
+## Repository Layout
+
+```text
 folding/
 ├── README.md
-├── pyproject.toml          # uv 기반 프로젝트 설정
-├── afdb_data/              # AFDB 데이터 (symlink, 읽기 전용)
-│   ├── train/              # 901,497개 .pt 파일
-│   ├── val/                # 44,175개 .pt 파일
-│   ├── test/               # 20,571개 .pt 파일
-│   └── errors/             # 에러 로그
-├── src/mambafold/          # 메인 소스 코드
-│   ├── model/              # Mamba backbone + structure module
-│   ├── data/               # Dataset, DataLoader, feature engineering
-│   └── utils/              # geometry, metrics, training utils
-├── configs/                # YAML 설정 파일
-├── scripts/                # 학습/평가 스크립트
-│   └── slurm/              # SLURM 제출 스크립트
-├── tests/                  # 테스트 코드
-└── docs/                   # 문서 및 참고 논문
-    └── papers/             # Mamba3, SimpleFold PDF
+├── pyproject.toml
+├── afdb_data/              # AFDB data symlink, read-only
+├── configs/                # Configuration files
+├── docs/                   # Notes, plans, and paper summaries
+├── scripts/                # Training, evaluation, and SLURM helpers
+├── src/mambafold/          # Main package
+│   ├── data/               # Dataset, collation, transforms, types
+│   ├── losses/             # Training losses
+│   ├── model/              # Encoders, trunk, decoder, SSM blocks
+│   ├── sampling/           # Sampling utilities
+│   ├── train/              # Training engine and trainer
+│   └── utils/              # Geometry and support utilities
+└── tests/                  # Unit tests
 ```
 
-## 데이터
+## Dataset
 
-AFDB(AlphaFold DB)에서 추출한 단일 체인 단백질 구조 데이터.
-각 `.pt` 파일은 다음 정보를 포함:
+The project uses single-chain protein structures extracted from AFDB (AlphaFold DB). Each `.pt` example stores residue-level metadata and atom-level geometry, including:
 
-| Key | Type | 설명 |
-|-----|------|------|
-| `res_names` | list[str] | 잔기 이름 (e.g., MET, VAL, LEU) |
-| `res_seq_nums` | list[int] | 잔기 번호 |
-| `res_ins_codes` | list[str] | Insertion code |
-| `atom_names` | list[list[str]] | 잔기별 원자 이름 (N, CA, C, O, CB, ...) |
-| `atom_nums` | list[list[int]] | 원자 번호 |
-| `coords` | list[list[list[float]]] | 원자별 3D 좌표 (x, y, z) |
-| `is_observed` | list[list[bool]] | 관측 여부 |
+| Key | Type | Description |
+|-----|------|-------------|
+| `res_names` | `list[str]` | Residue names such as `MET`, `VAL`, `LEU` |
+| `res_seq_nums` | `list[int]` | Residue sequence numbers |
+| `res_ins_codes` | `list[str]` | Insertion codes |
+| `atom_names` | `list[list[str]]` | Atom names per residue |
+| `atom_nums` | `list[list[int]]` | Atom serial numbers |
+| `coords` | `list[list[list[float]]]` | 3D coordinates for each atom |
+| `is_observed` | `list[list[bool]]` | Observation masks |
 
-## 환경 설정
+## Setup
 
 ```bash
 uv sync
 ```
 
-## 학습
+## Training
 
 ```bash
 sbatch scripts/slurm/train.sh
 ```
+
+## Additional Reading
+
+- [Project docs](/home/jaemin/project/protein/folding/docs/README.md)
+- [Paper overview](/home/jaemin/project/protein/folding/docs/papers/OVERVIEW.md)

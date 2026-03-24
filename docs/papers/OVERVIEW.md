@@ -1,84 +1,139 @@
-# Paper Overview - MambaFold 프로젝트 참고 논문
+# Paper Overview
 
-## 프로젝트 목표
-**Linear-complexity 아키텍처(Mamba3 SSM)를 backbone으로 사용하여, flow matching / equilibrium matching 기반의 single-chain protein structure prediction 모델을 구축한다.**
+## Project Goal
 
-## 논문 3편의 역할
+The goal of MambaFold is to build a single-chain protein structure prediction model that combines:
 
-| 논문 | 역할 | 핵심 기여 |
-|------|------|-----------|
-| **Mamba-3** | Backbone 아키텍처 | Linear-time SSM, O(L) complexity로 긴 단백질 서열 처리 |
-| **SimpleFold** | Folding 파이프라인 | Flow matching 기반 protein folding의 전체 구조 (데이터→학습→추론) |
-| **Equilibrium Matching** | 생성 프레임워크 대안 | Flow matching 대비 time-unconditional, energy landscape 기반 접근 |
+- a **SimpleFold-style all-atom generative pipeline**
+- a **Mamba3-based residue backbone**
+- and, eventually, **Equilibrium Matching (EQM)** as an alternative to standard flow matching
 
-## 핵심 설계 아이디어
+The project is not a direct reproduction of any one paper. It is a synthesis: SimpleFold provides the pipeline template, Mamba3 provides the sequence-modeling backbone, and EQM provides an experimental generative objective.
 
-### 1. Backbone: Mamba-3 SSM (Transformer 대체)
-- SimpleFold는 Transformer를 사용하지만, 우리는 **Mamba-3 SSM block**으로 대체
-- 이유: 단백질 서열 길이 수백~수천 residue → quadratic attention 비효율적
-- Mamba-3의 핵심: exponential-trapezoidal discretization + complex SSM (data-dependent RoPE) + MIMO
+## Roles of the Three Papers
 
-### 2. Folding Pipeline: SimpleFold 방식 차용
-- **Flow matching**: noise → all-atom 3D 구조 생성
-- **Atom Encoder → Residue Trunk → Atom Decoder** 구조
-- ESM2 PLM으로 sequence conditioning
-- Loss: flow matching loss + LDDT structural loss
+| Paper | Role in MambaFold | Why it matters |
+|------|--------------------|----------------|
+| **SimpleFold** | End-to-end folding pipeline | Defines the architecture split, supervision signals, and all-atom prediction target |
+| **Mamba3** | Backbone architecture | Replaces the Transformer-style residue trunk with a modern state space model |
+| **Equilibrium Matching** | Alternative generative framework | Provides a path beyond explicit time-conditioned flow matching |
 
-### 3. 생성 프레임워크: Flow Matching vs Equilibrium Matching
-- 기본: SimpleFold식 **flow matching** (검증된 방법)
-- 대안: **Equilibrium Matching** - time conditioning 제거, energy landscape에서 gradient descent로 sampling
-- EqM 장점: adaptive compute, 유연한 step size, partially noised input 처리 가능
+## Design Thesis
 
-## 모델 아키텍처 청사진
+The main design thesis is that the residue trunk should be the place where we gain most from improved sequence scaling. Proteins can be long, and residue-level global reasoning is typically the most expensive part of the model. A SimpleFold-like pipeline gives a strong structural template, but its central sequence-processing block can be reconsidered.
 
+This leads to the following plan:
+
+1. Start from the SimpleFold decomposition of the task.
+2. Replace the heavy residue trunk with Mamba3 blocks.
+3. Keep flow matching as the first stable training target.
+4. Introduce EQM later as an ablation or second-generation training objective.
+
+## 1. SimpleFold: The Pipeline Blueprint
+
+SimpleFold is the paper that most directly informs the model layout. It matters because it cleanly separates:
+
+- **local atom-level geometric processing**
+- **global residue-level contextual reasoning**
+- **all-atom coordinate decoding**
+
+That decomposition fits this project well. Protein folding is not purely sequence modeling and not purely geometry. The atom encoder handles fine local structure and noisy coordinates. The residue trunk handles long-range sequence-scale interactions. The atom decoder maps global residue context back to atom-level updates.
+
+The main elements borrowed from SimpleFold are:
+
+- an **atom encoder -> residue trunk -> atom decoder** pipeline
+- **all-atom structure generation** rather than only backbone prediction
+- **language-model conditioning** from a frozen protein LM
+- **structure-aware training**, combining coordinate/velocity supervision with quality-oriented losses such as LDDT
+
+SimpleFold is therefore the blueprint for what the folding system should do.
+
+## 2. Mamba3: The Backbone Replacement
+
+Mamba3 is the paper that most strongly changes the internals of the architecture. In a SimpleFold-like design, the residue trunk is where attention cost becomes significant as sequences grow. Mamba3 is appealing because it offers a modern state space formulation intended to preserve strong sequence modeling while scaling better than full attention.
+
+For MambaFold, Mamba3 is not just a generic efficiency swap. It is the core research question:
+
+- Can a strong SSM replace the Transformer trunk in a structure generator?
+- Does linear or sub-quadratic sequence processing help on longer proteins?
+- Can residue-level global reasoning remain expressive enough without standard attention blocks?
+
+The expected benefits are:
+
+- better scaling with protein length
+- a cleaner memory profile for long chains
+- a direct test of whether recent SSM advances transfer to structural biology workloads
+
+In practice, the residue trunk is the most natural insertion point for Mamba3 because:
+
+- residue tokens are more compact than atom tokens
+- long-range context matters strongly at the residue level
+- this preserves the rest of the SimpleFold pipeline with minimal disruption
+
+## 3. Equilibrium Matching: The Experimental Objective
+
+EQM is the most exploratory part of the project. It is not required to build the first working model, but it is the most interesting extension once the base system is stable.
+
+Standard flow matching is attractive because it is practical and already tied to successful generative structure models. But it also requires:
+
+- explicit time conditioning
+- a chosen noising or interpolation path
+- a fixed notion of how generation is parameterized over time
+
+EQM offers a different view. Instead of learning a time-indexed velocity field, the model learns update directions linked to an equilibrium or energy landscape. Sampling can then be interpreted more like iterative descent or refinement.
+
+Why this may matter for proteins:
+
+- protein refinement is naturally iterative
+- adaptive compute may be useful when some targets are easy and others are hard
+- partially initialized structures could be refined without forcing a strict flow-time interpretation
+
+That said, EQM is best treated as a second-stage research question. The pragmatic plan is:
+
+1. build the SimpleFold-style system with a Mamba3 trunk
+2. train it with standard flow matching
+3. benchmark stability and structural quality
+4. only then compare against an EQM formulation
+
+## Architecture Sketch
+
+```text
+Input:
+  - amino acid sequence
+  - noisy all-atom coordinates
+  - timestep t for flow matching, or no timestep for EQM
+
+Frozen protein LM
+  -> sequence embeddings
+
+Atom encoder
+  -> local atom features from noisy coordinates and residue context
+
+Grouping / pooling
+  -> residue tokens
+
+Residue trunk
+  -> Mamba3-style SSM blocks process long-range sequence context
+
+Ungrouping / broadcast
+  -> residue context returned to atoms
+
+Atom decoder
+  -> atom-wise coordinate updates or velocity predictions
 ```
-Input: amino acid sequence s ∈ R^{Nr}
-       noisy coords x_t ∈ R^{Na × 3}
-       timestep t (flow matching) 또는 없음 (EqM)
 
-┌─────────────────────────────────────────┐
-│  Frozen ESM2 PLM → sequence embedding e │
-└──────────────┬──────────────────────────┘
-               │
-┌──────────────▼──────────────────────────┐
-│  Atom Encoder (lightweight Mamba blocks) │
-│  - Fourier positional embedding of x_t   │
-│  - Local attention/SSM within residue    │
-│  → atom tokens a ∈ R^{Na × d_a}         │
-└──────────────┬──────────────────────────┘
-               │ Grouping (avg pool per residue)
-┌──────────────▼──────────────────────────┐
-│  Residue Trunk (heavy Mamba-3 blocks)    │
-│  - Concat with ESM2 embedding            │
-│  - Mamba-3 SSM layers (NOT transformer)  │
-│  - Adaptive layers conditioned on t      │
-│  → residue tokens r ∈ R^{Nr × d_r}      │
-└──────────────┬──────────────────────────┘
-               │ Ungrouping (broadcast to atoms)
-┌──────────────▼──────────────────────────┐
-│  Atom Decoder (lightweight Mamba blocks) │
-│  - Skip connection from atom encoder     │
-│  - → predicted velocity v̂_t             │
-└─────────────────────────────────────────┘
+## Training Strategy
 
-Output: velocity field v̂_t ∈ R^{Na × 3}
-```
+| Component | Baseline plan | Experimental path |
+|----------|----------------|-------------------|
+| Generative objective | Flow matching | Equilibrium Matching |
+| Backbone | Mamba3 residue trunk | Variants and ablations |
+| Sequence conditioning | Frozen protein LM | Same |
+| Structure target | Full-atom coordinates | Same |
+| Sampling | Standard flow integration | Iterative EQM refinement |
 
-## 학습 전략 요약
+## Practical Reading Order
 
-| 항목 | SimpleFold 방식 | 우리 프로젝트 |
-|------|-----------------|---------------|
-| 생성 프레임워크 | Flow matching | Flow matching (기본) / EqM (실험) |
-| Backbone | Transformer + adaptive layers | Mamba-3 SSM + adaptive layers |
-| Sequence conditioning | ESM2-3B (frozen) | ESM2 (frozen) |
-| 좌표 표현 | Full-atom (all heavy atoms) | Full-atom |
-| Positional embedding | 4D axial RoPE | Mamba-3 data-dependent RoPE 활용 |
-| Loss | ℓ_FM + α(t)·ℓ_LDDT | 동일 |
-| 2-stage training | Pretrain (all data) → Finetune (PDB+SwissProt) | 단계적 적용 |
-| Data augmentation | SO(3) random rotation | 동일 |
-| Timestep sampling | logistic-normal (t→1 oversampling) | 동일 |
-
-## 상세 논문 정리
-- [Mamba-3 상세](./mamba3_summary.md)
-- [SimpleFold 상세](./simplefold_summary.md)
-- [Equilibrium Matching 상세](./equilibrium_matching_summary.md)
+- [SimpleFold summary](./simplefold_summary.md): read first for the pipeline logic.
+- [Mamba3 summary](./mamba3_summary.md): read second for the backbone replacement.
+- [Equilibrium Matching summary](./equilibrium_matching_summary.md): read third for the experimental extension.
