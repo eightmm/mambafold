@@ -187,7 +187,8 @@ def sample_eqm_euler(model, example, n_steps: int = 50, seed: int = 0,
         x = (x + dg * velocity) * mask_f
         traj_ca.append(x[:, CA_ATOM_ID, :].float().cpu().numpy() * COORD_SCALE)
 
-    final_ca = x[:, CA_ATOM_ID, :].float().cpu().numpy() * COORD_SCALE
+    x_hat_final = _eqm_x_hat(model, x, ex, float(sched[-1]), device, a, lam)
+    final_ca = x_hat_final[:, CA_ATOM_ID, :].float().cpu().numpy() * COORD_SCALE
     return final_ca, np.array(traj_ca, dtype=np.float32), sched.cpu().numpy()
 
 
@@ -233,7 +234,8 @@ def sample_eqm_nag(model, example, n_steps: int = 50, seed: int = 0,
         x_prev, x = x, x_new
         traj_ca.append(x[:, CA_ATOM_ID, :].float().cpu().numpy() * COORD_SCALE)
 
-    final_ca = x[:, CA_ATOM_ID, :].float().cpu().numpy() * COORD_SCALE
+    x_hat_final = _eqm_x_hat(model, x, ex, float(sched[-1]), device, a, lam)
+    final_ca = x_hat_final[:, CA_ATOM_ID, :].float().cpu().numpy() * COORD_SCALE
     return final_ca, np.array(traj_ca, dtype=np.float32), sched.cpu().numpy()
 
 

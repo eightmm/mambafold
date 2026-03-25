@@ -63,7 +63,7 @@ class ProteinCollator:
             res_mask[i, :L] = True
             atom_mask[i, :L] = ex.atom_mask
             valid_mask[i, :L] = ex.atom_mask & ex.observed_mask
-            ca_mask[i, :L] = ex.atom_mask[:, CA_ATOM_ID]
+            ca_mask[i, :L] = ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID]
             x_clean[i, :L] = ex.coords
 
             # EqM corruption
@@ -129,4 +129,5 @@ class LengthBucketSampler(Sampler):
         yield from batches
 
     def __len__(self):
-        return len(self.lengths)  # approximate
+        # Approximate number of batches based on average atom count per protein
+        return max(1, len(self.lengths) * MAX_ATOMS_PER_RES // self.max_atoms)

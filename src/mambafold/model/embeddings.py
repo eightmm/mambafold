@@ -17,8 +17,10 @@ class CoordinateFourierEmbedder(nn.Module):
         raw_dim = 3 + 3 * 2 * num_freqs
         self.proj = nn.Linear(raw_dim, d_out)
 
-        # Fixed frequency bands
-        freqs = 2.0 ** torch.linspace(0, num_freqs - 1, num_freqs)
+        # Fixed frequency bands: 2^-3 to 2^4 = [0.125, 16]
+        # Coords are centered ~[-5, 5] in normalized units (COORD_SCALE=10).
+        # Max phase = 5 * 16 = 80, safe for bfloat16.
+        freqs = 2.0 ** torch.linspace(-3, 4, num_freqs)
         self.register_buffer("freqs", freqs)  # [num_freqs]
 
     def forward(self, coords: Tensor) -> Tensor:

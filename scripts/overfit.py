@@ -72,7 +72,7 @@ def make_batch(example, gamma_val: float, device: str) -> ProteinBatch:
         res_mask=torch.ones(1, L, dtype=torch.bool),
         atom_mask=ex.atom_mask.unsqueeze(0),
         valid_mask=valid_mask,
-        ca_mask=ex.atom_mask[:, CA_ATOM_ID].unsqueeze(0),
+        ca_mask=(ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID]).unsqueeze(0),
         x_clean=ex.coords.unsqueeze(0),
         x_gamma=x_gamma.unsqueeze(0),
         eps=eps.unsqueeze(0),
@@ -178,7 +178,7 @@ def _eqm_x_hat(model, x, ex, gamma_cur, device, a=0.8, lam=4.0):
         res_mask=torch.ones(1, L, dtype=torch.bool, device=device),
         atom_mask=ex.atom_mask.unsqueeze(0).to(device),
         valid_mask=(ex.atom_mask & ex.observed_mask).unsqueeze(0).to(device),
-        ca_mask=ex.atom_mask[:, CA_ATOM_ID].unsqueeze(0).to(device),
+        ca_mask=(ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID]).unsqueeze(0).to(device),
         x_clean=ex.coords.unsqueeze(0).to(device),
         x_gamma=x.unsqueeze(0),
         eps=torch.zeros_like(x).unsqueeze(0),
@@ -224,7 +224,9 @@ def sample_eqm_euler(model, example, n_steps: int = 50, seed: int = 0,
         x = (x + dg * velocity) * mask_f
         traj_ca.append(x[:, CA_ATOM_ID, :].float().cpu().numpy() * COORD_SCALE)
 
-    final_ca = x[:, CA_ATOM_ID, :].float().cpu().numpy() * COORD_SCALE
+    # One final reconstruction step: x_hat at γ=sched[-1] removes residual noise floor
+    x_hat_final = _eqm_x_hat(model, x, ex, float(sched[-1]), device, a, lam)
+    final_ca = x_hat_final[:, CA_ATOM_ID, :].float().cpu().numpy() * COORD_SCALE
     return final_ca, np.array(traj_ca, dtype=np.float32), sched.cpu().numpy()
 
 
@@ -270,7 +272,9 @@ def sample_eqm_nag(model, example, n_steps: int = 50, seed: int = 0,
         x_prev, x = x, x_new
         traj_ca.append(x[:, CA_ATOM_ID, :].float().cpu().numpy() * COORD_SCALE)
 
-    final_ca = x[:, CA_ATOM_ID, :].float().cpu().numpy() * COORD_SCALE
+    # One final reconstruction step: x_hat at γ=sched[-1] removes residual noise floor
+    x_hat_final = _eqm_x_hat(model, x, ex, float(sched[-1]), device, a, lam)
+    final_ca = x_hat_final[:, CA_ATOM_ID, :].float().cpu().numpy() * COORD_SCALE
     return final_ca, np.array(traj_ca, dtype=np.float32), sched.cpu().numpy()
 
 

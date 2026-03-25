@@ -41,7 +41,7 @@ class AFDBDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx: int) -> ProteinExample | None:
-        raw = torch.load(self.files[idx], weights_only=False)
+        raw = torch.load(self.files[idx], weights_only=False, map_location="cpu")
         return self._canonicalize(raw)
 
     def _canonicalize(self, raw: dict) -> ProteinExample | None:
