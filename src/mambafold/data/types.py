@@ -11,6 +11,7 @@ class ProteinExample:
     """Single protein structure (pre-batching)."""
     res_type: torch.Tensor        # [L] int — AA type IDs
     atom_type: torch.Tensor       # [L, A] int — atom type IDs per slot
+    pair_type: torch.Tensor       # [L, A] int — (residue, atom) pair IDs
     coords: torch.Tensor          # [L, A, 3] float — ground truth coordinates
     atom_mask: torch.Tensor       # [L, A] bool — valid atom slots
     observed_mask: torch.Tensor   # [L, A] bool — experimentally observed atoms
@@ -24,6 +25,7 @@ class ProteinBatch:
     # Sequence info
     res_type: torch.Tensor        # [B, L] int
     atom_type: torch.Tensor       # [B, L, A] int
+    pair_type: torch.Tensor       # [B, L, A] int — (residue, atom) pair IDs
     res_mask: torch.Tensor        # [B, L] bool — valid residues (padding mask)
     atom_mask: torch.Tensor       # [B, L, A] bool — valid atom slots
     valid_mask: torch.Tensor      # [B, L, A] bool — atom_mask & observed_mask
@@ -55,6 +57,7 @@ class ProteinBatch:
         return ProteinBatch(
             res_type=self.res_type,
             atom_type=self.atom_type,
+            pair_type=self.pair_type,
             res_mask=self.res_mask,
             atom_mask=self.atom_mask,
             valid_mask=self.valid_mask,

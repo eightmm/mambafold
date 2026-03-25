@@ -1,0 +1,27 @@
+# MambaFold EqM — test partition config (a5000, 1:30h limit)
+# Inherits base values; only overrides are listed here.
+
+# ── Data ──────────────────────────────────────────────────────────────────
+data_dir: afdb_data/train
+
+# ── Training ──────────────────────────────────────────────────────────────
+n_steps: 5000
+lr: 1.0e-3
+grad_clip: 1.0
+
+# ── Model ─────────────────────────────────────────────────────────────────
+d_atom: 256
+d_res: 256
+d_state: 32
+mimo_rank: 2
+headdim: 64
+n_atom_enc: 2
+n_trunk: 6
+n_atom_dec: 2
+
+# ── W&B ───────────────────────────────────────────────────────────────────
+wandb_project: mambafold
+wandb_name: null
+wandb_tags: [overfit, test-partition, a5000]
+wandb_offline: false
+no_wandb: false

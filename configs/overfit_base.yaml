@@ -1,0 +1,31 @@
+# MambaFold EqM — base overfit config
+# All keys match overfit.py argparse dest names.
+# CLI flags override these values.
+
+# ── Data ──────────────────────────────────────────────────────────────────
+data_dir: afdb_data/train
+
+# ── Output ────────────────────────────────────────────────────────────────
+out_dir: null           # null → auto: outputs/overfit/{SLURM_JOB_ID|timestamp}
+
+# ── Training ──────────────────────────────────────────────────────────────
+n_steps: 5000
+lr: 1.0e-3
+grad_clip: 1.0
+
+# ── Model ─────────────────────────────────────────────────────────────────
+d_atom: 256
+d_res: 256
+d_state: 32
+mimo_rank: 2
+headdim: 64
+n_atom_enc: 2
+n_trunk: 6
+n_atom_dec: 2
+
+# ── W&B ───────────────────────────────────────────────────────────────────
+wandb_project: mambafold
+wandb_name: null        # null → auto: job_id / timestamp
+wandb_tags: []
+wandb_offline: false
+no_wandb: false

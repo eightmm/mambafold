@@ -5,7 +5,7 @@ from typing import Optional
 import torch
 from torch.utils.data import Sampler
 
-from mambafold.data.constants import CA_ATOM_ID, MAX_ATOMS_PER_RES
+from mambafold.data.constants import CA_ATOM_ID, MAX_ATOMS_PER_RES, PAIR_PAD_ID
 from mambafold.data.transforms import center_and_scale, eqm_corrupt, random_so3_augment
 from mambafold.data.types import ProteinBatch, ProteinExample
 
@@ -45,6 +45,7 @@ class ProteinCollator:
         # Initialize batch tensors
         res_type = torch.zeros(B, max_L, dtype=torch.long)
         atom_type = torch.zeros(B, max_L, A, dtype=torch.long)
+        pair_type = torch.full((B, max_L, A), PAIR_PAD_ID, dtype=torch.long)
         res_mask = torch.zeros(B, max_L, dtype=torch.bool)
         atom_mask = torch.zeros(B, max_L, A, dtype=torch.bool)
         valid_mask = torch.zeros(B, max_L, A, dtype=torch.bool)
@@ -58,6 +59,7 @@ class ProteinCollator:
             L = ex.seq_len
             res_type[i, :L] = ex.res_type
             atom_type[i, :L] = ex.atom_type
+            pair_type[i, :L] = ex.pair_type
             res_mask[i, :L] = True
             atom_mask[i, :L] = ex.atom_mask
             valid_mask[i, :L] = ex.atom_mask & ex.observed_mask
@@ -73,6 +75,7 @@ class ProteinCollator:
         return ProteinBatch(
             res_type=res_type,
             atom_type=atom_type,
+            pair_type=pair_type,
             res_mask=res_mask,
             atom_mask=atom_mask,
             valid_mask=valid_mask,

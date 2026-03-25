@@ -1,0 +1,27 @@
+# MambaFold EqM — RTX 6000 Ada config (30d limit, more headroom)
+# Larger model + more steps for thorough overfit validation.
+
+# ── Data ──────────────────────────────────────────────────────────────────
+data_dir: afdb_data/train
+
+# ── Training ──────────────────────────────────────────────────────────────
+n_steps: 10000
+lr: 1.0e-3
+grad_clip: 1.0
+
+# ── Model (larger) ────────────────────────────────────────────────────────
+d_atom: 384
+d_res: 384
+d_state: 64
+mimo_rank: 2
+headdim: 64
+n_atom_enc: 3
+n_trunk: 8
+n_atom_dec: 3
+
+# ── W&B ───────────────────────────────────────────────────────────────────
+wandb_project: mambafold
+wandb_name: null
+wandb_tags: [overfit, 6000ada, large-model]
+wandb_offline: false
+no_wandb: false

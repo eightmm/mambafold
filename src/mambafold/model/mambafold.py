@@ -100,7 +100,7 @@ class MambaFoldEqM(nn.Module):
 
         # 1. Atom embedding
         atom0 = self.atom_embed(
-            batch.res_type, batch.atom_type, batch.x_gamma, batch.atom_mask
+            batch.res_type, batch.atom_type, batch.pair_type, batch.x_gamma, batch.atom_mask
         )  # [B, L, A, d_atom]
 
         # 2. Atom encoder

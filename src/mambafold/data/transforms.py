@@ -17,6 +17,7 @@ def center_and_scale(example: ProteinExample) -> ProteinExample:
     return ProteinExample(
         res_type=example.res_type,
         atom_type=example.atom_type,
+        pair_type=example.pair_type,
         coords=coords,
         atom_mask=example.atom_mask,
         observed_mask=example.observed_mask,
@@ -32,6 +33,7 @@ def random_so3_augment(example: ProteinExample) -> ProteinExample:
     return ProteinExample(
         res_type=example.res_type,
         atom_type=example.atom_type,
+        pair_type=example.pair_type,
         coords=coords,
         atom_mask=example.atom_mask,
         observed_mask=example.observed_mask,

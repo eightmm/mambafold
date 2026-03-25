@@ -11,6 +11,8 @@ from mambafold.data.constants import (
     ATOM_NAME_TO_ID,
     CA_ATOM_ID,
     MAX_ATOMS_PER_RES,
+    PAIR_PAD_ID,
+    PAIR_TO_ID,
     RESIDUE_ATOM_TO_SLOT,
     RESIDUE_ATOMS,
 )
@@ -79,6 +81,7 @@ class AFDBDataset(Dataset):
         # Initialize tensors
         res_type = torch.zeros(L, dtype=torch.long)
         atom_type = torch.full((L, A), ATOM_NAME_TO_ID["PAD"], dtype=torch.long)
+        pair_type = torch.full((L, A), PAIR_PAD_ID, dtype=torch.long)
         coords = torch.zeros(L, A, 3, dtype=torch.float32)
         atom_mask = torch.zeros(L, A, dtype=torch.bool)
         observed_mask = torch.zeros(L, A, dtype=torch.bool)
@@ -98,6 +101,7 @@ class AFDBDataset(Dataset):
                     slot = slot_map[atom_name]
                     if slot < A:
                         atom_type[i, slot] = ATOM_NAME_TO_ID.get(atom_name, ATOM_NAME_TO_ID["PAD"])
+                        pair_type[i, slot] = PAIR_TO_ID.get((res_name, atom_name), PAIR_PAD_ID)
                         coords[i, slot] = torch.tensor(raw_coords[j], dtype=torch.float32)
                         atom_mask[i, slot] = True
                         observed_mask[i, slot] = raw_obs[j] if j < len(raw_obs) else False
@@ -105,6 +109,7 @@ class AFDBDataset(Dataset):
         return ProteinExample(
             res_type=res_type,
             atom_type=atom_type,
+            pair_type=pair_type,
             coords=coords,
             atom_mask=atom_mask,
             observed_mask=observed_mask,

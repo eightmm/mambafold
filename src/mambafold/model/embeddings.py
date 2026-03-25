@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from mambafold.data.constants import MAX_ATOMS_PER_RES, NUM_AA_TYPES, NUM_ATOM_TYPES
+from mambafold.data.constants import MAX_ATOMS_PER_RES, NUM_AA_TYPES, NUM_ATOM_TYPES, NUM_PAIR_TYPES
 
 
 class CoordinateFourierEmbedder(nn.Module):
@@ -35,12 +35,19 @@ class CoordinateFourierEmbedder(nn.Module):
 
 
 class AtomFeatureEmbedder(nn.Module):
-    """Embed atom type and coordinate features into atom tokens."""
+    """Embed atom/residue/pair type and coordinate features into atom tokens.
+
+    Three complementary embeddings summed before projection:
+      - res_type_embed:  amino acid identity (broadcast over atoms)
+      - atom_type_embed: atomic element/type properties
+      - pair_embed:      exact (residue, atom) chemical identity (167 unique pairs)
+    """
 
     def __init__(self, d_atom: int = 256, d_fourier: int = 128):
         super().__init__()
-        self.atom_type_embed = nn.Embedding(NUM_ATOM_TYPES, d_atom // 2)
-        self.res_type_embed = nn.Embedding(NUM_AA_TYPES, d_atom // 2)
+        self.res_type_embed = nn.Embedding(NUM_AA_TYPES, d_atom)
+        self.atom_type_embed = nn.Embedding(NUM_ATOM_TYPES, d_atom)
+        self.pair_embed = nn.Embedding(NUM_PAIR_TYPES, d_atom)
         self.coord_embed = CoordinateFourierEmbedder(d_out=d_fourier)
         self.proj = nn.Linear(d_atom + d_fourier, d_atom)
 
@@ -48,15 +55,19 @@ class AtomFeatureEmbedder(nn.Module):
         self,
         res_type: Tensor,    # [B, L]
         atom_type: Tensor,   # [B, L, A]
+        pair_type: Tensor,   # [B, L, A]
         coords: Tensor,      # [B, L, A, 3]
         atom_mask: Tensor,   # [B, L, A]
     ) -> Tensor:
         """Returns: [B, L, A, d_atom] atom token embeddings"""
         B, L, A = atom_type.shape
 
-        atom_feat = self.atom_type_embed(atom_type)                                   # [B, L, A, d_atom//2]
-        res_feat = self.res_type_embed(res_type).unsqueeze(2).expand(-1, -1, A, -1)  # [B, L, A, d_atom//2]
-        coord_feat = self.coord_embed(coords)                                         # [B, L, A, d_fourier]
+        feat = (
+            self.res_type_embed(res_type).unsqueeze(2).expand(-1, -1, A, -1)  # [B, L, A, d_atom]
+            + self.atom_type_embed(atom_type)                                  # [B, L, A, d_atom]
+            + self.pair_embed(pair_type)                                       # [B, L, A, d_atom]
+        )
+        coord_feat = self.coord_embed(coords)                                  # [B, L, A, d_fourier]
 
-        out = self.proj(torch.cat([atom_feat, res_feat, coord_feat], dim=-1))
+        out = self.proj(torch.cat([feat, coord_feat], dim=-1))
         return out * atom_mask.unsqueeze(-1).to(out.dtype)

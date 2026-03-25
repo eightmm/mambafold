@@ -69,3 +69,14 @@ NUM_ATOM_TYPES = len(ATOM_NAME_TO_ID)
 
 # Coordinate normalization
 COORD_SCALE = 10.0  # Angstrom -> normalized
+
+# (residue, atom) pair vocabulary — unique chemical identity per atom slot
+# Sorted by residue name then slot order for determinism.
+RESIDUE_ATOM_PAIRS: list[tuple[str, str]] = [
+    (res, atom)
+    for res in sorted(RESIDUE_ATOMS.keys())
+    for atom in RESIDUE_ATOMS[res]
+]
+PAIR_TO_ID: dict[tuple[str, str], int] = {p: i for i, p in enumerate(RESIDUE_ATOM_PAIRS)}
+PAIR_PAD_ID: int = len(RESIDUE_ATOM_PAIRS)          # index for empty/padding slots
+NUM_PAIR_TYPES: int = len(RESIDUE_ATOM_PAIRS) + 1   # +1 for PAD

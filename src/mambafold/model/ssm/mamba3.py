@@ -46,7 +46,7 @@ class Mamba3Layer(nn.Module):
     ):
         super().__init__()
         is_mimo = mimo_rank > 1
-        self.chunk_size = max(1, 64 // mimo_rank) if is_mimo else 64
+        self.chunk_size = max(1, 32 // mimo_rank) if is_mimo else 64
         self.ssm = _Mamba3(
             d_model=d_model,
             d_state=d_state,
