@@ -11,6 +11,7 @@ out_dir: null           # null → auto: outputs/overfit/{SLURM_JOB_ID|timestamp
 # ── Training ──────────────────────────────────────────────────────────────
 n_steps: 5000
 lr: 1.0e-3
+warmup_steps: 500     # 10% of n_steps: linear warmup → cosine decay to 0
 grad_clip: 1.0
 
 # ── Model ─────────────────────────────────────────────────────────────────

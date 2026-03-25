@@ -7,6 +7,7 @@ data_dir: afdb_data/train
 # ── Training ──────────────────────────────────────────────────────────────
 n_steps: 10000
 lr: 1.0e-3
+warmup_steps: 1000    # 10% of n_steps
 grad_clip: 1.0
 
 # ── Model (larger) ────────────────────────────────────────────────────────

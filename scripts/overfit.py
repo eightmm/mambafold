@@ -38,6 +38,7 @@ from mambafold.losses.eqm import eqm_reconstruction_scale
 from mambafold.model.mambafold import MambaFoldEqM
 from mambafold.train.ema import EMA
 from mambafold.train.engine import train_step
+from mambafold.train.trainer import cosine_warmup_lr
 
 # ── constants ──────────────────────────────────────────────────────────────
 
@@ -129,7 +130,7 @@ def rmsd_ca(pred_ca, true_ca, ca_mask):
 
 # ── train ──────────────────────────────────────────────────────────────────
 
-def run_training(args, example, model, ema, optimizer, device):
+def run_training(args, example, model, ema, optimizer, scheduler, device):
     gamma_loss_sum = np.zeros(50)
     gamma_loss_cnt = np.zeros(50)
     loss_curve = []
@@ -141,15 +142,17 @@ def run_training(args, example, model, ema, optimizer, device):
         batch = make_batch(example, gamma_val, device)
         metrics = train_step(model, batch, optimizer, grad_clip=args.grad_clip,
                              alpha_mode="const", use_amp=(device == "cuda"))
+        scheduler.step()
         ema.update(model)
         gamma_loss_sum[g_idx] += metrics["loss"]
         gamma_loss_cnt[g_idx] += 1
         loss_curve.append((step, g_idx, metrics["loss"]))
         if step % 50 == 0 or step == 1:
             avg = gamma_loss_sum.sum() / gamma_loss_cnt.sum()
-            print(f"  step {step:>5d}/{args.n_steps} | avg_loss={avg:.4f}", flush=True)
+            lr = scheduler.get_last_lr()[0]
+            print(f"  step {step:>5d}/{args.n_steps} | avg_loss={avg:.4f} | lr={lr:.2e}", flush=True)
             if wandb.run is not None:
-                wandb.log({"train/avg_loss": avg}, step=step)
+                wandb.log({"train/avg_loss": avg, "train/lr": lr}, step=step)
         if wandb.run is not None:
             wandb.log({"train/loss": metrics["loss"], "train/gamma": gamma_val}, step=step)
 
@@ -508,6 +511,7 @@ def main():
     # Training
     parser.add_argument("--n_steps", type=int, default=5000)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--warmup_steps", type=int, default=500)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     # Model
     parser.add_argument("--d_atom", type=int, default=256)
@@ -553,6 +557,7 @@ def main():
     print(f"Model: {n_params:.2f}M params")
 
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-2)
+    scheduler = cosine_warmup_lr(optimizer, args.warmup_steps, args.n_steps)
 
     # ── 4. wandb init ───────────────────────────────────────────────────────
     if not args.no_wandb:
@@ -568,7 +573,7 @@ def main():
 
     # ── 5. train ────────────────────────────────────────────────────────────
     loss_curve, gamma_loss_sum, gamma_loss_cnt = run_training(
-        args, example, model, ema, optimizer, device
+        args, example, model, ema, optimizer, scheduler, device
     )
 
     # ── 6. save checkpoint ──────────────────────────────────────────────────
