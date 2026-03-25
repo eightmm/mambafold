@@ -97,7 +97,7 @@ def make_batch(example, gamma_val: float, device: str, seed: int) -> ProteinBatc
         res_mask=torch.ones(1, L, dtype=torch.bool),
         atom_mask=ex.atom_mask.unsqueeze(0),
         valid_mask=(ex.atom_mask & ex.observed_mask).unsqueeze(0),
-        ca_mask=ex.atom_mask[:, CA_ATOM_ID].unsqueeze(0),
+        ca_mask=(ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID]).unsqueeze(0),
         x_clean=ex.coords.unsqueeze(0),
         x_gamma=x_gamma.unsqueeze(0),
         eps=eps.unsqueeze(0),
@@ -141,7 +141,7 @@ def _eqm_x_hat(model, x, ex, gamma_cur, device, a=0.8, lam=4.0):
         res_mask=torch.ones(1, L, dtype=torch.bool, device=device),
         atom_mask=ex.atom_mask.unsqueeze(0).to(device),
         valid_mask=(ex.atom_mask & ex.observed_mask).unsqueeze(0).to(device),
-        ca_mask=ex.atom_mask[:, CA_ATOM_ID].unsqueeze(0).to(device),
+        ca_mask=(ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID]).unsqueeze(0).to(device),
         x_clean=ex.coords.unsqueeze(0).to(device),
         x_gamma=x.unsqueeze(0),
         eps=torch.zeros_like(x).unsqueeze(0),
@@ -267,7 +267,7 @@ def main():
     example = load_example(args.data_dir, args.protein_idx)
     ex_c = center_and_scale(example)
     L = ex_c.seq_len
-    ca_mask = ex_c.atom_mask[:, CA_ATOM_ID].numpy().astype(bool)  # [L]
+    ca_mask = (ex_c.atom_mask[:, CA_ATOM_ID] & ex_c.observed_mask[:, CA_ATOM_ID]).numpy().astype(bool)  # [L]
 
     if args.gammas:
         gammas = [float(g) for g in args.gammas.split(",")]

@@ -281,7 +281,7 @@ def sample_eqm_nag(model, example, n_steps: int = 50, seed: int = 0,
 def run_evaluation(example, model, device, out_dir=None):
     ex_centered = center_and_scale(example)
     true_ca = ex_centered.coords[:, CA_ATOM_ID, :]
-    ca_mask_1d = ex_centered.atom_mask[:, CA_ATOM_ID]
+    ca_mask_1d = ex_centered.atom_mask[:, CA_ATOM_ID] & ex_centered.observed_mask[:, CA_ATOM_ID]
     L = ex_centered.seq_len
     G = len(GAMMA_GRID)
     n_eval = 3
