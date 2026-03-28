@@ -2,7 +2,7 @@
 # Inherits base values; only overrides are listed here.
 
 # ── Data ──────────────────────────────────────────────────────────────────
-data_dir: afdb_data/train
+data_dir: /home/jaemin/project/protein/folding/afdb_data/train
 
 # ── Training ──────────────────────────────────────────────────────────────
 n_steps: 5000

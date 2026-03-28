@@ -13,7 +13,7 @@ VENV_PY=.venv/bin/python
 module load cuda/12.8
 
 echo "=== Environment ==="
-$VENV_PY -c "import torch; print(f'torch={torch.__version__}, cuda={torch.version.cuda}, gpu={torch.cuda.get_device_name(0)}')"
+$VENV_PY -c 'import torch; print(f"torch={torch.__version__}, cuda={torch.cuda.is_available()}")' || true
 
 echo "=== Overfit + Viz ==="
 PYTHONPATH=src PYTHONUNBUFFERED=1 $VENV_PY -u scripts/overfit.py \
