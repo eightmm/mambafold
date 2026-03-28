@@ -24,6 +24,7 @@ class ProteinBatch:
     """Batched protein data for training/inference."""
     # Sequence info
     res_type: torch.Tensor        # [B, L] int
+    res_seq_nums: torch.Tensor    # [B, L] int — residue sequence numbers / indices
     atom_type: torch.Tensor       # [B, L, A] int
     pair_type: torch.Tensor       # [B, L, A] int — (residue, atom) pair IDs
     res_mask: torch.Tensor        # [B, L] bool — valid residues (padding mask)
@@ -56,6 +57,7 @@ class ProteinBatch:
         """Return a copy with x_gamma replaced (for sampling)."""
         return ProteinBatch(
             res_type=self.res_type,
+            res_seq_nums=self.res_seq_nums,
             atom_type=self.atom_type,
             pair_type=self.pair_type,
             res_mask=self.res_mask,

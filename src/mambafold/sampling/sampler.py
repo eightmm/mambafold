@@ -1,10 +1,11 @@
-"""EqM Nesterov Accelerated Gradient sampler with adaptive compute."""
+"""EqM samplers: Nesterov Accelerated Gradient and Euler ODE."""
 
 import torch
 from torch import Tensor
 
 from mambafold.data.constants import COORD_SCALE
 from mambafold.data.types import ProteinBatch
+from mambafold.losses.eqm import eqm_reconstruction_scale
 from mambafold.utils.geometry import remove_translation
 
 
@@ -71,7 +72,9 @@ class EqMNAGSampler:
                 break
 
             # NAG step per EqM paper Eq.(9): x_{k+1} = x_k - η·f(lookahead)
-            step = (self.eta * grad).clamp(-self.max_disp, self.max_disp)
+            step = self.eta * grad
+            step_norm = step.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+            step = step * (step_norm.clamp(max=self.max_disp) / step_norm)
             x_next = x - step
             x_next = remove_translation(x_next, batch.atom_mask)
             x_next = x_next * batch.atom_mask.unsqueeze(-1).to(dtype)
@@ -82,3 +85,98 @@ class EqMNAGSampler:
         # Convert back to Angstrom
         coords = x * COORD_SCALE
         return coords, n_steps
+
+
+class EqMEulerSampler:
+    """Euler ODE sampler for Equilibrium Matching.
+
+    Integrates the probability flow ODE dx/dγ = (x_hat - x) / (1-γ)
+    from γ=0 (pure noise) to γ≈1 (clean structure).
+    x_hat = x - scale(γ)·f(x) is the one-step clean prediction.
+    """
+
+    def __init__(
+        self,
+        model,
+        n_steps: int = 50,
+        a: float = 0.8,
+        lam: float = 4.0,
+    ):
+        self.model = model
+        self.n_steps = n_steps
+        self.a = a
+        self.lam = lam
+
+    def _make_batch(
+        self,
+        batch: ProteinBatch,
+        x: Tensor,
+        gamma_val: float,
+    ) -> ProteinBatch:
+        device = batch.device
+        dtype = x.dtype
+        gamma_t = torch.full((1, 1, 1, 1), gamma_val, device=device, dtype=dtype)
+        return ProteinBatch(
+            res_type=batch.res_type,
+            res_seq_nums=batch.res_seq_nums,
+            atom_type=batch.atom_type,
+            pair_type=batch.pair_type,
+            res_mask=batch.res_mask,
+            atom_mask=batch.atom_mask,
+            valid_mask=batch.valid_mask,
+            ca_mask=batch.ca_mask,
+            x_clean=batch.x_clean,
+            x_gamma=x,
+            eps=torch.zeros_like(x),
+            gamma=gamma_t,
+            esm=batch.esm,
+        )
+
+    @torch.no_grad()
+    def sample(self, batch: ProteinBatch) -> tuple[Tensor, int]:
+        """Generate structures via Euler integration of the EqM ODE.
+
+        Args:
+            batch: ProteinBatch with sequence info (res_type, atom_type, atom_mask,
+                   res_mask, esm). x_gamma and gamma are overwritten each step.
+
+        Returns:
+            coords: [B, L, A, 3] generated coordinates in Angstrom
+            n_steps: number of steps taken (always self.n_steps)
+        """
+        self.model.eval()
+        device = batch.device
+        dtype = next(self.model.parameters()).dtype
+        shape = batch.atom_mask.shape + (3,)  # [B, L, A, 3]
+        mask_f = batch.atom_mask.unsqueeze(-1).to(dtype)
+
+        x = torch.randn(shape, device=device, dtype=dtype) * mask_f
+
+        sched = torch.linspace(0.0, 0.99, self.n_steps + 1, device=device)
+        amp_on = str(device).startswith("cuda")
+
+        for i in range(self.n_steps):
+            gamma_cur = float(sched[i].clamp(min=1e-4))
+            dg = float(sched[i + 1] - sched[i])
+
+            step_batch = self._make_batch(batch, x, gamma_cur)
+            with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_on):
+                pred = self.model(step_batch)
+
+            scale = eqm_reconstruction_scale(step_batch.gamma, a=self.a, lam=self.lam)
+            x_hat = x - scale * pred
+
+            # ODE velocity: (x_hat - x) / (1 - γ)
+            velocity = (x_hat - x) / max(1.0 - gamma_cur, 1e-4)
+            x = (x + dg * velocity) * mask_f
+
+        # Final reconstruction step at γ=sched[-1] to remove residual noise floor
+        final_batch = self._make_batch(batch, x, float(sched[-1]))
+        with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_on):
+            pred_final = self.model(final_batch)
+
+        scale_final = eqm_reconstruction_scale(final_batch.gamma, a=self.a, lam=self.lam)
+        x_hat_final = x - scale_final * pred_final
+
+        coords = x_hat_final * COORD_SCALE
+        return coords, self.n_steps

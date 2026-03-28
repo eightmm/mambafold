@@ -1,5 +1,5 @@
-# MambaFold EqM — test partition config (a5000, 1:30h limit)
-# Inherits base values; only overrides are listed here.
+# MambaFold EqM — PLM-enabled overfit config
+# use_plm=True: ESM 임베딩을 trunk 입력에 concat
 
 # ── Data ──────────────────────────────────────────────────────────────────
 data_dir: afdb_data/train
@@ -21,9 +21,14 @@ n_atom_enc: 2
 n_trunk: 6
 n_atom_dec: 2
 
+# ── PLM ───────────────────────────────────────────────────────────────────
+use_plm: true
+d_plm: 1024
+plm_mode: blend       # blend | esm3 | esmc
+
 # ── W&B ───────────────────────────────────────────────────────────────────
 wandb_project: mambafold
 wandb_name: null
-wandb_tags: [overfit, test-partition, a5000]
+wandb_tags: [overfit, plm, esm]
 wandb_offline: false
 no_wandb: false

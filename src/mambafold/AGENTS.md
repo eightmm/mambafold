@@ -1,48 +1,43 @@
-# src/mambafold — 패키지 루트
+# src/mambafold — Package Root
 
-## 모듈 구조
+## Modules
 
 ```
 mambafold/
-├── data/       데이터 파이프라인 (로딩, 타입, 상수, 전처리)
-├── model/      모델 아키텍처 (embedding, SSM, encoder, decoder)
-│   └── ssm/    Mamba-3 레이어 (공식 커널 wrapper + BiMamba)
-├── losses/     EqM loss, CA-LDDT auxiliary loss
-├── sampling/   EqMNAGSampler (추론용 gradient descent 샘플러)
-├── train/      train_step, eval_step, EMA
-└── utils/      geometry (translation removal, pairwise dist)
+├── data/          Data pipeline (loading, types, constants, transforms)
+├── model/         Model architecture
+│   └── ssm/       Mamba-3 layers (official kernel wrapper + BiMamba)
+├── losses/        EqM loss, CA-LDDT auxiliary loss
+├── sampling/      Samplers (NAG, Euler)
+├── train/         Training loop, DDP, checkpoints, EMA
+└── utils/         Geometry utilities
 ```
 
-## 의존 관계
+## Key Entry Points
 
-```
-scripts/ → train/, losses/, model/, data/, sampling/
-model/   → data/constants, data/types
-losses/  → (독립)
-sampling/→ model/, data/types, utils/
-train/   → model/, losses/, data/types
-```
-
-## 주요 진입점
-
-| 목적 | 경로 |
-|------|------|
-| 모델 생성 | `model/mambafold.py::MambaFoldEqM` |
-| 훈련 1 step | `train/engine.py::train_step` |
-| 평가 1 step | `train/engine.py::eval_step` |
+| Task | Module |
+|------|--------|
+| Load AFDB data | `data/dataset.py::AFDBDataset` |
+| Build model | `train/trainer.py::build_model` |
+| Forward pass | `model/mambafold.py::MambaFoldEqM.forward` |
+| Training step | `train/engine.py::train_step` |
+| Evaluation | `train/engine.py::eval_step` |
 | EqM loss | `losses/eqm.py::eqm_loss` |
-| NAG 샘플링 | `sampling/sampler.py::EqMNAGSampler` |
-| 데이터 | `data/dataset.py::AFDBDataset` |
+| Sample structures | `sampling/sampler.py::EqMNAGSampler` |
+| DDP setup | `train/distributed.py::setup_dist` |
+| Checkpoints | `train/trainer.py::{save,load}_checkpoint` |
 
-## 설치 / PYTHONPATH
+## Installation
 
 ```bash
-PYTHONPATH=src python scripts/overfit.py ...
-# 또는 editable install (pyproject.toml)
+# Via PYTHONPATH
+PYTHONPATH=src python scripts/train.py ...
+
+# Or editable install
 pip install -e .
 ```
 
-## GPU 요구사항
+## GPU Requirements
 
-Mamba-3 공식 Triton 커널 사용 → **CUDA GPU 필수**.
-Master node (CPU only)에서는 import 가능하지만 forward pass 불가.
+Mamba-3 uses official Triton kernels → **CUDA GPU required**.
+CPU-only nodes can import but cannot run forward pass.

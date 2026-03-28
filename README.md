@@ -105,8 +105,49 @@ uv sync
 
 ## Training
 
+### Single GPU
 ```bash
-sbatch scripts/slurm/train.sh
+PYTHONPATH=src python -u scripts/train.py --config configs/train_base.yaml
+```
+
+### Multi-GPU DDP (auto-detected from SLURM_GPUS_ON_NODE)
+```bash
+sbatch scripts/slurm/train_6000ada.sh
+```
+
+Or manually with torchrun:
+```bash
+PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py --config configs/train_base.yaml
+```
+
+### Resume training
+```bash
+PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py \
+    --config configs/train_base.yaml \
+    --resume outputs/train/run1/ckpt_latest.pt
+```
+
+## Overfit Validation
+
+Quick validation on a small dataset to verify the model works:
+
+```bash
+sbatch scripts/slurm/overfit_test.sh
+```
+
+Or directly on a GPU node:
+```bash
+PYTHONPATH=src python -u scripts/overfit.py --config configs/overfit_base.yaml
+```
+
+## Inference / Export
+
+Export a trained checkpoint to inference format:
+```bash
+PYTHONPATH=src python scripts/export_inference.py \
+    --ckpt outputs/train/run1/ckpt_latest.pt \
+    --data_dir afdb_data/train \
+    --out outputs/train/run1/inference.npz
 ```
 
 ## Additional Reading

@@ -1,69 +1,95 @@
-# src/ - 소스 코드
+# src/mambafold - Source Code
 
-## 구조
+## Structure
 
 ```
 src/mambafold/
 ├── __init__.py
-├── data/                    # 데이터 파이프라인 (구현 완료)
+├── data/                    # Data pipeline
 │   ├── __init__.py
-│   ├── constants.py         # AA vocab(21), atom slot table(15), coord scale
+│   ├── constants.py         # AA vocab (21), atom slots (15), COORD_SCALE=10.0
 │   ├── types.py             # ProteinExample, ProteinBatch dataclass
-│   ├── dataset.py           # AFDBDataset — .pt 로딩, canonical atom slot 매핑
+│   ├── dataset.py           # AFDBDataset — load .pt, canonical atom slots
 │   ├── transforms.py        # CenterScale, SO3Aug, EqMCorrupt
 │   ├── collate.py           # ProteinCollator, LengthBucketSampler
-│   └── esm.py              # (TODO) ESM2 embedding 캐시/로딩
-├── model/                   # 모델 (구현 예정)
+│   ├── loader.py            # inf_loader (infinite dataloader)
+│   └── esm.py              # EvolutionaryScalePLM, ESM embedding
+├── model/                   # Model architecture
 │   ├── __init__.py
-│   ├── embeddings.py        # (TODO) Fourier PE, atom/residue features
-│   ├── ssm/                 # (TODO) Mamba-3 wrapper
+│   ├── embeddings.py        # AtomFeatureEmbedder, SequenceFourierEmbedder
+│   ├── ssm/                 # Mamba-3 SSM modules
+│   │   ├── __init__.py
 │   │   ├── mamba3.py        # Mamba3Layer wrapper
-│   │   └── bimamba3.py      # BiMamba3Block (forward+reverse+gate)
-│   ├── blocks.py            # (TODO) RMSNorm, SwiGLU, ConditioningAdapter
-│   ├── atom_encoder.py      # (TODO) local attention per-residue
-│   ├── grouping.py          # (TODO) atoms↔residues pooling/broadcast
-│   ├── residue_trunk.py     # (TODO) heavy BiMamba-3 stack
-│   ├── atom_decoder.py      # (TODO) local attention + gradient head
-│   └── mambafold.py         # (TODO) MambaFoldEqM end-to-end
-├── losses/                  # (TODO) Loss 함수
-│   ├── eqm.py              # EqM loss, c(γ), reconstruction scale
-│   └── lddt.py             # differentiable CA-LDDT
-├── sampling/                # (TODO) 추론
-│   └── sampler.py           # EqMNAGSampler
-├── train/                   # (TODO) 학습 엔진
+│   │   └── bimamba3.py      # BiMamba3Block, MambaStack
+│   ├── blocks.py            # RMSNorm, SwiGLU
+│   ├── atom_encoder.py      # AtomEncoder (local attention per-residue)
+│   ├── grouping.py          # group_atoms_to_residues, ResidueToAtomBroadcast
+│   ├── residue_trunk.py     # ResidueTrunk (BiMamba-3 stack)
+│   ├── atom_decoder.py      # AtomDecoder, GradientHead
+│   └── mambafold.py         # MambaFoldEqM (end-to-end)
+├── losses/                  # Loss functions
+│   ├── __init__.py
+│   ├── eqm.py              # EqM loss, truncated_c, eqm_reconstruction_scale
+│   └── lddt.py             # soft_lddt_ca_loss (differentiable CA-LDDT)
+├── sampling/                # Sampling / inference
+│   ├── __init__.py
+│   ├── sampler.py           # EqMNAGSampler, EqMEulerSampler
+│   └── stop_criterion.py    # (optional) stopping criteria
+├── train/                   # Training infrastructure
+│   ├── __init__.py
+│   ├── distributed.py       # setup_dist, all_reduce_mean, GPUMonitor
+│   ├── trainer.py           # build_model, cosine_warmup_lr, save/load_checkpoint
 │   ├── engine.py            # train_step, eval_step
-│   └── ema.py              # EMA weights
-└── utils/                   # 유틸리티 (일부 구현 완료)
+│   └── ema.py              # EMA (Exponential Moving Average)
+└── utils/                   # Utilities
     ├── __init__.py
-    ├── geometry.py          # SO3 rotation, centroid, pairwise distances (구현 완료)
-    └── metrics.py           # (TODO) ca_lddt, rmsd
+    ├── geometry.py          # SO3 rotation, centroid, pairwise distances
+    └── metrics.py           # ca_lddt, rmsd (optional)
 ```
 
-## 구현 상태
+## Implementation Status
 
-| 모듈 | 상태 | 검증 |
-|------|------|------|
-| data/constants.py | 완료 | AA 21종, atom 37종, TRP 14 atoms 확인 |
-| data/types.py | 완료 | ProteinExample/Batch dataclass |
-| data/dataset.py | 완료 | AFDB test 20,571개 로딩 성공 |
-| data/transforms.py | 완료 | SO3 det=1.0, EqM corrupt 정상 |
-| data/collate.py | 완료 | Batch(B=4, L=128, A=15) 정상 |
-| utils/geometry.py | 완료 | SO3, centroid, pairwise dist |
-| model/* | 미구현 | Phase 1 |
-| losses/* | 미구현 | Phase 2 |
+| Module | Status | Notes |
+|--------|--------|-------|
+| **data/constants.py** | ✅ Complete | 21 AAs, atom14 slots, MAX_ATOMS_PER_RES=14 |
+| **data/types.py** | ✅ Complete | ProteinExample, ProteinBatch dataclasses |
+| **data/dataset.py** | ✅ Complete | AFDB dataset loading, canonical atom slots |
+| **data/transforms.py** | ✅ Complete | Center-scale, SO3 augmentation, EqM corruption |
+| **data/collate.py** | ✅ Complete | ProteinCollator, LengthBucketSampler |
+| **data/loader.py** | ✅ Complete | inf_loader for infinite batching |
+| **data/esm.py** | ✅ Complete | ESM3/ESMc PLM integration |
+| **model/embeddings.py** | ✅ Complete | Fourier PE, atom/residue embedders |
+| **model/ssm/mamba3.py** | ✅ Complete | Mamba3Layer wrapper |
+| **model/ssm/bimamba3.py** | ✅ Complete | BiMamba3Block, MambaStack |
+| **model/blocks.py** | ✅ Complete | RMSNorm, SwiGLU |
+| **model/atom_encoder.py** | ✅ Complete | Local attention (per-residue) |
+| **model/grouping.py** | ✅ Complete | Pool/broadcast atoms ↔ residues |
+| **model/residue_trunk.py** | ✅ Complete | BiMamba-3 residue trunk |
+| **model/atom_decoder.py** | ✅ Complete | Decoder + gradient head |
+| **model/mambafold.py** | ✅ Complete | MambaFoldEqM end-to-end |
+| **losses/eqm.py** | ✅ Complete | EqM loss, truncated c(γ), reconstruction scale |
+| **losses/lddt.py** | ✅ Complete | Differentiable CA-LDDT |
+| **sampling/sampler.py** | ✅ Complete | NAG sampler, Euler sampler |
+| **train/distributed.py** | ✅ Complete | DDP setup, all-reduce, GPU monitor |
+| **train/trainer.py** | ✅ Complete | Model builder, LR scheduler, checkpoint I/O |
+| **train/engine.py** | ✅ Complete | train_step, eval_step |
+| **train/ema.py** | ✅ Complete | EMA with shadow parameters |
+| **utils/geometry.py** | ✅ Complete | SO3, centroid, pairwise distances |
 
-## 데이터 스키마
+## Data Schema
 
-### ProteinExample (단일 단백질)
-- `res_type: [L]` — AA type ID (0~20)
-- `atom_type: [L, 15]` — atom slot ID
-- `coords: [L, 15, 3]` — 3D coordinates (Å)
-- `atom_mask: [L, 15]` — valid atom slots
-- `observed_mask: [L, 15]` — experimentally observed
+### ProteinExample (single protein)
+- `res_type: [L]` — amino acid type (0-20)
+- `atom_type: [L, 14]` — atom slot index per residue
+- `coords: [L, 14, 3]` — 3D coordinates (Å)
+- `atom_mask: [L, 14]` — valid atom indicator
+- `observed_mask: [L, 14]` — experimentally observed
 
-### ProteinBatch (배치)
-- `x_clean: [B, L, 15, 3]` — normalized clean coords
-- `x_gamma: [B, L, 15, 3]` — EqM corrupted coords
-- `eps: [B, L, 15, 3]` — noise
-- `gamma: [B, 1, 1, 1]` — interpolation factor
+### ProteinBatch (batched)
+- `x_clean: [B, L, 14, 3]` — normalized clean coordinates
+- `x_gamma: [B, L, 14, 3]` — EqM corrupted coordinates
+- `eps: [B, L, 14, 3]` — Gaussian noise
+- `gamma: [B, 1, 1, 1]` — noise level (interpolation factor)
 - `esm: [B, L, d_esm]` — ESM2 embeddings (optional)
+- `res_mask: [B, L]` — residue validity
+- `atom_mask: [B, L, 14]` — atom validity

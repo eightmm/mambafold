@@ -1,13 +1,26 @@
-# MambaFold EqM — test partition config (a5000, 1:30h limit)
-# Inherits base values; only overrides are listed here.
+# MambaFold EqM — full training config
 
 # ── Data ──────────────────────────────────────────────────────────────────
 data_dir: afdb_data/train
+val_data_dir: null          # null → val eval 비활성화
+max_length: 256
+batch_size: 8
+num_workers: 4
+copies_per_protein: 1
+
+# ── Output ────────────────────────────────────────────────────────────────
+out_dir: null               # null → outputs/train/{SLURM_JOB_ID|timestamp}
+resume: null                # 체크포인트 경로 (resume 시 지정)
 
 # ── Training ──────────────────────────────────────────────────────────────
-n_steps: 5000
-lr: 1.0e-3
+total_steps: 200000
+lr: 1.0e-4
+warmup_steps: 2000
 grad_clip: 1.0
+gamma_schedule: logit_normal
+log_interval: 50
+ckpt_interval: 5000
+eval_interval: 0            # 0 → val eval 비활성화
 
 # ── Model ─────────────────────────────────────────────────────────────────
 d_atom: 256
@@ -20,10 +33,16 @@ headdim: 64
 n_atom_enc: 2
 n_trunk: 6
 n_atom_dec: 2
+d_atom_slot: 32
+
+# ── PLM ───────────────────────────────────────────────────────────────────
+use_plm: false
+d_plm: 1024
+plm_mode: blend
 
 # ── W&B ───────────────────────────────────────────────────────────────────
 wandb_project: mambafold
 wandb_name: null
-wandb_tags: [overfit, test-partition, a5000]
+wandb_tags: [train]
 wandb_offline: false
 no_wandb: false

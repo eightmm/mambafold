@@ -13,6 +13,8 @@ grad_clip: 1.0
 # ── Model (larger) ────────────────────────────────────────────────────────
 d_atom: 384
 d_res: 384
+d_res_pos: 64
+d_local_frame: 64
 d_state: 64
 mimo_rank: 2
 headdim: 64

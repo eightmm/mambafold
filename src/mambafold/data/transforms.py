@@ -42,15 +42,17 @@ def random_so3_augment(example: ProteinExample) -> ProteinExample:
     )
 
 
-def _sample_gamma() -> float:
-    """Sample γ from logistic-normal mixture (SimpleFold schedule).
+def _sample_gamma(schedule: str = "logit_normal") -> float:
+    """Sample γ from the specified schedule.
 
-    p(γ) = 0.98 · LN(μ=0.8, σ=1.7) + 0.02 · U(0, 1)
-
-    LN: sample z ~ N(0.8, 1.7²), then γ = sigmoid(z).
-    Oversamples near γ≈1 (clean structures) to improve fine-grained
-    structural detail learning (side-chain packing, local geometry).
+    schedule:
+      "logit_normal" — p(γ) = 0.98·LN(μ=0.8, σ=1.7) + 0.02·U(0,1)
+                       Oversamples near γ≈1 (SimpleFold schedule).
+      "uniform"      — γ ~ U(0, 1), covers all noise levels equally.
     """
+    if schedule == "uniform":
+        return float(torch.empty(1).uniform_(0.0, 1.0).item())
+    # logit_normal (default)
     if torch.rand(1).item() < 0.98:
         z = torch.randn(1).mul_(1.7).add_(0.8)
         gamma = torch.sigmoid(z).item()
@@ -62,20 +64,22 @@ def _sample_gamma() -> float:
 def eqm_corrupt(
     coords: Tensor,
     atom_mask: Tensor,
+    schedule: str = "logit_normal",
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Apply EqM corruption: x_γ = γ·x + (1-γ)·ε.
 
     Args:
         coords: [L, A, 3] clean normalized coordinates
         atom_mask: [L, A] valid atoms
+        schedule: gamma sampling schedule ("logit_normal" | "uniform")
 
     Returns:
         x_gamma: [L, A, 3] corrupted coordinates
         eps: [L, A, 3] noise sample
-        gamma: scalar sampled from logistic-normal mixture
+        gamma: scalar sampled from schedule
     """
     eps = torch.randn_like(coords)
-    gamma = _sample_gamma()
+    gamma = _sample_gamma(schedule)
 
     x_gamma = gamma * coords + (1 - gamma) * eps
     mask_f = atom_mask.unsqueeze(-1).to(coords.dtype)

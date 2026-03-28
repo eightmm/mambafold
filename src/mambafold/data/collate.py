@@ -18,10 +18,12 @@ class ProteinCollator:
         augment: bool = True,
         copies_per_protein: int = 1,
         esm_cache_dir: Optional[str] = None,
+        gamma_schedule: str = "logit_normal",
     ):
         self.augment = augment
         self.copies_per_protein = copies_per_protein
         self.esm_cache_dir = esm_cache_dir
+        self.gamma_schedule = gamma_schedule
 
     def __call__(self, examples: list[ProteinExample]) -> ProteinBatch:
         # Filter None examples
@@ -44,6 +46,7 @@ class ProteinCollator:
 
         # Initialize batch tensors
         res_type = torch.zeros(B, max_L, dtype=torch.long)
+        res_seq_nums = torch.zeros(B, max_L, dtype=torch.long)
         atom_type = torch.zeros(B, max_L, A, dtype=torch.long)
         pair_type = torch.full((B, max_L, A), PAIR_PAD_ID, dtype=torch.long)
         res_mask = torch.zeros(B, max_L, dtype=torch.bool)
@@ -58,6 +61,7 @@ class ProteinCollator:
         for i, ex in enumerate(processed):
             L = ex.seq_len
             res_type[i, :L] = ex.res_type
+            res_seq_nums[i, :L] = ex.res_seq_nums
             atom_type[i, :L] = ex.atom_type
             pair_type[i, :L] = ex.pair_type
             res_mask[i, :L] = True
@@ -67,13 +71,14 @@ class ProteinCollator:
             x_clean[i, :L] = ex.coords
 
             # EqM corruption
-            xg, ep, gm = eqm_corrupt(ex.coords, ex.atom_mask)
+            xg, ep, gm = eqm_corrupt(ex.coords, ex.atom_mask, self.gamma_schedule)
             x_gamma[i, :L] = xg
             eps[i, :L] = ep
             gamma[i, 0, 0, 0] = gm
 
         return ProteinBatch(
             res_type=res_type,
+            res_seq_nums=res_seq_nums,
             atom_type=atom_type,
             pair_type=pair_type,
             res_mask=res_mask,

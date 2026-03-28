@@ -1,11 +1,8 @@
 #!/bin/bash
+# Job script — partition/gres는 submit_overfit.sh 또는 sbatch CLI로 주입
+# 직접 실행 시: sbatch --partition=heavy --gres=gpu:h100:1 scripts/slurm/overfit_test.sh
 #SBATCH --job-name=mambafold-overfit
-#SBATCH --partition=test
-#SBATCH --gres=gpu:a5000:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
-#SBATCH --time=01:30:00
-#SBATCH --output=outputs/overfit/%j/slurm.out
+#SBATCH --output=/home/jaemin/project/protein/folding/outputs/overfit/%j/slurm.out
 
 set -e
 

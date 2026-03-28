@@ -37,31 +37,36 @@ def train_step(
     model.train()
     amp_enabled = use_amp and batch.device.type == "cuda"
 
+    optimizer.zero_grad(set_to_none=True)
+
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
         pred = model(batch)  # [B, L, A, 3]
 
-        # EqM loss
-        loss_eqm = eqm_loss(
-            pred, batch.x_clean, batch.eps, batch.gamma,
-            batch.valid_mask, a=eqm_a, lam=eqm_lam,
-        )
-
-        # Structure reconstruction for LDDT
+        # Structure reconstruction for LDDT (computed inside autocast)
         scale = eqm_reconstruction_scale(batch.gamma, a=eqm_a, lam=eqm_lam)
         x_hat = batch.x_gamma - scale * pred
 
-        # CA-LDDT auxiliary loss
-        loss_lddt = soft_lddt_ca_loss(x_hat, batch.x_clean, batch.ca_mask, cutoff=lddt_cutoff)
+    # Cast to fp32 for numerically stable loss computation
+    pred_f32 = pred.float()
+    x_hat_f32 = x_hat.float()
 
-        # Alpha weighting: ramp up LDDT weight near clean structures during finetuning
-        if alpha_mode == "const":
-            alpha = 1.0
-        else:
-            alpha = (1.0 + 8.0 * F.relu(batch.gamma - 0.5)).mean().item()
+    # EqM loss in fp32
+    loss_eqm = eqm_loss(
+        pred_f32, batch.x_clean.float(), batch.eps.float(), batch.gamma,
+        batch.valid_mask, a=eqm_a, lam=eqm_lam,
+    )
 
-        loss = loss_eqm + alpha * loss_lddt
+    # CA-LDDT auxiliary loss in fp32
+    loss_lddt = soft_lddt_ca_loss(x_hat_f32, batch.x_clean.float(), batch.ca_mask, cutoff=lddt_cutoff)
 
-    optimizer.zero_grad()
+    # Alpha weighting: ramp up LDDT weight near clean structures during finetuning
+    if alpha_mode == "const":
+        alpha = 1.0
+    else:
+        alpha = (1.0 + 8.0 * F.relu(batch.gamma - 0.5)).mean().item()
+
+    loss = loss_eqm + alpha * loss_lddt
+
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     optimizer.step()
@@ -92,17 +97,21 @@ def eval_step(
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
         pred = model(batch)
 
-        loss_eqm = eqm_loss(
-            pred, batch.x_clean, batch.eps, batch.gamma,
-            batch.valid_mask, a=eqm_a, lam=eqm_lam,
-        )
-
         scale = eqm_reconstruction_scale(batch.gamma, a=eqm_a, lam=eqm_lam)
         x_hat = batch.x_gamma - scale * pred
-        loss_lddt = soft_lddt_ca_loss(x_hat, batch.x_clean, batch.ca_mask, cutoff=lddt_cutoff)
 
         n_valid = batch.valid_mask.sum().clamp(min=1)
         grad_rms = (pred.pow(2).sum() / n_valid / 3).sqrt()
+
+    # Cast to fp32 for numerically stable loss computation
+    pred_f32 = pred.float()
+    x_hat_f32 = x_hat.float()
+
+    loss_eqm = eqm_loss(
+        pred_f32, batch.x_clean.float(), batch.eps.float(), batch.gamma,
+        batch.valid_mask, a=eqm_a, lam=eqm_lam,
+    )
+    loss_lddt = soft_lddt_ca_loss(x_hat_f32, batch.x_clean.float(), batch.ca_mask, cutoff=lddt_cutoff)
 
     return {
         "eqm": loss_eqm.item(),

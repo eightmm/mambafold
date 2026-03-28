@@ -80,3 +80,25 @@ RESIDUE_ATOM_PAIRS: list[tuple[str, str]] = [
 PAIR_TO_ID: dict[tuple[str, str], int] = {p: i for i, p in enumerate(RESIDUE_ATOM_PAIRS)}
 PAIR_PAD_ID: int = len(RESIDUE_ATOM_PAIRS)          # index for empty/padding slots
 NUM_PAIR_TYPES: int = len(RESIDUE_ATOM_PAIRS) + 1   # +1 for PAD
+
+# Element class vocabulary (C/N/O/S)
+ELEMENT_TO_ID = {'C': 0, 'N': 1, 'O': 2, 'S': 3}
+NUM_ELEMENT_TYPES = 5  # C, N, O, S, PAD
+
+# Map each atom_type_id → element class id
+# Atom names starting with N→1, O→2, S→3, else C→0; PAD→4
+def _atom_name_to_element(name: str) -> int:
+    if name == 'PAD':
+        return 4
+    if name.startswith('N'):
+        return 1
+    if name.startswith('O'):
+        return 2
+    if name.startswith('S'):
+        return 3
+    return 0  # carbon
+
+ATOM_TYPE_TO_ELEMENT: list[int] = [
+    _atom_name_to_element(name)
+    for name, _ in sorted(ATOM_NAME_TO_ID.items(), key=lambda x: x[1])
+]

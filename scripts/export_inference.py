@@ -56,6 +56,9 @@ def load_model(ckpt_path: str, device: str):
         n_trunk=a["n_trunk"],
         n_atom_dec=a["n_atom_dec"],
         use_plm=False,
+        d_res_pos=a.get("d_res_pos", 0),
+        d_atom_slot=a.get("d_atom_slot", 0),
+        d_local_frame=a.get("d_local_frame", 0),
         atom_d_state=a["d_state"],
         atom_mimo_rank=a["mimo_rank"],
         atom_headdim=a["headdim"],
@@ -92,6 +95,7 @@ def make_batch(example, gamma_val: float, device: str, seed: int) -> ProteinBatc
     eps = eps * mask_f
     return ProteinBatch(
         res_type=ex.res_type.unsqueeze(0),
+        res_seq_nums=ex.res_seq_nums.unsqueeze(0),
         atom_type=ex.atom_type.unsqueeze(0),
         pair_type=ex.pair_type.unsqueeze(0),
         res_mask=torch.ones(1, L, dtype=torch.bool),
@@ -136,6 +140,7 @@ def _eqm_x_hat(model, x, ex, gamma_cur, device, a=0.8, lam=4.0):
     L = ex.seq_len
     batch = ProteinBatch(
         res_type=ex.res_type.unsqueeze(0).to(device),
+        res_seq_nums=ex.res_seq_nums.unsqueeze(0).to(device),
         atom_type=ex.atom_type.unsqueeze(0).to(device),
         pair_type=ex.pair_type.unsqueeze(0).to(device),
         res_mask=torch.ones(1, L, dtype=torch.bool, device=device),
