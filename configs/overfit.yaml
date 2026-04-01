@@ -3,7 +3,7 @@
 # 여기서 직접 수정하며 실험할 것.
 
 # ── Data ──────────────────────────────────────────────────────────────────
-data_dir: /home/jaemin/project/protein-ligand/boltz1-finetune/data/rcsb_processed_targets/structures
+data_dir: /home/jaemin/project/protein/folding/data/rcsb
 max_length: 256
 
 # ── Output ────────────────────────────────────────────────────────────────
