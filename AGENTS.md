@@ -9,7 +9,7 @@ Implement protein structure prediction combining **Equilibrium Matching (EqM)** 
 - **Training**: `scripts/train.py` (DDP multi-GPU)
 - **Validation**: `scripts/overfit.py` (small dataset)
 - **Inference**: `scripts/export_inference.py`
-- **Config**: `configs/train_base.yaml`, `configs/overfit_base.yaml`
+- **Config**: `configs/overfit.yaml`
 
 ## Architecture Summary
 
@@ -30,20 +30,20 @@ Gradient [B, L, 14, 3]
 ```
 
 **Key components**:
-- **AtomFeatureEmbedder** (`model/embeddings.py`) — Fourier PE + token embeddings
-- **MambaStack** (`model/ssm/bimamba3.py`) — BiMamba-3 blocks with gated fusion
-- **Atom Encoder/Decoder** (`model/atom_encoder.py`, `model/atom_decoder.py`) — Local attention (per-residue)
-- **Grouping** (`model/grouping.py`) — Pool atoms→residues, broadcast back
+- **model/mambafold.py** — MambaFoldEqM (atom encoder, trunk, atom decoder, gradient head)
+- **model/bimamba3.py** — RMSNorm, SwiGLU, Mamba3Layer, Mamba3Block, BiMamba3Block, MambaStack
+- **model/embeddings.py** — AtomFeatureEmbedder, SequenceFourierEmbedder, ResidueToAtomBroadcast
+- **Grouping** (in mambafold.py) — group_atoms_to_residues, ResidueToAtomBroadcast
 
 ## Training
 
 **Command**:
 ```bash
 # Single GPU
-PYTHONPATH=src python -u scripts/train.py --config configs/train_base.yaml
+PYTHONPATH=src python -u scripts/train.py --config configs/overfit.yaml
 
 # Multi-GPU DDP via torchrun
-PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py --config configs/train_base.yaml
+PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py --config configs/overfit.yaml
 
 # Via SLURM (auto GPU detection)
 sbatch scripts/slurm/train_6000ada.sh
@@ -63,13 +63,14 @@ sbatch scripts/slurm/train_6000ada.sh
 
 ## Data
 
-- **Source**: AFDB .pt files (`afdb_data/train/`)
+- **AFDB**: Legacy `.pt` files (`afdb_data/train/`)
+- **RCSB**: Boltz-preprocessed `.npz` files (`data/rcsb/` — 216K structures)
 - **Format**: All-atom coords [L, 14, 3] per residue
 - **Processing**: Center + scale by 10.0Å
 - **EqM corruption**: `x_γ = γ·x_clean + (1-γ)·ε` with γ ~ U(0,1)
 
 Key files:
-- `data/dataset.py` — Load AFDB .pt
+- `data/dataset.py` — AFDBDataset (legacy .pt) and RCSBDataset (Boltz .npz), auto-detection in overfit.py
 - `data/constants.py` — Atom slots, AA vocab
 - `data/transforms.py` — EqM corruption, augmentation
 - `data/collate.py` — Batching, bucketing sampler
@@ -103,22 +104,41 @@ L_LDDT = soft_lddt_ca(x̂, x_clean)
    - Interpolates from γ=0→1
    - Used in overfit validation
 
-## Implementation Status (2026-03-28)
+## Config Reference
+
+**Single overfit.yaml** (consolidated):
+- Default dimensions: d_atom=384, d_res=384, d_state=64, mimo_rank=4, headdim=64
+- Atom encoder/decoder: n_atom_enc=3, n_atom_dec=3
+- Residue trunk: n_trunk=8
+- Max sequence length: 256
+- Data auto-detection: uses RCSBDataset for .npz, AFDBDataset for .pt
+
+## SSM Hyperparameters
+
+**Important: chunk_size depends on GPU type**
+- **A5000 / Ampere**: `chunk_size = 32 // mimo_rank` (with mimo_rank=4 → 8)
+- **H100 / Hopper**: `chunk_size = 64 // mimo_rank` (with mimo_rank=4 → 16)
+
+Using `64 // mimo_rank` on A5000 causes OOM. Implementation auto-detects from mimo_rank in Mamba3Layer.
+
+## Implementation Status (2026-04-01)
 
 | Component | Status |
 |-----------|--------|
-| Data pipeline | ✅ Complete |
+| Data pipeline (AFDB + RCSB) | ✅ Complete |
 | Model architecture | ✅ Complete |
 | EqM & CA-LDDT losses | ✅ Complete |
 | DDP training + EMA | ✅ Complete |
 | Cosine warmup LR scheduler | ✅ Complete |
 | NAG + Euler samplers | ✅ Complete |
 | Overfit validation | ✅ Passing |
-| YAML configs | ✅ Complete |
+| Consolidated YAML config | ✅ Complete |
 | W&B logging | ✅ Complete |
 | Full training pipeline | ✅ Complete |
 | ESM PLM integration | ✅ Complete |
 | Export inference | ✅ Complete |
+| RCSBDataset (Boltz .npz) | ✅ Complete |
+| chunk_size A5000 fix | ✅ Complete |
 
 ## Key Papers
 

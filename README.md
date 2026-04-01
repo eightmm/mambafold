@@ -69,7 +69,9 @@ The likely execution order is to get a stable flow-matching model first, then in
 folding/
 ├── README.md
 ├── pyproject.toml
-├── afdb_data/              # AFDB data symlink, read-only
+├── data/                   # Protein data (overfit and RCSB symlink)
+│   ├── overfit/            # Small .pt files for validation
+│   └── rcsb/               # Symlink to Boltz-preprocessed RCSB structures (.npz)
 ├── configs/                # Configuration files
 ├── docs/                   # Notes, plans, and paper summaries
 ├── scripts/                # Training, evaluation, and SLURM helpers
@@ -85,7 +87,11 @@ folding/
 
 ## Dataset
 
-The project uses single-chain protein structures extracted from AFDB (AlphaFold DB). Each `.pt` example stores residue-level metadata and atom-level geometry, including:
+The project supports two protein structure formats, auto-detected by directory content:
+
+### AFDBDataset (Legacy)
+
+Reads `.pt` files from the overfit directory. Each file stores residue-level metadata and atom-level geometry:
 
 | Key | Type | Description |
 |-----|------|-------------|
@@ -97,32 +103,56 @@ The project uses single-chain protein structures extracted from AFDB (AlphaFold 
 | `coords` | `list[list[list[float]]]` | 3D coordinates for each atom |
 | `is_observed` | `list[list[bool]]` | Observation masks |
 
+### RCSBDataset (Main)
+
+Reads Boltz-style `.npz` files from `data/rcsb/` (symlink to `rcsb_processed_targets/structures`). Each `.npz` contains structured arrays:
+
+| Field | Structure | Description |
+|-------|-----------|-------------|
+| `residues` | Array of records | `name` (residue type), `res_type`, `atom_idx`, `atom_num`, `is_standard`, `is_present` |
+| `atoms` | Array of records | `name`, `coords` (x, y, z), `is_present` |
+| `chains` | Array of records | `mol_type`, `res_idx`, `res_num` |
+
+Atoms are stored in canonical order per residue type, with atom names recovered positionally without decoding. Only protein chains (`mol_type == 0`) and standard amino acids are used.
+
 ## Setup
+
+The project uses `uv` as the package manager:
 
 ```bash
 uv sync
 ```
 
+Python should be executed via `uv run python`:
+
+```bash
+uv run python scripts/train.py --config configs/train_base.yaml
+```
+
 ## Training
 
 ### Single GPU
+
 ```bash
-PYTHONPATH=src python -u scripts/train.py --config configs/train_base.yaml
+uv run python -u scripts/train.py --config configs/train_base.yaml
 ```
 
 ### Multi-GPU DDP (auto-detected from SLURM_GPUS_ON_NODE)
+
 ```bash
 sbatch scripts/slurm/train_6000ada.sh
 ```
 
 Or manually with torchrun:
+
 ```bash
-PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py --config configs/train_base.yaml
+uv run torchrun --nproc_per_node=4 scripts/train.py --config configs/train_base.yaml
 ```
 
 ### Resume training
+
 ```bash
-PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py \
+uv run torchrun --nproc_per_node=4 scripts/train.py \
     --config configs/train_base.yaml \
     --resume outputs/train/run1/ckpt_latest.pt
 ```
@@ -136,17 +166,41 @@ sbatch scripts/slurm/overfit_test.sh
 ```
 
 Or directly on a GPU node:
+
 ```bash
-PYTHONPATH=src python -u scripts/overfit.py --config configs/overfit_base.yaml
+uv run python -u scripts/overfit.py --config configs/overfit.yaml
 ```
+
+### Configuration
+
+Key model hyperparameters in `configs/overfit.yaml`:
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `d_atom` | 384 | Atom feature dimension |
+| `d_res` | 384 | Residue feature dimension |
+| `d_state` | 64 | SSM state dimension |
+| `mimo_rank` | 4 | MIMO decomposition rank |
+| `headdim` | 64 | Attention head dimension |
+| `n_trunk` | 8 | Number of trunk layers |
+| `max_length` | 256 | Maximum sequence length |
+
+## Architecture
+
+The model is composed of the following core modules:
+
+- **`model/bimamba3.py`** — BiMamba3Block and MambaStack: state space model blocks for sequence modeling
+- **`model/embeddings.py`** — AtomFeatureEmbedder, SequenceFourierEmbedder: feature embeddings for atoms and residues
+- **`model/mambafold.py`** — MambaFoldEqM: main model integrating encoder, trunk, and decoder
 
 ## Inference / Export
 
 Export a trained checkpoint to inference format:
+
 ```bash
-PYTHONPATH=src python scripts/export_inference.py \
+uv run python scripts/export_inference.py \
     --ckpt outputs/train/run1/ckpt_latest.pt \
-    --data_dir afdb_data/train \
+    --data_dir data/rcsb \
     --out outputs/train/run1/inference.npz
 ```
 
