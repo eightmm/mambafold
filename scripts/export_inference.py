@@ -58,7 +58,6 @@ def load_model(ckpt_path: str, device: str):
         use_plm=False,
         d_res_pos=a.get("d_res_pos", 0),
         d_atom_slot=a.get("d_atom_slot", 0),
-        d_local_frame=a.get("d_local_frame", 0),
         atom_d_state=a["d_state"],
         atom_mimo_rank=a["mimo_rank"],
         atom_headdim=a["headdim"],

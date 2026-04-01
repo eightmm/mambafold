@@ -76,7 +76,6 @@ class EqMNAGSampler:
             step_norm = step.norm(dim=-1, keepdim=True).clamp(min=1e-8)
             step = step * (step_norm.clamp(max=self.max_disp) / step_norm)
             x_next = x - step
-            x_next = remove_translation(x_next, batch.atom_mask)
             x_next = x_next * batch.atom_mask.unsqueeze(-1).to(dtype)
 
             x_prev = x
@@ -115,7 +114,8 @@ class EqMEulerSampler:
     ) -> ProteinBatch:
         device = batch.device
         dtype = x.dtype
-        gamma_t = torch.full((1, 1, 1, 1), gamma_val, device=device, dtype=dtype)
+        B = batch.batch_size
+        gamma_t = torch.full((B, 1, 1, 1), gamma_val, device=device, dtype=dtype)
         return ProteinBatch(
             res_type=batch.res_type,
             res_seq_nums=batch.res_seq_nums,
@@ -150,7 +150,9 @@ class EqMEulerSampler:
         shape = batch.atom_mask.shape + (3,)  # [B, L, A, 3]
         mask_f = batch.atom_mask.unsqueeze(-1).to(dtype)
 
+        # Initialize from centered noise (matches training distribution)
         x = torch.randn(shape, device=device, dtype=dtype) * mask_f
+        x = remove_translation(x, batch.atom_mask)
 
         sched = torch.linspace(0.0, 0.99, self.n_steps + 1, device=device)
         amp_on = str(device).startswith("cuda")

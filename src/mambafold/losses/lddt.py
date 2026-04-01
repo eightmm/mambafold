@@ -9,7 +9,7 @@ def soft_lddt_ca_loss(
     true_coords: Tensor,
     ca_mask: Tensor,
     cutoff: float = 1.5,
-    thresholds: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0),
+    thresholds: tuple[float, ...] = (0.05, 0.1, 0.2, 0.4),
 ) -> Tensor:
     """Soft differentiable CA-LDDT loss.
 
@@ -20,7 +20,7 @@ def soft_lddt_ca_loss(
         true_coords: [B, L, A, 3] ground truth coordinates
         ca_mask: [B, L] bool — residues with valid C-alpha
         cutoff: distance cutoff in normalized units (default 1.5 = 15Å)
-        thresholds: LDDT distance thresholds (normalized)
+        thresholds: LDDT distance thresholds in normalized units (default = 0.5,1,2,4 Å ÷ COORD_SCALE)
 
     Returns: scalar loss (1 - mean LDDT)
     """

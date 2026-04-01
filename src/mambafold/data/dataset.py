@@ -32,8 +32,11 @@ class AFDBDataset(Dataset):
         self.max_length = max_length
         self.filter_std_aa = filter_std_aa
 
-        # Collect all .pt files
-        self.files = sorted(self.data_dir.glob("*.pt"))
+        # Collect struct .pt files, excluding ESM cache files
+        self.files = sorted(
+            f for f in self.data_dir.glob("*.pt")
+            if not (f.name.endswith(".esm3.pt") or f.name.endswith(".esmc.pt"))
+        )
         if len(self.files) == 0:
             raise ValueError(f"No .pt files found in {data_dir}")
 
@@ -41,10 +44,11 @@ class AFDBDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx: int) -> ProteinExample | None:
-        raw = torch.load(self.files[idx], weights_only=False, map_location="cpu")
-        return self._canonicalize(raw)
+        path = self.files[idx]
+        raw = torch.load(path, weights_only=False, map_location="cpu")
+        return self._canonicalize(raw, path)
 
-    def _canonicalize(self, raw: dict) -> ProteinExample | None:
+    def _canonicalize(self, raw: dict, path: Path | None = None) -> ProteinExample | None:
         """Convert raw .pt dict to canonical ProteinExample."""
         res_names = raw["res_names"]
         atom_names_per_res = raw["atom_names"]
@@ -55,6 +59,13 @@ class AFDBDataset(Dataset):
         if L == 0:
             return None
 
+        # Load pre-cached ESM3 embeddings [L_raw, 1536] if available
+        esm_raw = None
+        if path is not None:
+            esm_path = path.parent / (path.stem + ".esm3.pt")
+            if esm_path.exists():
+                esm_raw = torch.load(esm_path, weights_only=True, map_location="cpu")
+
         # Filter to standard amino acids
         if self.filter_std_aa:
             valid_idx = [i for i, r in enumerate(res_names) if r in AA_TO_ID and r != "UNK"]
@@ -64,6 +75,8 @@ class AFDBDataset(Dataset):
             atom_names_per_res = [atom_names_per_res[i] for i in valid_idx]
             coords_per_res = [coords_per_res[i] for i in valid_idx]
             is_observed_per_res = [is_observed_per_res[i] for i in valid_idx]
+            if esm_raw is not None:
+                esm_raw = esm_raw[valid_idx]
             L = len(res_names)
 
         # Random crop if needed
@@ -74,6 +87,8 @@ class AFDBDataset(Dataset):
             atom_names_per_res = atom_names_per_res[start:end]
             coords_per_res = coords_per_res[start:end]
             is_observed_per_res = is_observed_per_res[start:end]
+            if esm_raw is not None:
+                esm_raw = esm_raw[start:end]
             L = self.max_length
 
         A = MAX_ATOMS_PER_RES
@@ -115,4 +130,5 @@ class AFDBDataset(Dataset):
             observed_mask=observed_mask,
             res_seq_nums=res_seq_nums,
             seq_len=L,
+            esm=esm_raw,
         )

@@ -76,6 +76,16 @@ class ProteinCollator:
             eps[i, :L] = ep
             gamma[i, 0, 0, 0] = gm
 
+        # Stack ESM3 embeddings if available in all examples
+        esm = None
+        esm_list = [ex.esm for ex in processed]
+        if all(e is not None for e in esm_list):
+            d_esm = esm_list[0].shape[-1]
+            esm = torch.zeros(B, max_L, d_esm, dtype=torch.float32)
+            for i, ex in enumerate(processed):
+                L = ex.seq_len
+                esm[i, :L] = ex.esm
+
         return ProteinBatch(
             res_type=res_type,
             res_seq_nums=res_seq_nums,
@@ -89,7 +99,7 @@ class ProteinCollator:
             x_gamma=x_gamma,
             eps=eps,
             gamma=gamma,
-            esm=None,  # loaded separately
+            esm=esm,
         )
 
 

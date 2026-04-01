@@ -127,7 +127,7 @@ def make_batch(example, gamma_val: float, device: str) -> ProteinBatch:
         x_clean=ex.coords.unsqueeze(0),
         x_gamma=x_gamma.unsqueeze(0),
         eps=eps.unsqueeze(0),
-        gamma=torch.tensor([[[[gamma_val]]]]),
+        gamma=torch.tensor([[[[gamma_val]]]], device=device),
         esm=None,
     ).to(torch.device(device))
 
@@ -146,7 +146,6 @@ def build_model(args, device):
         plm_mode=getattr(args, "plm_mode", "blend"),
         d_res_pos=args.d_res_pos,
         d_atom_slot=args.d_atom_slot,
-        d_local_frame=args.d_local_frame,
         atom_d_state=args.d_state,
         atom_mimo_rank=args.mimo_rank,
         atom_headdim=args.headdim,
@@ -190,6 +189,16 @@ def rmsd_all_atom(pred_all, true_all, atom_mask):
     if p.shape[0] == 0:
         return float("nan")
     return ((p - t).pow(2).sum(-1).mean().sqrt() * COORD_SCALE).item()
+
+
+def _kabsch_rmsd(P: np.ndarray, Q: np.ndarray) -> float:
+    """Kabsch-aligned RMSD. P, Q: [N, 3]"""
+    P = P - P.mean(0); Q = Q - Q.mean(0)
+    H = P.T @ Q
+    U, _, Vt = np.linalg.svd(H)
+    d = np.linalg.det(Vt.T @ U.T)
+    R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+    return float(np.sqrt(((P @ R.T - Q) ** 2).sum(-1).mean()))
 
 
 # ── train ──────────────────────────────────────────────────────────────────
@@ -432,15 +441,6 @@ def run_evaluation(example, model, device, out_dir=None, n_seeds: int = 3):
     true_ca_ang = true_ca.numpy() * COORD_SCALE
     ca_mask_np  = ca_mask_1d.numpy()
 
-    def _kabsch_rmsd(P: np.ndarray, Q: np.ndarray) -> float:
-        """Kabsch-aligned RMSD. P, Q: [N, 3]"""
-        P = P - P.mean(0); Q = Q - Q.mean(0)
-        H = P.T @ Q
-        U, _, Vt = np.linalg.svd(H)
-        d = np.linalg.det(Vt.T @ U.T)
-        R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
-        return float(np.sqrt(((P @ R.T - Q) ** 2).sum(-1).mean()))
-
     A_dim = ex_centered.atom_mask.shape[1]
     true_all_ang   = true_all.numpy() * COORD_SCALE          # [L, A, 3]
     atom_mask_np   = atom_mask_1d.numpy()                    # [L, A]
@@ -510,46 +510,56 @@ def run_evaluation(example, model, device, out_dir=None, n_seeds: int = 3):
 
     return (np.array(lddts), np.array(rmsds), np.array(rmsds_aa),
             true_ca_np, pred_ca_09, noisy_ca_09,
-            euler_rmsd_arr, euler_rmsd_aa_arr, nag_rmsd_arr, nag_rmsd_aa_arr)
+            euler_rmsd_arr, euler_rmsd_aa_arr, nag_rmsd_arr, nag_rmsd_aa_arr,
+            euler_final_ca_arr, euler_traj_arr,
+            true_ca_ang,
+            nag_final_ca_arr, nag_traj_arr, ca_mask_1d.numpy())
 
 
 # ── plot ───────────────────────────────────────────────────────────────────
 
 def plot_results(loss_curve, gamma_loss_sum, gamma_loss_cnt,
                  lddts, rmsds, rmsds_aa, true_ca_np, pred_ca_09, noisy_ca_09,
-                 args, out_dir):
+                 args, out_dir, euler_ca_np=None, euler_rmsd=None,
+                 euler_traj=None, nag_ca_np=None, nag_rmsd=None, nag_traj=None,
+                 euler_rmsd_arr=None, nag_rmsd_arr=None,
+                 euler_rmsd_aa_arr=None, nag_rmsd_aa_arr=None,
+                 ca_mask_np=None, true_ca_ang=None):
     gamma_vals = np.array(GAMMA_GRID)
-    eqm_losses = gamma_loss_sum / np.maximum(gamma_loss_cnt, 1)
 
-    fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
     fig.suptitle(
-        f"MambaFold EqM — Overfit (1 protein, {args.n_steps} steps, "
+        f"MambaFold EqM — Overfit ({args.n_proteins} proteins, {args.n_steps} steps, "
         f"MIMO rank={args.mimo_rank}, d_res={args.d_res})",
         fontsize=13,
     )
 
-    # 1. Loss curve
+    # (0,0) Loss curve — raw + 50-step rolling avg
     ax = axes[0, 0]
     steps_arr = [x[0] for x in loss_curve]
     losses_arr = [x[1] for x in loss_curve]
+    ax.plot(steps_arr, losses_arr, color="steelblue", lw=0.6, alpha=0.3, label="raw")
     window = 50
-    roll = np.convolve(losses_arr, np.ones(window) / window, mode="valid")
-    ax.plot(steps_arr[window - 1:], roll, lw=1.5, color="steelblue")
-    ax.set_xlabel("Step"); ax.set_ylabel("Loss (50-step avg)")
-    ax.set_title("Training Loss Curve"); ax.grid(alpha=0.3)
+    if len(losses_arr) >= window:
+        roll = np.convolve(losses_arr, np.ones(window) / window, mode="valid")
+        ax.plot(steps_arr[window - 1:], roll, lw=1.5, color="steelblue", label="50-step avg")
+    ax.set_xlabel("Step"); ax.set_ylabel("Loss")
+    ax.set_title("Training Loss Curve"); ax.grid(alpha=0.3); ax.legend(fontsize=8)
 
-    # 2. Training loss curve (per step)
+    # (0,1) Sampler Convergence: ODE step별 Kabsch RMSD
     ax = axes[0, 1]
-    steps = [s for s, _ in loss_curve]
-    losses = [l for _, l in loss_curve]
-    ax.plot(steps, losses, color="coral", lw=0.8, alpha=0.7)
-    window = max(1, len(losses) // 50)
-    smoothed = np.convolve(losses, np.ones(window)/window, mode="valid")
-    ax.plot(steps[window-1:], smoothed, color="darkred", lw=1.5)
-    ax.set_xlabel("Step"); ax.set_ylabel("EqM Loss")
-    ax.set_title(f"Training Loss (batch={args.n_proteins} proteins)"); ax.grid(alpha=0.3)
+    if euler_traj is not None and true_ca_ang is not None and ca_mask_np is not None:
+        T = len(euler_traj)
+        traj_rmsds = [_kabsch_rmsd(euler_traj[t][ca_mask_np], true_ca_ang[ca_mask_np]) for t in range(T)]
+        ax.plot(range(T), traj_rmsds, lw=1.5, color="steelblue", label="Euler")
+    if nag_traj is not None and true_ca_ang is not None and ca_mask_np is not None:
+        T = len(nag_traj)
+        traj_rmsds_nag = [_kabsch_rmsd(nag_traj[t][ca_mask_np], true_ca_ang[ca_mask_np]) for t in range(T)]
+        ax.plot(range(T), traj_rmsds_nag, lw=1.5, color="darkorange", label="NAG")
+    ax.set_xlabel("ODE step"); ax.set_ylabel("Kabsch RMSD (Å)")
+    ax.set_title("Sampler Convergence"); ax.grid(alpha=0.3); ax.legend(fontsize=8)
 
-    # 3. LDDT vs gamma
+    # (0,2) LDDT vs gamma
     ax = axes[0, 2]
     ax.plot(gamma_vals, lddts, "o-", color="seagreen", ms=4, lw=1.5)
     ax.axhline(0.5, ls="--", color="gray", lw=1, label="LDDT=0.5")
@@ -558,33 +568,98 @@ def plot_results(loss_curve, gamma_loss_sum, gamma_loss_cnt,
     ax.set_title("LDDT vs Gamma (eval)"); ax.set_ylim(0, 1)
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-    # 4. RMSD vs gamma (Cα + all-atom)
+    # (1,0) RMSD vs gamma (Cα + all-atom)
     ax = axes[1, 0]
     ax.plot(gamma_vals, rmsds, "s-", color="darkorange", ms=4, lw=1.5, label="Cα")
     ax.plot(gamma_vals, rmsds_aa, "^-", color="purple", ms=4, lw=1.5, label="All-atom")
     ax.set_xlabel("γ"); ax.set_ylabel("RMSD (Å)")
     ax.set_title("RMSD vs Gamma (eval)"); ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-    # 5. Cα overlay at gamma≈0.9
+    # (1,1) Cα XY overlay at gamma≈0.91 + Euler + NAG rollout
     ax = axes[1, 1]
     ax.plot(true_ca_np[:, 0], true_ca_np[:, 1], "b-o", ms=3, lw=1,
-            label="True", alpha=0.8)
+            label="Crystal", alpha=0.8)
     ax.plot(noisy_ca_09[:, 0], noisy_ca_09[:, 1], "g--", ms=2, lw=0.8,
             label="Noisy (γ=0.91)", alpha=0.5)
     ax.plot(pred_ca_09[:, 0], pred_ca_09[:, 1], "r-o", ms=3, lw=1,
-            label="Reconstructed", alpha=0.8)
-    ax.set_title("Cα overlay at γ≈0.9 (XY projection)")
+            label="Recon (γ=0.91)", alpha=0.8)
+    if euler_ca_np is not None:
+        rmsd_label = f"Euler rollout (RMSD={euler_rmsd:.2f}Å)" if euler_rmsd is not None else "Euler rollout"
+        ax.plot(euler_ca_np[:, 0], euler_ca_np[:, 1], "m-^", ms=3, lw=1,
+                label=rmsd_label, alpha=0.8)
+    if nag_ca_np is not None:
+        nag_label = f"NAG rollout (RMSD={nag_rmsd:.2f}Å)" if nag_rmsd is not None else "NAG rollout"
+        ax.plot(nag_ca_np[:, 0], nag_ca_np[:, 1], "c-s", ms=3, lw=1,
+                label=nag_label, alpha=0.8)
+    ax.set_title("Cα overlay (XY projection)")
     ax.legend(fontsize=8); ax.set_aspect("equal"); ax.grid(alpha=0.2)
 
-    # 6. Summary text
+    # (1,2) Cα XZ overlay
     ax = axes[1, 2]
+    ax.plot(true_ca_np[:, 0], true_ca_np[:, 2], "b-o", ms=3, lw=1,
+            label="Crystal", alpha=0.8)
+    ax.plot(noisy_ca_09[:, 0], noisy_ca_09[:, 2], "g--", ms=2, lw=0.8,
+            label="Noisy (γ=0.91)", alpha=0.5)
+    ax.plot(pred_ca_09[:, 0], pred_ca_09[:, 2], "r-o", ms=3, lw=1,
+            label="Recon (γ=0.91)", alpha=0.8)
+    if euler_ca_np is not None:
+        rmsd_label = f"Euler rollout (RMSD={euler_rmsd:.2f}Å)" if euler_rmsd is not None else "Euler rollout"
+        ax.plot(euler_ca_np[:, 0], euler_ca_np[:, 2], "m-^", ms=3, lw=1,
+                label=rmsd_label, alpha=0.8)
+    if nag_ca_np is not None:
+        nag_label = f"NAG rollout (RMSD={nag_rmsd:.2f}Å)" if nag_rmsd is not None else "NAG rollout"
+        ax.plot(nag_ca_np[:, 0], nag_ca_np[:, 2], "c-s", ms=3, lw=1,
+                label=nag_label, alpha=0.8)
+    ax.set_title("Cα overlay (XZ projection)")
+    ax.legend(fontsize=8); ax.set_aspect("equal"); ax.grid(alpha=0.2)
+
+    # (2,0) Euler vs NAG RMSD 비교: bar + scatter jitter
+    ax = axes[2, 0]
+    groups = [
+        ("Euler Cα", euler_rmsd_arr,    "steelblue",    0.0),
+        ("NAG Cα",   nag_rmsd_arr,      "darkorange",   1.0),
+        ("Euler AA", euler_rmsd_aa_arr, "mediumpurple", 2.5),
+        ("NAG AA",   nag_rmsd_aa_arr,   "coral",        3.5),
+    ]
+    rng = np.random.default_rng(0)
+    for lbl, arr, col, xi in groups:
+        if arr is None:
+            continue
+        ax.bar(xi, arr.mean(), width=0.6, color=col, alpha=0.7, label=lbl)
+        ax.errorbar(xi, arr.mean(), yerr=arr.std(), fmt="none", color="black", capsize=4, lw=1.5)
+        jitter = rng.uniform(-0.12, 0.12, len(arr))
+        ax.scatter(xi + jitter, arr, color=col, s=20, zorder=3, alpha=0.8)
+    ax.set_xticks([0, 1, 2.5, 3.5])
+    ax.set_xticklabels(["Euler Cα", "NAG Cα", "Euler AA", "NAG AA"], fontsize=8)
+    ax.set_ylabel("Kabsch RMSD (Å)"); ax.set_title("Sampler RMSD comparison")
+    ax.grid(axis="y", alpha=0.3); ax.legend(fontsize=7)
+
+    # (2,1) Per-residue Cα distance at γ=0.91
+    ax = axes[2, 1]
+    if pred_ca_09 is not None and true_ca_np is not None:
+        per_res = np.linalg.norm(pred_ca_09 - true_ca_np, axis=-1) * COORD_SCALE
+        cmap_vals = np.clip(per_res / max(per_res.max(), 1e-6), 0, 1)
+        bar_colors = plt.cm.RdYlGn_r(cmap_vals)
+        ax.bar(np.arange(len(per_res)), per_res, width=1.0, color=bar_colors)
+        ax.axhline(per_res.mean(), ls="--", color="navy", lw=1.2,
+                   label=f"mean={per_res.mean():.2f} Å")
+        ax.set_xlabel("Residue index"); ax.set_ylabel("Cα distance (Å)")
+        ax.set_title("Per-residue error at γ=0.91")
+        ax.legend(fontsize=8); ax.grid(axis="y", alpha=0.3)
+
+    # (2,2) Summary text
+    ax = axes[2, 2]
     ax.axis("off")
     hi = gamma_vals > 0.7
     lo = gamma_vals < 0.3
+    euler_line = (f"Euler RMSD Cα={euler_rmsd_arr.mean():.2f}Å\n"
+                  if euler_rmsd_arr is not None else "")
+    nag_line   = (f"NAG   RMSD Cα={nag_rmsd_arr.mean():.2f}Å\n"
+                  if nag_rmsd_arr is not None else "")
     summary = (
         f"d_atom={args.d_atom}, d_res={args.d_res}\n"
-        f"n_trunk={args.n_trunk}, mimo_rank={args.mimo_rank}\n"
-        f"Steps: {args.n_steps}\n\n"
+        f"d_state={args.d_state}, mimo_rank={args.mimo_rank}\n"
+        f"n_trunk={args.n_trunk}, Steps={args.n_steps}\n\n"
         f"γ > 0.7 (near-clean):\n"
         f"  LDDT = {lddts[hi].mean():.3f} ± {lddts[hi].std():.3f}\n"
         f"  RMSD = {rmsds[hi].mean():.2f} ± {rmsds[hi].std():.2f} Å\n\n"
@@ -593,7 +668,8 @@ def plot_results(loss_curve, gamma_loss_sum, gamma_loss_cnt,
         f"  RMSD = {rmsds[lo].mean():.2f} ± {rmsds[lo].std():.2f} Å\n\n"
         f"Overall avg LDDT = {lddts.mean():.3f}\n"
         f"Overall avg RMSD (Cα) = {rmsds.mean():.2f} Å\n"
-        f"Overall avg RMSD (all) = {rmsds_aa.mean():.2f} Å"
+        f"Overall avg RMSD (all) = {rmsds_aa.mean():.2f} Å\n\n"
+        f"{euler_line}{nag_line}"
     )
     ax.text(0.05, 0.95, summary, transform=ax.transAxes, fontsize=10,
             va="top", family="monospace",
@@ -604,6 +680,67 @@ def plot_results(loss_curve, gamma_loss_sum, gamma_loss_cnt,
     plt.savefig(viz_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {viz_path}")
+
+
+def plot_rollout(rollout_data, args, out_dir):
+    """Rollout-focused visualization: crystal vs Euler rollout per protein."""
+    N = len(rollout_data)
+    n_seeds = rollout_data[0][1].shape[0]  # euler_final_ca [N_SEEDS, L, 3]
+    cols = min(N, 4)
+    rows = ((N - 1) // cols + 1) * 2  # top row: XY overlay, bottom row: XZ overlay
+
+    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows))
+    if rows == 1:
+        axes = axes[np.newaxis, :]
+    fig.suptitle(
+        f"MambaFold EqM — Rollout ({args.n_proteins} proteins, {args.n_steps} steps)",
+        fontsize=13,
+    )
+
+    for pi, (true_ca, euler_final_ca, euler_traj, euler_rmsd) in enumerate(rollout_data):
+        row_xy = (pi // cols) * 2
+        row_xz = row_xy + 1
+        col = pi % cols
+
+        best = int(euler_rmsd.argmin())
+        final = euler_final_ca[best]   # [L, 3]
+
+        # trajectory frames (subsample to ~5 frames)
+        traj = euler_traj[best] if euler_traj is not None else None  # [T, L, 3]
+
+        for proj, row, ylabel in [((0, 1), row_xy, "Y"), ((0, 2), row_xz, "Z")]:
+            ax = axes[row, col]
+            ax.plot(true_ca[:, proj[0]], true_ca[:, proj[1]],
+                    "b-o", ms=3, lw=1.2, label="Crystal", alpha=0.85)
+            if traj is not None and len(traj) > 0:
+                T = len(traj)
+                for t_idx in np.linspace(0, T - 1, min(5, T), dtype=int):
+                    alpha = 0.15 + 0.3 * t_idx / max(T - 1, 1)
+                    ax.plot(traj[t_idx, :, proj[0]], traj[t_idx, :, proj[1]],
+                            "-", color="orange", lw=0.6, alpha=alpha)
+            ax.plot(final[:, proj[0]], final[:, proj[1]],
+                    "r-^", ms=3, lw=1.2,
+                    label=f"Euler best (RMSD={euler_rmsd[best]:.2f}Å)", alpha=0.85)
+            ax.set_title(f"Protein {pi+1} X{'YZ'[proj[1]-1]} proj", fontsize=9)
+            ax.set_xlabel("X (Å)"); ax.set_ylabel(f"{ylabel} (Å)")
+            ax.set_aspect("equal"); ax.grid(alpha=0.2)
+            if row == row_xy and col == 0:
+                ax.legend(fontsize=7)
+
+    # hide unused axes
+    total_slots = rows * cols
+    for idx in range(N, (rows // 2) * cols):
+        row_xy = (idx // cols) * 2
+        row_xz = row_xy + 1
+        col_i = idx % cols
+        axes[row_xy, col_i].axis("off")
+        axes[row_xz, col_i].axis("off")
+
+    plt.tight_layout()
+    rollout_path = out_dir / "rollout.png"
+    plt.savefig(rollout_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {rollout_path}")
 
 
 # ── main ───────────────────────────────────────────────────────────────────
@@ -643,8 +780,8 @@ def main():
     # Model
     parser.add_argument("--d_atom", type=int, default=256)
     parser.add_argument("--d_res", type=int, default=256)
-    parser.add_argument("--d_state", type=int, default=32)
-    parser.add_argument("--mimo_rank", type=int, default=2)
+    parser.add_argument("--d_state", type=int, default=64)
+    parser.add_argument("--mimo_rank", type=int, default=4)
     parser.add_argument("--headdim", type=int, default=64)
     parser.add_argument("--n_atom_enc", type=int, default=2)
     parser.add_argument("--n_trunk", type=int, default=6)
@@ -765,6 +902,8 @@ def main():
     all_euler_rmsd, all_euler_rmsd_aa = [], []
     all_nag_rmsd,   all_nag_rmsd_aa   = [], []
     true_ca_np = pred_ca_09 = noisy_ca_09 = None   # viz용 첫 단백질 저장
+    rollout_data = []  # rollout.png용 (true_ca, euler_final_ca, euler_traj, euler_rmsd)
+    p0_nfc = p0_ntraj = p0_nr = p0_ca_mask = None
 
     for pi, ex in enumerate(examples):
         print(f"\n{'─'*40}\nEvaluating protein {pi+1}/{len(examples)}...")
@@ -773,13 +912,15 @@ def main():
             out_dir=out_dir if pi == 0 else None,  # npz는 첫 단백질만 저장
             n_seeds=args.n_seeds,
         )
-        lddts_i, rmsds_i, rmsds_aa_i, tc, pc, nc, er, era, nr, nra = result
+        lddts_i, rmsds_i, rmsds_aa_i, tc, pc, nc, er, era, nr, nra, efc, etraj, tca, nfc, ntraj, ca_mask_i = result
         all_lddts.append(lddts_i);    all_rmsds.append(rmsds_i)
         all_rmsds_aa.append(rmsds_aa_i)
         all_euler_rmsd.append(er);    all_euler_rmsd_aa.append(era)
         all_nag_rmsd.append(nr);      all_nag_rmsd_aa.append(nra)
+        rollout_data.append((tca, efc, etraj, er))
         if pi == 0:
             true_ca_np, pred_ca_09, noisy_ca_09 = tc, pc, nc
+            p0_nfc, p0_ntraj, p0_nr, p0_ca_mask = nfc, ntraj, nr, ca_mask_i
         hi = np.array(GAMMA_GRID) > 0.7
         print(f"  γ>0.7  LDDT={lddts_i[hi].mean():.3f}  "
               f"RMSD_Cα={rmsds_i[hi].mean():.2f}Å  "
@@ -839,9 +980,21 @@ def main():
         })
 
     # ── 10. plot ─────────────────────────────────────────────────────────────
+    p0_true, p0_efc, p0_etraj, p0_er = rollout_data[0]
+    best_seed = int(p0_er.argmin())
     plot_results(loss_curve, gamma_loss_sum, gamma_loss_cnt,
                  lddts, rmsds, rmsds_aa, true_ca_np, pred_ca_09, noisy_ca_09,
-                 args, out_dir)
+                 args, out_dir,
+                 euler_ca_np=p0_efc[best_seed],
+                 euler_rmsd=float(p0_er[best_seed]),
+                 euler_traj=p0_etraj[best_seed] if p0_etraj is not None else None,
+                 nag_ca_np=p0_nfc[best_seed] if p0_nfc is not None else None,
+                 nag_rmsd=float(p0_nr[best_seed]) if p0_nr is not None else None,
+                 nag_traj=p0_ntraj[best_seed] if p0_ntraj is not None else None,
+                 euler_rmsd_arr=euler_rmsd_arr, nag_rmsd_arr=nag_rmsd_arr,
+                 euler_rmsd_aa_arr=euler_rmsd_aa_arr, nag_rmsd_aa_arr=nag_rmsd_aa_arr,
+                 ca_mask_np=p0_ca_mask, true_ca_ang=p0_true)
+    plot_rollout(rollout_data, args, out_dir)
     if wandb.run is not None:
         wandb.log({"eval/viz": wandb.Image(str(out_dir / "viz.png"))})
 

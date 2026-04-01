@@ -22,12 +22,11 @@ def build_model(cfg: dict, device: str = "cpu") -> MambaFoldEqM:
         plm_mode=cfg.get("plm_mode", "blend"),
         d_res_pos=cfg.get("d_res_pos", 64),
         d_atom_slot=cfg.get("d_atom_slot", 32),
-        d_local_frame=cfg.get("d_local_frame", 64),
-        atom_d_state=cfg.get("d_state", 32),
-        atom_mimo_rank=cfg.get("mimo_rank", 2),
+        atom_d_state=cfg.get("d_state", 64),
+        atom_mimo_rank=cfg.get("mimo_rank", 4),
         atom_headdim=cfg.get("headdim", 64),
-        d_state=cfg.get("d_state", 32),
-        mimo_rank=cfg.get("mimo_rank", 2),
+        d_state=cfg.get("d_state", 64),
+        mimo_rank=cfg.get("mimo_rank", 4),
         headdim=cfg.get("headdim", 64),
     ).to(torch.device(device))
 

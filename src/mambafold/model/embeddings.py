@@ -2,16 +2,22 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch import Tensor
 
-from mambafold.data.constants import BACKBONE_ATOMS, CA_ATOM_ID, MAX_ATOMS_PER_RES, NUM_AA_TYPES, NUM_ATOM_TYPES, NUM_ELEMENT_TYPES, NUM_PAIR_TYPES, ATOM_TYPE_TO_ELEMENT
+from mambafold.data.constants import MAX_ATOMS_PER_RES, NUM_PAIR_TYPES
 
 
 class CoordinateFourierEmbedder(nn.Module):
     """Fourier positional embedding for 3D coordinates."""
 
     def __init__(self, d_out: int = 128, num_freqs: int = 16):
+        """
+        Args:
+            d_out (int): Output embedding dimension. Default: 128.
+            num_freqs (int): Number of Fourier frequency bands. The raw input
+                dimension is 3 + 3 * 2 * num_freqs (3 raw coords + sin/cos per
+                coord per frequency). Default: 16.
+        """
         super().__init__()
         self.num_freqs = num_freqs
         # 3 coords × (sin + cos) × num_freqs + 3 raw
@@ -27,9 +33,12 @@ class CoordinateFourierEmbedder(nn.Module):
     def forward(self, coords: Tensor) -> Tensor:
         """
         Args:
-            coords: [*, 3]
+            coords (Tensor): 3D coordinates of shape [*, 3].
 
-        Returns: [*, d_out]
+        Returns:
+            Tensor: Fourier-encoded coordinate embedding of shape [*, d_out].
+                Internally expands coords to [*, 3, num_freqs], computes sin/cos,
+                concatenates with raw coords, then projects to d_out.
         """
         # Expand: [*, 3, 1] * [num_freqs] -> [*, 3, num_freqs]
         scaled = coords.unsqueeze(-1) * self.freqs  # [*, 3, F]
@@ -41,6 +50,13 @@ class SequenceFourierEmbedder(nn.Module):
     """Fourier embedding for residue indices with chain-relative normalization."""
 
     def __init__(self, d_out: int = 64, num_freqs: int = 8):
+        """
+        Args:
+            d_out (int): Output embedding dimension. Default: 64.
+            num_freqs (int): Number of Fourier frequency bands. The raw input
+                dimension is 2 + 4 * num_freqs (relative index, normalized index,
+                sin/cos for each at each frequency). Default: 8.
+        """
         super().__init__()
         raw_dim = 2 + 4 * num_freqs
         self.proj = nn.Linear(raw_dim, d_out)
@@ -50,10 +66,14 @@ class SequenceFourierEmbedder(nn.Module):
     def forward(self, seq_nums: Tensor, mask: Tensor) -> Tensor:
         """
         Args:
-            seq_nums: [B, L] integer residue sequence numbers
-            mask: [B, L] bool valid residue mask
+            seq_nums (Tensor): Integer residue sequence numbers of shape [B, L].
+            mask (Tensor): Boolean valid-residue mask of shape [B, L].
+                Padding positions (mask == 0) are zeroed in the output.
 
-        Returns: [B, L, d_out]
+        Returns:
+            Tensor: Sequence position embedding of shape [B, L, d_out].
+                Features: chain-relative index, span-normalized index, and their
+                Fourier sin/cos encodings at num_freqs frequencies.
         """
         seq = seq_nums.to(self.freqs.dtype)
         valid = mask.to(torch.bool)
@@ -80,65 +100,12 @@ class SequenceFourierEmbedder(nn.Module):
         return out * valid.unsqueeze(-1).to(out.dtype)
 
 
-class ResidueLocalFrameEmbedder(nn.Module):
-    """Embed per-residue atom coordinates in a backbone-local frame."""
-
-    def __init__(self, d_out: int = 64, num_freqs: int = 8, eps: float = 1e-6):
-        super().__init__()
-        self.coord_embed = CoordinateFourierEmbedder(d_out=d_out, num_freqs=num_freqs)
-        self.eps = eps
-
-    def forward(self, coords: Tensor, atom_mask: Tensor) -> Tensor:
-        local_coords = self._to_local_frame(coords, atom_mask)
-        out = self.coord_embed(local_coords)
-        return out * atom_mask.unsqueeze(-1).to(out.dtype)
-
-    def _to_local_frame(self, coords: Tensor, atom_mask: Tensor) -> Tensor:
-        n = coords[:, :, 0]
-        ca = coords[:, :, CA_ATOM_ID]
-        c = coords[:, :, 2]
-
-        ca_mask = atom_mask[:, :, CA_ATOM_ID]
-        origin = torch.where(ca_mask.unsqueeze(-1), ca, torch.zeros_like(ca))
-
-        x_vec = c - origin
-        x_norm = torch.linalg.norm(x_vec, dim=-1, keepdim=True)
-        x_axis = x_vec / x_norm.clamp(min=self.eps)
-
-        n_vec = n - origin
-        n_proj = (n_vec * x_axis).sum(dim=-1, keepdim=True) * x_axis
-        y_vec = n_vec - n_proj
-        y_norm = torch.linalg.norm(y_vec, dim=-1, keepdim=True)
-        y_axis = y_vec / y_norm.clamp(min=self.eps)
-
-        z_vec = torch.cross(x_axis, y_axis, dim=-1)
-        z_norm = torch.linalg.norm(z_vec, dim=-1, keepdim=True)
-        z_axis = z_vec / z_norm.clamp(min=self.eps)
-        y_axis = F.normalize(torch.cross(z_axis, x_axis, dim=-1), dim=-1, eps=self.eps)
-
-        frame_ok = (
-            atom_mask[:, :, 0]
-            & ca_mask
-            & atom_mask[:, :, 2]
-            & (x_norm.squeeze(-1) > self.eps)
-            & (y_norm.squeeze(-1) > self.eps)
-            & (z_norm.squeeze(-1) > self.eps)
-        )
-        basis = torch.stack([x_axis, y_axis, z_axis], dim=-1)
-        eye = torch.eye(3, device=coords.device, dtype=coords.dtype).view(1, 1, 3, 3)
-        basis = torch.where(frame_ok.unsqueeze(-1).unsqueeze(-1), basis, eye)
-
-        rel = coords - origin.unsqueeze(2)
-        return torch.einsum("blaj,bljk->blak", rel, basis)
-
-
 class AtomFeatureEmbedder(nn.Module):
-    """Embed atom/residue/pair type and coordinate features into atom tokens.
+    """Embed atom features into atom tokens.
 
-    Three complementary embeddings summed before projection:
-      - res_type_embed:  amino acid identity (broadcast over atoms)
-      - atom_type_embed: atomic element/type properties
-      - pair_embed:      exact (residue, atom) chemical identity (167 unique pairs)
+    Chemical identity: pair_embed (residue×atom joint, 167 unique pairs)
+    Geometry: coord_embed (Fourier)
+    Auxiliary: optional res_pos, optional atom_slot
     """
 
     def __init__(
@@ -147,63 +114,60 @@ class AtomFeatureEmbedder(nn.Module):
         d_fourier: int = 128,
         d_res_pos: int = 0,
         d_atom_slot: int = 0,
-        d_local_frame: int = 0,
     ):
+        """
+        Args:
+            d_atom (int): Atom token embedding dimension. Used for pair_embed
+                output and the final projection output [B, L, A, d_atom].
+                Default: 256.
+            d_fourier (int): Output dimension of the coordinate Fourier embedder
+                [B, L, A, d_fourier]. Default: 128.
+            d_res_pos (int): Dimension of an optional residue-level position
+                feature broadcast to each atom [B, L, d_res_pos → B, L, A, d_res_pos].
+                Set to 0 to disable. Default: 0.
+            d_atom_slot (int): Dimension of per-slot (intra-residue atom index)
+                learnable embedding [A, d_atom_slot]. Set to 0 to disable.
+                Default: 0.
+        """
         super().__init__()
-        self.res_type_embed = nn.Embedding(NUM_AA_TYPES, d_atom)
-        self.atom_type_embed = nn.Embedding(NUM_ATOM_TYPES, d_atom)
         self.pair_embed = nn.Embedding(NUM_PAIR_TYPES, d_atom)
         self.coord_embed = CoordinateFourierEmbedder(d_out=d_fourier)
         self.atom_slot_embed = nn.Embedding(MAX_ATOMS_PER_RES, d_atom_slot) if d_atom_slot > 0 else None
-        self.local_frame_embed = ResidueLocalFrameEmbedder(d_out=d_local_frame) if d_local_frame > 0 else None
-        # Element class embedding (C/N/O/S) — derived from atom_type_id via buffer
-        atom_to_elem = torch.tensor(ATOM_TYPE_TO_ELEMENT, dtype=torch.long)
-        self.register_buffer('atom_to_elem', atom_to_elem)
-        self.element_embed = nn.Embedding(NUM_ELEMENT_TYPES, d_atom)
-        # +1 for observed_mask binary feature (1=observed, 0=missing/padding)
-        # +1 for backbone/sidechain flag
-        in_dim = d_atom + d_fourier + d_res_pos + d_atom_slot + d_local_frame + 2
+        in_dim = d_atom + d_fourier + d_res_pos + d_atom_slot
         self.proj = nn.Linear(in_dim, d_atom)
 
     def forward(
         self,
-        res_type: Tensor,              # [B, L]
-        res_pos_feat: Tensor | None,   # [B, L, d_res_pos]
-        atom_type: Tensor,             # [B, L, A]
         pair_type: Tensor,             # [B, L, A]
         coords: Tensor,                # [B, L, A, 3]
         atom_mask: Tensor,             # [B, L, A]
-        observed_mask: Tensor | None = None,  # [B, L, A] — 1=observed, 0=missing
+        res_pos_feat: Tensor | None = None,  # [B, L, d_res_pos]
     ) -> Tensor:
-        """Returns: [B, L, A, d_atom] atom token embeddings"""
-        B, L, A = atom_type.shape
+        """
+        Args:
+            pair_type (Tensor): Residue-atom pair type indices of shape [B, L, A].
+                Integer values in [0, NUM_PAIR_TYPES).
+            coords (Tensor): Atom 3D coordinates of shape [B, L, A, 3].
+            atom_mask (Tensor): Boolean or float atom validity mask of shape [B, L, A].
+                Padding atoms (mask == 0) are zeroed in the output.
+            res_pos_feat (Tensor | None): Optional residue-level position features
+                of shape [B, L, d_res_pos], broadcast to each atom slot.
+                Pass None when d_res_pos == 0.
 
-        feat = (
-            self.res_type_embed(res_type).unsqueeze(2).expand(-1, -1, A, -1)  # [B, L, A, d_atom]
-            + self.atom_type_embed(atom_type)                                  # [B, L, A, d_atom]
-            + self.pair_embed(pair_type)                                       # [B, L, A, d_atom]
-            + self.element_embed(self.atom_to_elem[atom_type])                 # [B, L, A, d_atom]
-        )
-        parts = [feat, self.coord_embed(coords)]
+        Returns:
+            Tensor: Atom token embeddings of shape [B, L, A, d_atom].
+                Padding atom positions are zeroed via atom_mask.
+        """
+        B, L, A = pair_type.shape
+
+        parts = [self.pair_embed(pair_type), self.coord_embed(coords)]
 
         if res_pos_feat is not None:
             parts.append(res_pos_feat.unsqueeze(2).expand(-1, -1, A, -1))
 
         if self.atom_slot_embed is not None:
             slot_ids = torch.arange(A, device=coords.device)
-            slot_feat = self.atom_slot_embed(slot_ids).view(1, 1, A, -1).expand(B, L, -1, -1)
-            parts.append(slot_feat)
-
-        if self.local_frame_embed is not None:
-            parts.append(self.local_frame_embed(coords, atom_mask))
-
-        # observed_mask binary flag: tells model which atoms are experimentally observed
-        obs = observed_mask if observed_mask is not None else atom_mask
-        parts.append(obs.unsqueeze(-1).to(coords.dtype))  # [B, L, A, 1]
-
-        # backbone/sidechain flag: slots 0-3 are N,CA,C,O (backbone)
-        is_backbone = (torch.arange(A, device=coords.device) < len(BACKBONE_ATOMS)).float()
-        parts.append(is_backbone.view(1, 1, A, 1).expand(B, L, -1, -1))
+            parts.append(self.atom_slot_embed(slot_ids).view(1, 1, A, -1).expand(B, L, -1, -1))
 
         out = self.proj(torch.cat(parts, dim=-1))
         return out * atom_mask.unsqueeze(-1).to(out.dtype)

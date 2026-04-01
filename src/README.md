@@ -25,7 +25,6 @@ src/mambafold/
 │   ├── atom_encoder.py      # AtomEncoder (local attention per-residue)
 │   ├── grouping.py          # group_atoms_to_residues, ResidueToAtomBroadcast
 │   ├── residue_trunk.py     # ResidueTrunk (BiMamba-3 stack)
-│   ├── atom_decoder.py      # AtomDecoder, GradientHead
 │   └── mambafold.py         # MambaFoldEqM (end-to-end)
 ├── losses/                  # Loss functions
 │   ├── __init__.py
@@ -59,13 +58,12 @@ src/mambafold/
 | **data/loader.py** | ✅ Complete | inf_loader for infinite batching |
 | **data/esm.py** | ✅ Complete | ESM3/ESMc PLM integration |
 | **model/embeddings.py** | ✅ Complete | Fourier PE, atom/residue embedders |
-| **model/ssm/mamba3.py** | ✅ Complete | Mamba3Layer wrapper |
-| **model/ssm/bimamba3.py** | ✅ Complete | BiMamba3Block, MambaStack |
+| **model/mamba3.py** | ✅ Complete | Mamba3Layer wrapper |
+| **model/bimamba3.py** | ✅ Complete | BiMamba3Block, MambaStack |
 | **model/blocks.py** | ✅ Complete | RMSNorm, SwiGLU |
 | **model/atom_encoder.py** | ✅ Complete | Local attention (per-residue) |
 | **model/grouping.py** | ✅ Complete | Pool/broadcast atoms ↔ residues |
 | **model/residue_trunk.py** | ✅ Complete | BiMamba-3 residue trunk |
-| **model/atom_decoder.py** | ✅ Complete | Decoder + gradient head |
 | **model/mambafold.py** | ✅ Complete | MambaFoldEqM end-to-end |
 | **losses/eqm.py** | ✅ Complete | EqM loss, truncated c(γ), reconstruction scale |
 | **losses/lddt.py** | ✅ Complete | Differentiable CA-LDDT |
