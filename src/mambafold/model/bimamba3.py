@@ -99,14 +99,14 @@ class Mamba3Layer(nn.Module):
                 Default: 2.
             headdim (int): Dimension per attention head inside the SSM. Default: 64.
             mimo_rank (int): MIMO rank; values > 1 enable MIMO mode. Controls
-                chunk_size = max(1, 64 // mimo_rank). Default: 4.
+                chunk_size = max(1, 32 // mimo_rank). Default: 4.
             dtype: Floating-point dtype forwarded to the underlying Mamba3 kernel.
             device: Device forwarded to the underlying Mamba3 kernel.
             **kwargs: Extra keyword arguments (ignored, for forward-compatibility).
         """
         super().__init__()
         is_mimo = mimo_rank > 1
-        self.chunk_size = max(1, 64 // mimo_rank) if is_mimo else 64
+        self.chunk_size = max(1, 32 // mimo_rank) if is_mimo else 64
         self.ssm = _Mamba3(
             d_model=d_model,
             d_state=d_state,

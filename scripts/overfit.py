@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 
 from mambafold.data.collate import ProteinCollator
 from mambafold.data.constants import CA_ATOM_ID, MAX_ATOMS_PER_RES, PAIR_PAD_ID
-from mambafold.data.dataset import AFDBDataset
+from mambafold.data.dataset import AFDBDataset, RCSBDataset
 from mambafold.data.transforms import center_and_scale
 from mambafold.data.types import ProteinBatch
 from mambafold.losses.eqm import eqm_reconstruction_scale
@@ -91,8 +91,13 @@ class _GPUMonitor:
 
 # ── data ───────────────────────────────────────────────────────────────────
 
-def load_examples(data_dir, n: int = 16):
-    ds = AFDBDataset(data_dir=data_dir, max_length=128)
+def load_examples(data_dir, n: int = 16, max_length: int = 512):
+    data_dir = Path(data_dir)
+    # Auto-detect format: .npz → RCSBDataset, .pt → AFDBDataset
+    if any(data_dir.glob("*.npz")):
+        ds = RCSBDataset(data_dir=str(data_dir), max_length=max_length)
+    else:
+        ds = AFDBDataset(data_dir=str(data_dir), max_length=max_length)
     examples = []
     for i in range(len(ds.files)):
         if len(examples) >= n:
@@ -431,9 +436,9 @@ def run_evaluation(example, model, device, out_dir=None, n_seeds: int = 3):
             pred_09 = model(batch_09)
         scale_09 = eqm_reconstruction_scale(batch_09.gamma)
         x_hat_09 = (batch_09.x_gamma - scale_09 * pred_09)[0].float().cpu()
-        pred_ca_09 = x_hat_09[:, CA_ATOM_ID, :][ca_mask_1d].numpy()
-        true_ca_np = true_ca[ca_mask_1d].numpy()
-        noisy_ca_09 = batch_09.x_gamma[0, :, CA_ATOM_ID, :].float().cpu()[ca_mask_1d].numpy()
+        pred_ca_09 = x_hat_09[:, CA_ATOM_ID, :][ca_mask_1d].numpy() * COORD_SCALE
+        true_ca_np = true_ca[ca_mask_1d].numpy() * COORD_SCALE
+        noisy_ca_09 = batch_09.x_gamma[0, :, CA_ATOM_ID, :].float().cpu()[ca_mask_1d].numpy() * COORD_SCALE
 
     # ── EqM iterative sampling: Euler ODE + NAG ──
     N_SEEDS = n_seeds
@@ -463,7 +468,7 @@ def run_evaluation(example, model, device, out_dir=None, n_seeds: int = 3):
                 traj_arr = np.zeros((N_SEEDS, len(traj_ca), L, 3), dtype=np.float32)
             traj_arr[si] = traj_ca
             rmsd_ca = _kabsch_rmsd(final_ca[ca_mask_np], true_ca_ang[ca_mask_np])
-            # all-atom: Kabsch rotation은 Cα로 구하고 전체 원자에 적용
+            # all-atom: 유효 원자 전체에 Kabsch 적용
             P = final_all.reshape(-1, 3)[atom_mask_flat]
             Q = true_all_ang.reshape(-1, 3)[atom_mask_flat]
             rmsd_aa = _kabsch_rmsd(P, Q)
@@ -577,19 +582,21 @@ def plot_results(loss_curve, gamma_loss_sum, gamma_loss_cnt,
 
     # (1,1) Cα XY overlay at gamma≈0.91 + Euler + NAG rollout
     ax = axes[1, 1]
+    _euler_m = euler_ca_np[ca_mask_np] if (euler_ca_np is not None and ca_mask_np is not None) else euler_ca_np
+    _nag_m   = nag_ca_np[ca_mask_np]   if (nag_ca_np   is not None and ca_mask_np is not None) else nag_ca_np
     ax.plot(true_ca_np[:, 0], true_ca_np[:, 1], "b-o", ms=3, lw=1,
             label="Crystal", alpha=0.8)
     ax.plot(noisy_ca_09[:, 0], noisy_ca_09[:, 1], "g--", ms=2, lw=0.8,
             label="Noisy (γ=0.91)", alpha=0.5)
     ax.plot(pred_ca_09[:, 0], pred_ca_09[:, 1], "r-o", ms=3, lw=1,
             label="Recon (γ=0.91)", alpha=0.8)
-    if euler_ca_np is not None:
+    if _euler_m is not None:
         rmsd_label = f"Euler rollout (RMSD={euler_rmsd:.2f}Å)" if euler_rmsd is not None else "Euler rollout"
-        ax.plot(euler_ca_np[:, 0], euler_ca_np[:, 1], "m-^", ms=3, lw=1,
+        ax.plot(_euler_m[:, 0], _euler_m[:, 1], "m-^", ms=3, lw=1,
                 label=rmsd_label, alpha=0.8)
-    if nag_ca_np is not None:
+    if _nag_m is not None:
         nag_label = f"NAG rollout (RMSD={nag_rmsd:.2f}Å)" if nag_rmsd is not None else "NAG rollout"
-        ax.plot(nag_ca_np[:, 0], nag_ca_np[:, 1], "c-s", ms=3, lw=1,
+        ax.plot(_nag_m[:, 0], _nag_m[:, 1], "c-s", ms=3, lw=1,
                 label=nag_label, alpha=0.8)
     ax.set_title("Cα overlay (XY projection)")
     ax.legend(fontsize=8); ax.set_aspect("equal"); ax.grid(alpha=0.2)
@@ -602,13 +609,13 @@ def plot_results(loss_curve, gamma_loss_sum, gamma_loss_cnt,
             label="Noisy (γ=0.91)", alpha=0.5)
     ax.plot(pred_ca_09[:, 0], pred_ca_09[:, 2], "r-o", ms=3, lw=1,
             label="Recon (γ=0.91)", alpha=0.8)
-    if euler_ca_np is not None:
+    if _euler_m is not None:
         rmsd_label = f"Euler rollout (RMSD={euler_rmsd:.2f}Å)" if euler_rmsd is not None else "Euler rollout"
-        ax.plot(euler_ca_np[:, 0], euler_ca_np[:, 2], "m-^", ms=3, lw=1,
+        ax.plot(_euler_m[:, 0], _euler_m[:, 2], "m-^", ms=3, lw=1,
                 label=rmsd_label, alpha=0.8)
-    if nag_ca_np is not None:
+    if _nag_m is not None:
         nag_label = f"NAG rollout (RMSD={nag_rmsd:.2f}Å)" if nag_rmsd is not None else "NAG rollout"
-        ax.plot(nag_ca_np[:, 0], nag_ca_np[:, 2], "c-s", ms=3, lw=1,
+        ax.plot(_nag_m[:, 0], _nag_m[:, 2], "c-s", ms=3, lw=1,
                 label=nag_label, alpha=0.8)
     ax.set_title("Cα overlay (XZ projection)")
     ax.legend(fontsize=8); ax.set_aspect("equal"); ax.grid(alpha=0.2)
@@ -637,7 +644,7 @@ def plot_results(loss_curve, gamma_loss_sum, gamma_loss_cnt,
     # (2,1) Per-residue Cα distance at γ=0.91
     ax = axes[2, 1]
     if pred_ca_09 is not None and true_ca_np is not None:
-        per_res = np.linalg.norm(pred_ca_09 - true_ca_np, axis=-1) * COORD_SCALE
+        per_res = np.linalg.norm(pred_ca_09 - true_ca_np, axis=-1)
         cmap_vals = np.clip(per_res / max(per_res.max(), 1e-6), 0, 1)
         bar_colors = plt.cm.RdYlGn_r(cmap_vals)
         ax.bar(np.arange(len(per_res)), per_res, width=1.0, color=bar_colors)
@@ -697,26 +704,27 @@ def plot_rollout(rollout_data, args, out_dir):
         fontsize=13,
     )
 
-    for pi, (true_ca, euler_final_ca, euler_traj, euler_rmsd) in enumerate(rollout_data):
+    for pi, (true_ca, euler_final_ca, euler_traj, euler_rmsd, ca_mask) in enumerate(rollout_data):
         row_xy = (pi // cols) * 2
         row_xz = row_xy + 1
         col = pi % cols
 
         best = int(euler_rmsd.argmin())
-        final = euler_final_ca[best]   # [L, 3]
+        final = euler_final_ca[best][ca_mask]   # [N_valid, 3]
+        crystal = true_ca[ca_mask]              # [N_valid, 3]
 
         # trajectory frames (subsample to ~5 frames)
         traj = euler_traj[best] if euler_traj is not None else None  # [T, L, 3]
 
         for proj, row, ylabel in [((0, 1), row_xy, "Y"), ((0, 2), row_xz, "Z")]:
             ax = axes[row, col]
-            ax.plot(true_ca[:, proj[0]], true_ca[:, proj[1]],
+            ax.plot(crystal[:, proj[0]], crystal[:, proj[1]],
                     "b-o", ms=3, lw=1.2, label="Crystal", alpha=0.85)
             if traj is not None and len(traj) > 0:
                 T = len(traj)
                 for t_idx in np.linspace(0, T - 1, min(5, T), dtype=int):
                     alpha = 0.15 + 0.3 * t_idx / max(T - 1, 1)
-                    ax.plot(traj[t_idx, :, proj[0]], traj[t_idx, :, proj[1]],
+                    ax.plot(traj[t_idx, ca_mask, proj[0]], traj[t_idx, ca_mask, proj[1]],
                             "-", color="orange", lw=0.6, alpha=alpha)
             ax.plot(final[:, proj[0]], final[:, proj[1]],
                     "r-^", ms=3, lw=1.2,
@@ -765,6 +773,7 @@ def main():
     # Data
     parser.add_argument("--data_dir", default="afdb_data/train")
     parser.add_argument("--n_proteins", type=int, default=16)
+    parser.add_argument("--max_length", type=int, default=512)
     # Output
     parser.add_argument("--out_dir", default=None,
                         help="Output directory (default: outputs/overfit/<job_id|timestamp>)")
@@ -826,7 +835,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    examples = load_examples(args.data_dir, n=args.n_proteins)
+    examples = load_examples(args.data_dir, n=args.n_proteins, max_length=args.max_length)
     model = build_model(args, device)
 
     # LazyLinear (PLM proj) 초기화: EMA 생성 전 dummy forward 필요
@@ -917,7 +926,7 @@ def main():
         all_rmsds_aa.append(rmsds_aa_i)
         all_euler_rmsd.append(er);    all_euler_rmsd_aa.append(era)
         all_nag_rmsd.append(nr);      all_nag_rmsd_aa.append(nra)
-        rollout_data.append((tca, efc, etraj, er))
+        rollout_data.append((tca, efc, etraj, er, ca_mask_i))
         if pi == 0:
             true_ca_np, pred_ca_09, noisy_ca_09 = tc, pc, nc
             p0_nfc, p0_ntraj, p0_nr, p0_ca_mask = nfc, ntraj, nr, ca_mask_i

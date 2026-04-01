@@ -1,8 +1,9 @@
-"""AFDB dataset loading and canonicalization."""
+"""AFDB / RCSB dataset loading and canonicalization."""
 
 import os
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -131,4 +132,111 @@ class AFDBDataset(Dataset):
             res_seq_nums=res_seq_nums,
             seq_len=L,
             esm=esm_raw,
+        )
+
+
+class RCSBDataset(Dataset):
+    """Dataset for Boltz-style .npz files from rcsb_processed_targets.
+
+    Each .npz contains structured arrays: residues, atoms, chains, coords, etc.
+    Atoms are stored in canonical ref_atoms[res_name] order, so atom names are
+    recovered positionally without decoding the byte-encoded name field.
+    Only protein chains (mol_type == 0) and standard residues are used.
+    """
+
+    MOL_TYPE_PROTEIN = 0
+
+    def __init__(self, data_dir: str, max_length: int = 512):
+        self.data_dir = Path(data_dir)
+        self.max_length = max_length
+        self.files = sorted(self.data_dir.glob("*.npz"))
+        if len(self.files) == 0:
+            raise ValueError(f"No .npz files found in {data_dir}")
+
+    def __len__(self) -> int:
+        return len(self.files)
+
+    def __getitem__(self, idx: int) -> ProteinExample | None:
+        try:
+            data = np.load(self.files[idx])
+            return self._canonicalize(data)
+        except Exception:
+            return None
+
+    def _canonicalize(self, data) -> ProteinExample | None:
+        residues = data["residues"]
+        atoms = data["atoms"]
+        chains = data["chains"]
+
+        # Collect residue indices from protein chains only
+        prot_res_indices = []
+        for ch in chains:
+            if ch["mol_type"] != self.MOL_TYPE_PROTEIN:
+                continue
+            r_start = int(ch["res_idx"])
+            r_end = r_start + int(ch["res_num"])
+            prot_res_indices.extend(range(r_start, r_end))
+
+        if not prot_res_indices:
+            return None
+
+        # Filter to standard amino acids
+        valid = [
+            i for i in prot_res_indices
+            if residues[i]["is_standard"] and residues[i]["name"] in AA_TO_ID
+               and residues[i]["name"] != "UNK"
+        ]
+        if not valid:
+            return None
+
+        # Random crop
+        if len(valid) > self.max_length:
+            start = torch.randint(0, len(valid) - self.max_length, (1,)).item()
+            valid = valid[start: start + self.max_length]
+
+        L = len(valid)
+        A = MAX_ATOMS_PER_RES
+
+        res_type     = torch.zeros(L, dtype=torch.long)
+        atom_type    = torch.full((L, A), ATOM_NAME_TO_ID["PAD"], dtype=torch.long)
+        pair_type    = torch.full((L, A), PAIR_PAD_ID, dtype=torch.long)
+        coords       = torch.zeros(L, A, 3, dtype=torch.float32)
+        atom_mask    = torch.zeros(L, A, dtype=torch.bool)
+        observed_mask = torch.zeros(L, A, dtype=torch.bool)
+        res_seq_nums = torch.arange(L, dtype=torch.long)
+
+        for i, ri in enumerate(valid):
+            res = residues[ri]
+            res_name = str(res["name"])
+            res_type[i] = AA_TO_ID.get(res_name, AA_TO_ID["UNK"])
+
+            slot_map    = RESIDUE_ATOM_TO_SLOT.get(res_name, RESIDUE_ATOM_TO_SLOT["UNK"])
+            canon_names = RESIDUE_ATOMS.get(res_name, [])
+            a_start     = int(res["atom_idx"])
+            a_num       = int(res["atom_num"])
+
+            for j in range(min(a_num, len(canon_names))):
+                atom_name = canon_names[j]
+                if atom_name not in slot_map:
+                    continue
+                slot = slot_map[atom_name]
+                if slot >= A:
+                    continue
+                a = atoms[a_start + j]
+                atom_type[i, slot]    = ATOM_NAME_TO_ID.get(atom_name, ATOM_NAME_TO_ID["PAD"])
+                pair_type[i, slot]    = PAIR_TO_ID.get((res_name, atom_name), PAIR_PAD_ID)
+                coords[i, slot]       = torch.tensor(a["coords"], dtype=torch.float32)
+                atom_mask[i, slot]    = True
+                observed_mask[i, slot] = bool(a["is_present"])
+
+        return ProteinExample(
+            res_type=res_type,
+            atom_type=atom_type,
+            pair_type=pair_type,
+            coords=coords,
+            atom_mask=atom_mask,
+            observed_mask=observed_mask,
+            res_seq_nums=res_seq_nums,
+            seq_len=L,
+            esm=None,
         )

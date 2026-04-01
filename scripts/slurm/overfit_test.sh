@@ -17,7 +17,7 @@ $VENV_PY -c 'import torch; print(f"torch={torch.__version__}, cuda={torch.cuda.i
 
 echo "=== Overfit + Viz ==="
 PYTHONPATH=src PYTHONUNBUFFERED=1 $VENV_PY -u scripts/overfit.py \
-    --config configs/overfit_test.yaml \
+    --config configs/overfit.yaml \
     --out_dir outputs/overfit/${SLURM_JOB_ID} \
     || true
 

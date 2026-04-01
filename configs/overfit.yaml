@@ -3,7 +3,8 @@
 # 여기서 직접 수정하며 실험할 것.
 
 # ── Data ──────────────────────────────────────────────────────────────────
-data_dir: /home/jaemin/project/protein/folding/data/overfit
+data_dir: /home/jaemin/project/protein-ligand/boltz1-finetune/data/rcsb_processed_targets/structures
+max_length: 256
 
 # ── Output ────────────────────────────────────────────────────────────────
 out_dir: null           # null → auto: outputs/overfit/{SLURM_JOB_ID|timestamp}
@@ -16,15 +17,15 @@ grad_clip: 1.0
 gamma_schedule: uniform
 
 # ── Model ─────────────────────────────────────────────────────────────────
-d_atom: 256
-d_res: 256
+d_atom: 384
+d_res: 384
 d_res_pos: 64
 d_state: 64
 mimo_rank: 4
 headdim: 64
-n_atom_enc: 2
-n_trunk: 6
-n_atom_dec: 2
+n_atom_enc: 3
+n_trunk: 8
+n_atom_dec: 3
 
 # ── PLM ───────────────────────────────────────────────────────────────────
 use_plm: false
