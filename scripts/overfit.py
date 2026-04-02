@@ -589,7 +589,7 @@ def plot_results(loss_curve, gamma_loss_sum, gamma_loss_cnt,
     ax.plot(noisy_ca_09[:, 0], noisy_ca_09[:, 1], "g--", ms=2, lw=0.8,
             label="Noisy (γ=0.91)", alpha=0.5)
     ax.plot(pred_ca_09[:, 0], pred_ca_09[:, 1], "r-o", ms=3, lw=1,
-            label="Recon (γ=0.91)", alpha=0.8)
+            label="One-step recon (γ=0.91)", alpha=0.8)
     if _euler_m is not None:
         rmsd_label = f"Euler rollout (RMSD={euler_rmsd:.2f}Å)" if euler_rmsd is not None else "Euler rollout"
         ax.plot(_euler_m[:, 0], _euler_m[:, 1], "m-^", ms=3, lw=1,
@@ -608,7 +608,7 @@ def plot_results(loss_curve, gamma_loss_sum, gamma_loss_cnt,
     ax.plot(noisy_ca_09[:, 0], noisy_ca_09[:, 2], "g--", ms=2, lw=0.8,
             label="Noisy (γ=0.91)", alpha=0.5)
     ax.plot(pred_ca_09[:, 0], pred_ca_09[:, 2], "r-o", ms=3, lw=1,
-            label="Recon (γ=0.91)", alpha=0.8)
+            label="One-step recon (γ=0.91)", alpha=0.8)
     if _euler_m is not None:
         rmsd_label = f"Euler rollout (RMSD={euler_rmsd:.2f}Å)" if euler_rmsd is not None else "Euler rollout"
         ax.plot(_euler_m[:, 0], _euler_m[:, 2], "m-^", ms=3, lw=1,
@@ -710,8 +710,22 @@ def plot_rollout(rollout_data, args, out_dir):
         col = pi % cols
 
         best = int(euler_rmsd.argmin())
-        final = euler_final_ca[best][ca_mask]   # [N_valid, 3]
         crystal = true_ca[ca_mask]              # [N_valid, 3]
+        final_raw = euler_final_ca[best][ca_mask]   # [N_valid, 3]
+
+        # Kabsch-align final and trajectory to crystal for plotting
+        def _kabsch_align(P: np.ndarray, Q: np.ndarray) -> np.ndarray:
+            """Return P rotated+translated to best align with Q."""
+            p_c, q_c = P.mean(0), Q.mean(0)
+            Pc, Qc = P - p_c, Q - q_c
+            H = Pc.T @ Qc
+            U, _, Vt = np.linalg.svd(H)
+            d = np.linalg.det(Vt.T @ U.T)
+            D = np.diag([1.0, 1.0, d])
+            R = Vt.T @ D @ U.T
+            return Pc @ R.T + q_c
+
+        final = _kabsch_align(final_raw, crystal)
 
         # trajectory frames (subsample to ~5 frames)
         traj = euler_traj[best] if euler_traj is not None else None  # [T, L, 3]
@@ -723,8 +737,9 @@ def plot_rollout(rollout_data, args, out_dir):
             if traj is not None and len(traj) > 0:
                 T = len(traj)
                 for t_idx in np.linspace(0, T - 1, min(5, T), dtype=int):
+                    traj_aligned = _kabsch_align(traj[t_idx, ca_mask], crystal)
                     alpha = 0.15 + 0.3 * t_idx / max(T - 1, 1)
-                    ax.plot(traj[t_idx, ca_mask, proj[0]], traj[t_idx, ca_mask, proj[1]],
+                    ax.plot(traj_aligned[:, proj[0]], traj_aligned[:, proj[1]],
                             "-", color="orange", lw=0.6, alpha=alpha)
             ax.plot(final[:, proj[0]], final[:, proj[1]],
                     "r-^", ms=3, lw=1.2,
@@ -989,7 +1004,7 @@ def main():
         })
 
     # ── 10. plot ─────────────────────────────────────────────────────────────
-    p0_true, p0_efc, p0_etraj, p0_er = rollout_data[0]
+    p0_true, p0_efc, p0_etraj, p0_er, _ = rollout_data[0]
     best_seed = int(p0_er.argmin())
     plot_results(loss_curve, gamma_loss_sum, gamma_loss_cnt,
                  lddts, rmsds, rmsds_aa, true_ca_np, pred_ca_09, noisy_ca_09,

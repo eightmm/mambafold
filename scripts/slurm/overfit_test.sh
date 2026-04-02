@@ -3,6 +3,8 @@
 # 직접 실행 시: sbatch --partition=heavy --gres=gpu:h100:1 scripts/slurm/overfit_test.sh
 #SBATCH --job-name=mambafold-overfit
 #SBATCH --output=/home/jaemin/project/protein/folding/outputs/overfit/%j/slurm.out
+#SBATCH --time=4:00:00
+#SBATCH --cpus-per-task=3
 
 set -e
 

@@ -146,9 +146,12 @@ class RCSBDataset(Dataset):
 
     MOL_TYPE_PROTEIN = 0
 
-    def __init__(self, data_dir: str, max_length: int = 512):
+    def __init__(self, data_dir: str, max_length: int = 512,
+                 min_length: int = 20, min_obs_ratio: float = 0.5):
         self.data_dir = Path(data_dir)
         self.max_length = max_length
+        self.min_length = min_length
+        self.min_obs_ratio = min_obs_ratio
         self.files = sorted(self.data_dir.glob("*.npz"))
         if len(self.files) == 0:
             raise ValueError(f"No .npz files found in {data_dir}")
@@ -186,7 +189,7 @@ class RCSBDataset(Dataset):
             if residues[i]["is_standard"] and residues[i]["name"] in AA_TO_ID
                and residues[i]["name"] != "UNK"
         ]
-        if not valid:
+        if len(valid) < self.min_length:
             return None
 
         # Random crop
@@ -228,6 +231,12 @@ class RCSBDataset(Dataset):
                 coords[i, slot]       = torch.tensor(a["coords"], dtype=torch.float32)
                 atom_mask[i, slot]    = True
                 observed_mask[i, slot] = bool(a["is_present"])
+
+        # Filter low-observation structures
+        n_obs = observed_mask.sum().item()
+        n_atoms = atom_mask.sum().item()
+        if n_atoms > 0 and n_obs / n_atoms < self.min_obs_ratio:
+            return None
 
         return ProteinExample(
             res_type=res_type,
