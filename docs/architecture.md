@@ -143,7 +143,7 @@ return self.grad_head(dec_out) * atom_mask.unsqueeze(-1)   # [B, L, A, 3]
 - `grad_head`: `LayerNorm → Linear(d_atom→d_atom/2) → GELU → Linear(→3)`
 - Output: EqM gradient prediction `f(x_γ) ≈ (ε − x)·c(γ)`
 
-## 하이퍼파라미터 요약 (`configs/train_base.yaml`)
+## 하이퍼파라미터 요약 (`configs/pretrain_256.yaml`)
 
 ```yaml
 d_atom:       384    # atom token

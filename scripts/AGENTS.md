@@ -5,15 +5,15 @@
 
 ```bash
 # Single GPU
-PYTHONPATH=src python -u scripts/train.py --config configs/train_base.yaml
+PYTHONPATH=src python -u scripts/train.py --config configs/pretrain_256.yaml
 
 # Multi-GPU (torchrun)
 PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py \
-    --config configs/train_base.yaml
+    --config configs/pretrain_256.yaml
 
 # Resume
 PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py \
-    --config configs/train_base.yaml \
+    --config configs/pretrain_256.yaml \
     --resume outputs/train/run1/ckpt_latest.pt
 ```
 
@@ -24,7 +24,7 @@ Outputs: Checkpoints, W&B logging, config.json
 
 ```bash
 PYTHONPATH=src python -u scripts/overfit.py \
-    --config configs/overfit_base.yaml \
+    --config configs/overfit.yaml \
     --out_dir outputs/overfit/test1
 ```
 

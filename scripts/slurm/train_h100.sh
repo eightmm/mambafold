@@ -19,7 +19,7 @@ nvidia-smi --query-gpu=name,memory.total --format=csv
 
 echo "=== Training (single H100 80GB) ==="
 # Config 선택: CONFIG 환경변수 우선, 없으면 기본 pretrain config
-CONFIG="${CONFIG:-configs/train_base.yaml}"
+CONFIG="${CONFIG:-configs/pretrain_256.yaml}"
 # batch_size는 yaml에서 결정 (pretrain=8, finetune_512=4, finetune_1024=2)
 echo "Config : $CONFIG"
 echo "Resume : ${RESUME:-none}"

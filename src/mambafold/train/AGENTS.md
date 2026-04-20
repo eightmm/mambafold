@@ -70,7 +70,7 @@ ema.switch_to_params()           # Use original weights (for training)
 
 Improves inference stability without changing model weights during training.
 
-## Configuration (train_base.yaml)
+## Configuration (pretrain_256.yaml)
 
 | Setting | Value |
 |---------|-------|

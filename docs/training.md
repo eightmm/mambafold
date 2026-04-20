@@ -108,7 +108,7 @@ flowchart TB
     L12 -- no --> L1
 ```
 
-## 하이퍼파라미터 (`configs/train_base.yaml`)
+## 하이퍼파라미터 (`configs/pretrain_256.yaml`)
 
 ```yaml
 total_steps:    1_000_000
@@ -187,7 +187,7 @@ if oom:
 
 RESUME=outputs/train/26367/ckpt_latest.pt \
 .venv/bin/python -u scripts/train.py \
-    --config configs/train_base.yaml \
+    --config configs/pretrain_256.yaml \
     --batch_size 8 \
     --out_dir outputs/train/${SLURM_JOB_ID} \
     ${RESUME:+--resume $RESUME}

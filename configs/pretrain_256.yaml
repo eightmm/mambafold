@@ -1,14 +1,18 @@
-# MambaFold EqM — full training config (pretrain stage)
+# MambaFold EqM — Stage A: crop=256 pretrain
 #
 # Reference: SimpleFold (arXiv:2509.18480)
-#   - Pretrain: crop 256, batch 512, lr=1e-4, warmup 5000, EMA 0.999
+#   - Pretrain: crop 256, lr=1e-4, warmup 5000, EMA 0.999
 #   - Bc copies per protein (different gamma, same SO(3))
 #   - gamma resampling: 0.98·LN(0.8, 1.7) + 0.02·U(0,1)
-#   - SimpleFold-100M achieves ~90% of ESMFold
 #
-# Hardware: 4x RTX 6000 Ada (48GB each)
-# Estimated model: ~100M params
-# Effective batch: 4GPU × 8batch × 4copies = 128 samples/step
+# Hardware: 1× H100 80GB (heavy partition)
+# Model: ~185M params
+# Effective batch: 8 batch × 4 copies = 32 samples/step (VRAM ~60 GB)
+#
+# Usage:
+#   sbatch scripts/slurm/train_h100.sh   # defaults to this config
+#   # Resume:
+#   RESUME=outputs/train/<run>/ckpt_latest.pt sbatch scripts/slurm/train_h100.sh
 
 # ── Data ──────────────────────────────────────────────────────────────────
 data_dir: data/rcsb
@@ -16,12 +20,10 @@ val_data_dir: null
 file_list: data/splits/train_valid.txt  # protein chain + ESM 유효 파일만 (212K)
 val_file_list: null
 max_length: 256               # pretrain crop (SimpleFold: 256 pretrain, 512 finetune)
-batch_size: 4                 # per-GPU protein count (d_res=768 + copies=4 → ~35GB/GPU)
+batch_size: 8                 # H100 80GB: ~60 GB (leaves ~20 GB headroom)
 num_workers: 4
 copies_per_protein: 4         # Bc: same protein, different gamma (SimpleFold convention)
-                              # effective = 6GPU × 4batch × 4copies = 96 samples/step
-                              # SO(3) rotation: 24 unique/step
-                              # gamma diversity: 96 unique/step
+                              # effective batch = 8 × 4 = 32 samples/step
 
 # ── Output ────────────────────────────────────────────────────────────────
 out_dir: null

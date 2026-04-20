@@ -126,7 +126,7 @@ uv sync
 Python should be executed via `uv run python`:
 
 ```bash
-uv run python scripts/train.py --config configs/train_base.yaml
+uv run python scripts/train.py --config configs/pretrain_256.yaml
 ```
 
 ## Training
@@ -134,27 +134,32 @@ uv run python scripts/train.py --config configs/train_base.yaml
 ### Single GPU
 
 ```bash
-uv run python -u scripts/train.py --config configs/train_base.yaml
+uv run python -u scripts/train.py --config configs/pretrain_256.yaml
 ```
 
-### Multi-GPU DDP (auto-detected from SLURM_GPUS_ON_NODE)
+### Single H100 (main path)
 
 ```bash
-sbatch scripts/slurm/train_6000ada.sh
+sbatch scripts/slurm/train_h100.sh
+# defaults to CONFIG=configs/pretrain_256.yaml
 ```
 
-Or manually with torchrun:
+### Resume / stage transition
 
 ```bash
-uv run torchrun --nproc_per_node=4 scripts/train.py --config configs/train_base.yaml
+# Same-stage resume
+RESUME=outputs/train/<run>/ckpt_latest.pt sbatch scripts/slurm/train_h100.sh
+
+# Stage transition (pretrain 256 → finetune 512, fresh optimizer)
+CONFIG=configs/finetune_512.yaml \
+  RESUME=outputs/train/<pretrain>/ckpt_latest.pt \
+  sbatch scripts/slurm/train_h100.sh --reset_optimizer
 ```
 
-### Resume training
+### Legacy multi-GPU (deprecated; NCCL hangs observed)
 
 ```bash
-uv run torchrun --nproc_per_node=4 scripts/train.py \
-    --config configs/train_base.yaml \
-    --resume outputs/train/run1/ckpt_latest.pt
+sbatch scripts/slurm/train.sh
 ```
 
 ## Overfit Validation
@@ -162,7 +167,7 @@ uv run torchrun --nproc_per_node=4 scripts/train.py \
 Quick validation on a small dataset to verify the model works:
 
 ```bash
-sbatch scripts/slurm/overfit_test.sh
+sbatch scripts/slurm/overfit.sh   # uses configs/overfit.yaml
 ```
 
 Or directly on a GPU node:

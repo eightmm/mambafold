@@ -31,13 +31,13 @@ if [ "${N_GPU}" -gt 1 ]; then
         --nproc_per_node=${N_GPU} \
         --master_port=29500 \
         scripts/train.py \
-        --config configs/train_base.yaml \
+        --config configs/pretrain_256.yaml \
         --out_dir outputs/train/${SLURM_JOB_ID} \
         "$@" \
         ${RESUME:+--resume $RESUME}
 else
     PYTHONPATH=src PYTHONUNBUFFERED=1 $VENV_PY -u scripts/train.py \
-        --config configs/train_base.yaml \
+        --config configs/pretrain_256.yaml \
         --out_dir outputs/train/${SLURM_JOB_ID} \
         "$@" \
         ${RESUME:+--resume $RESUME}
