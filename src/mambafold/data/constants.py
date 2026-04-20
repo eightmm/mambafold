@@ -8,11 +8,8 @@ AA_3TO1 = {
     "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
 }
 
-AA_1TO3 = {v: k for k, v in AA_3TO1.items()}
-
 AA_TO_ID = {aa: i for i, aa in enumerate(sorted(AA_3TO1.keys()))}
 AA_TO_ID["UNK"] = 20
-NUM_AA_TYPES = 21
 
 ID_TO_AA = {v: k for k, v in AA_TO_ID.items()}
 
@@ -21,8 +18,6 @@ MAX_ATOMS_PER_RES = 15
 
 # Canonical heavy atom names per residue type (atom14-style, padded to 14 + OXT)
 # Order: N, CA, C, O, CB, then side-chain specific, then OXT
-BACKBONE_ATOMS = ["N", "CA", "C", "O"]
-BACKBONE_ATOM_IDS = [0, 1, 2, 3]
 CA_ATOM_ID = 1
 
 # Per-residue heavy atom slot table
@@ -58,14 +53,10 @@ RESIDUE_ATOM_TO_SLOT = {
     for res, atoms in RESIDUE_ATOMS.items()
 }
 
-# Number of heavy atoms per residue type
-RESIDUE_ATOM_COUNT = {res: len(atoms) for res, atoms in RESIDUE_ATOMS.items()}
-
 # Atom type vocabulary (unique atom names across all residues)
 _all_atoms = sorted(set(a for atoms in RESIDUE_ATOMS.values() for a in atoms))
 ATOM_NAME_TO_ID = {name: i for i, name in enumerate(_all_atoms)}
 ATOM_NAME_TO_ID["PAD"] = len(_all_atoms)
-NUM_ATOM_TYPES = len(ATOM_NAME_TO_ID)
 
 # Coordinate normalization
 COORD_SCALE = 10.0  # Angstrom -> normalized
@@ -81,24 +72,22 @@ PAIR_TO_ID: dict[tuple[str, str], int] = {p: i for i, p in enumerate(RESIDUE_ATO
 PAIR_PAD_ID: int = len(RESIDUE_ATOM_PAIRS)          # index for empty/padding slots
 NUM_PAIR_TYPES: int = len(RESIDUE_ATOM_PAIRS) + 1   # +1 for PAD
 
-# Element class vocabulary (C/N/O/S)
-ELEMENT_TO_ID = {'C': 0, 'N': 1, 'O': 2, 'S': 3}
-NUM_ELEMENT_TYPES = 5  # C, N, O, S, PAD
+# ── Boltz npz structured array dtypes ────────────────────────────────────────
 
-# Map each atom_type_id → element class id
-# Atom names starting with N→1, O→2, S→3, else C→0; PAD→4
-def _atom_name_to_element(name: str) -> int:
-    if name == 'PAD':
-        return 4
-    if name.startswith('N'):
-        return 1
-    if name.startswith('O'):
-        return 2
-    if name.startswith('S'):
-        return 3
-    return 0  # carbon
+import numpy as np
 
-ATOM_TYPE_TO_ELEMENT: list[int] = [
-    _atom_name_to_element(name)
-    for name, _ in sorted(ATOM_NAME_TO_ID.items(), key=lambda x: x[1])
-]
+BOLTZ_RESIDUES_DTYPE = np.dtype([
+    ("name", "<U5"), ("res_type", "i1"), ("res_idx", "<i4"),
+    ("atom_idx", "<i4"), ("atom_num", "<i4"), ("atom_center", "<i4"),
+    ("atom_disto", "<i4"), ("is_standard", "?"), ("is_present", "?"),
+])
+BOLTZ_ATOMS_DTYPE = np.dtype([
+    ("name", "i1", (4,)), ("element", "i1"), ("charge", "i1"),
+    ("coords", "<f4", (3,)), ("conformer", "<f4", (3,)),
+    ("is_present", "?"), ("chirality", "i1"),
+])
+BOLTZ_CHAINS_DTYPE = np.dtype([
+    ("name", "<U5"), ("mol_type", "i1"), ("entity_id", "<i4"),
+    ("sym_id", "<i4"), ("asym_id", "<i4"), ("atom_idx", "<i4"),
+    ("atom_num", "<i4"), ("res_idx", "<i4"), ("res_num", "<i4"),
+])

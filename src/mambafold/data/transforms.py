@@ -23,6 +23,7 @@ def center_and_scale(example: ProteinExample) -> ProteinExample:
         observed_mask=example.observed_mask,
         res_seq_nums=example.res_seq_nums,
         seq_len=example.seq_len,
+        esm=example.esm,
     )
 
 
@@ -39,6 +40,7 @@ def random_so3_augment(example: ProteinExample) -> ProteinExample:
         observed_mask=example.observed_mask,
         res_seq_nums=example.res_seq_nums,
         seq_len=example.seq_len,
+        esm=example.esm,
     )
 
 
@@ -46,15 +48,16 @@ def _sample_gamma(schedule: str = "logit_normal") -> float:
     """Sample γ from the specified schedule.
 
     schedule:
-      "logit_normal" — p(γ) = 0.90·LN(μ=0.4, σ=1.5) + 0.10·U(0,1)
-                       Balanced coverage for both low and high noise regions.
+      "logit_normal" — p(γ) = 0.98·LN(μ=0.8, σ=1.7) + 0.02·U(0,1)
+                       SimpleFold resampling: oversample near γ→1 (clean data)
+                       for better side-chain structure learning.
       "uniform"      — γ ~ U(0, 1), covers all noise levels equally.
     """
     if schedule == "uniform":
         return float(torch.empty(1).uniform_(0.0, 1.0).item())
-    # logit_normal (default)
-    if torch.rand(1).item() < 0.90:
-        z = torch.randn(1).mul_(1.5).add_(0.4)
+    # logit_normal (SimpleFold: 0.98·LN(0.8, 1.7) + 0.02·U(0,1))
+    if torch.rand(1).item() < 0.98:
+        z = torch.randn(1).mul_(1.7).add_(0.8)
         gamma = torch.sigmoid(z).item()
     else:
         gamma = torch.empty(1).uniform_(0.0, 1.0).item()

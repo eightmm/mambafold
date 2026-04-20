@@ -1,47 +1,70 @@
-# MambaFold EqM — full training config
+# MambaFold EqM — full training config (pretrain stage)
+#
+# Reference: SimpleFold (arXiv:2509.18480)
+#   - Pretrain: crop 256, batch 512, lr=1e-4, warmup 5000, EMA 0.999
+#   - Bc copies per protein (different gamma, same SO(3))
+#   - gamma resampling: 0.98·LN(0.8, 1.7) + 0.02·U(0,1)
+#   - SimpleFold-100M achieves ~90% of ESMFold
+#
+# Hardware: 4x RTX 6000 Ada (48GB each)
+# Estimated model: ~100M params
+# Effective batch: 4GPU × 8batch × 4copies = 128 samples/step
 
 # ── Data ──────────────────────────────────────────────────────────────────
-data_dir: afdb_data/train
-val_data_dir: null          # null → val eval 비활성화
-max_length: 256
-batch_size: 8
+data_dir: data/rcsb
+val_data_dir: null
+file_list: data/splits/train_valid.txt  # protein chain + ESM 유효 파일만 (212K)
+val_file_list: null
+max_length: 256               # pretrain crop (SimpleFold: 256 pretrain, 512 finetune)
+batch_size: 4                 # per-GPU protein count (d_res=768 + copies=4 → ~35GB/GPU)
 num_workers: 4
-copies_per_protein: 1
+copies_per_protein: 4         # Bc: same protein, different gamma (SimpleFold convention)
+                              # effective = 6GPU × 4batch × 4copies = 96 samples/step
+                              # SO(3) rotation: 24 unique/step
+                              # gamma diversity: 96 unique/step
 
 # ── Output ────────────────────────────────────────────────────────────────
-out_dir: null               # null → outputs/train/{SLURM_JOB_ID|timestamp}
-resume: null                # 체크포인트 경로 (resume 시 지정)
+out_dir: null
+resume: null
 
 # ── Training ──────────────────────────────────────────────────────────────
-total_steps: 200000
-lr: 1.0e-4
-warmup_steps: 2000
+total_steps: 1000000          # 96 batch × 1M steps = ~96M samples (~440 epochs on 216K)
+lr: 1.0e-4                    # SimpleFold: 1e-4 (AdamW)
+warmup_steps: 5000            # SimpleFold: 5000 linear warmup
 grad_clip: 1.0
-gamma_schedule: logit_normal
+gamma_schedule: logit_normal  # SimpleFold: 0.98·LN(μ=0.8,σ=1.7) + 0.02·U(0,1)
+ema_decay: 0.999              # SimpleFold: 0.999
 log_interval: 50
-ckpt_interval: 5000
-eval_interval: 0            # 0 → val eval 비활성화
+ckpt_interval: 10000
+eval_interval: 0
+seed: 0
 
 # ── Model ─────────────────────────────────────────────────────────────────
-d_atom: 256
-d_res: 256
-d_res_pos: 64
-d_state: 64
-mimo_rank: 4
-headdim: 64
-n_atom_enc: 2
-n_trunk: 6
-n_atom_dec: 2
-d_atom_slot: 32
+# Trunk-heavy: deep residue trunk + lightweight atom enc/dec
+# Mamba3 = O(L) memory → deeper trunk possible vs attention
+d_atom: 384                   # atom encoder/decoder width
+d_res: 768                    # residue trunk width (main capacity)
+d_res_pos: 64                 # Fourier positional embedding
+d_atom_slot: 32               # per-slot atom embedding
+n_atom_enc: 4                 # atom encoder layers
+n_trunk: 12                   # BiMamba3: bidirectional → 12 sufficient
+n_atom_dec: 4                 # atom decoder layers
+
+# ── Mamba3 SSM ────────────────────────────────────────────────────────────
+d_state: 64                   # SSM state size per head
+mimo_rank: 4                  # MIMO rank (chunk_size=32//4=8)
+headdim: 64                   # head dim → n_heads = 768*2/64 = 24
+expand: 2                     # inner_dim = 768 * 2 = 1536
 
 # ── PLM ───────────────────────────────────────────────────────────────────
-use_plm: false
-d_plm: 1024
-plm_mode: blend
+# ESM3-open (d=1536), pre-computed per chain
+use_plm: true
+d_plm: 1536
+esm_dir: data/rcsb_esm
 
 # ── W&B ───────────────────────────────────────────────────────────────────
 wandb_project: mambafold
 wandb_name: null
-wandb_tags: [train]
+wandb_tags: [train, pretrain]
 wandb_offline: false
 no_wandb: false

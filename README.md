@@ -204,7 +204,31 @@ uv run python scripts/export_inference.py \
     --out outputs/train/run1/inference.npz
 ```
 
+## SSM Hyperparameters
+
+**chunk_size depends on GPU type**:
+- **A5000 / Ampere**: `chunk_size = 32 // mimo_rank` (mimo_rank=4 → 8)
+- **H100 / Hopper**: `chunk_size = 64 // mimo_rank` (mimo_rank=4 → 16)
+
+Using `64 // mimo_rank` on A5000 causes OOM. `Mamba3Layer` auto-detects from `mimo_rank`.
+
+## Implementation Status
+
+| Component | Status |
+|-----------|--------|
+| Data pipeline (AFDB + RCSB) | Complete |
+| Model architecture | Complete |
+| EqM & CA-LDDT losses | Complete |
+| DDP training + EMA | Complete |
+| Cosine warmup LR scheduler | Complete |
+| NAG + Euler samplers | Complete |
+| Overfit validation | Passing |
+| W&B logging | Complete |
+| Full training pipeline | Complete |
+| ESM PLM integration | Complete |
+| RCSBDataset (Boltz .npz) | Complete |
+
 ## Additional Reading
 
-- [Project docs](/home/jaemin/project/protein/folding/docs/README.md)
-- [Paper overview](/home/jaemin/project/protein/folding/docs/papers/OVERVIEW.md)
+- [Project docs](docs/README.md)
+- [Paper overview](docs/papers/OVERVIEW.md)

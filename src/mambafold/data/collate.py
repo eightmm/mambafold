@@ -3,7 +3,6 @@
 from typing import Optional
 
 import torch
-from torch.utils.data import Sampler
 
 from mambafold.data.constants import CA_ATOM_ID, MAX_ATOMS_PER_RES, PAIR_PAD_ID
 from mambafold.data.transforms import center_and_scale, eqm_corrupt, random_so3_augment
@@ -17,19 +16,19 @@ class ProteinCollator:
         self,
         augment: bool = True,
         copies_per_protein: int = 1,
-        esm_cache_dir: Optional[str] = None,
         gamma_schedule: str = "logit_normal",
+        max_length: Optional[int] = None,
     ):
         self.augment = augment
         self.copies_per_protein = copies_per_protein
-        self.esm_cache_dir = esm_cache_dir
         self.gamma_schedule = gamma_schedule
+        self.max_length = max_length
 
-    def __call__(self, examples: list[ProteinExample]) -> ProteinBatch:
+    def __call__(self, examples: list[ProteinExample]) -> ProteinBatch | None:
         # Filter None examples
         examples = [e for e in examples if e is not None]
         if len(examples) == 0:
-            raise ValueError("Empty batch after filtering")
+            return None
 
         # Apply per-example transforms and duplicate for multiple corruptions
         processed = []
@@ -41,7 +40,8 @@ class ProteinCollator:
                 processed.append(ex)
 
         B = len(processed)
-        max_L = max(ex.seq_len for ex in processed)
+        # Use fixed max_length if provided (prevents TileLang recompilation for varying lengths)
+        max_L = self.max_length if self.max_length is not None else max(ex.seq_len for ex in processed)
         A = MAX_ATOMS_PER_RES
 
         # Initialize batch tensors
@@ -76,15 +76,15 @@ class ProteinCollator:
             eps[i, :L] = ep
             gamma[i, 0, 0, 0] = gm
 
-        # Stack ESM3 embeddings if available in all examples
+        # ESM embeddings from pre-computed dataset
         esm = None
         esm_list = [ex.esm for ex in processed]
-        if all(e is not None for e in esm_list):
+        if all(e is not None and e.shape[0] > 0 for e in esm_list):
             d_esm = esm_list[0].shape[-1]
             esm = torch.zeros(B, max_L, d_esm, dtype=torch.float32)
             for i, ex in enumerate(processed):
-                L = ex.seq_len
-                esm[i, :L] = ex.esm
+                n = min(ex.seq_len, ex.esm.shape[0], max_L)
+                esm[i, :n] = ex.esm[:n]
 
         return ProteinBatch(
             res_type=res_type,
@@ -101,48 +101,3 @@ class ProteinCollator:
             gamma=gamma,
             esm=esm,
         )
-
-
-class LengthBucketSampler(Sampler):
-    """Batch proteins by similar length to minimize padding waste."""
-
-    def __init__(self, lengths: list[int], max_atoms: int = 32768, shuffle: bool = True):
-        self.lengths = lengths
-        self.max_atoms = max_atoms
-        self.shuffle = shuffle
-
-    def __iter__(self):
-        # Sort indices by length
-        indices = sorted(range(len(self.lengths)), key=lambda i: self.lengths[i])
-        if self.shuffle:
-            # Add small random perturbation to avoid identical batches
-            import random
-            random.shuffle(indices)
-            indices = sorted(indices, key=lambda i: self.lengths[i] + random.randint(-10, 10))
-
-        # Greedily fill batches by atom count
-        batches = []
-        current_batch = []
-        current_atoms = 0
-
-        for idx in indices:
-            atom_count = self.lengths[idx] * MAX_ATOMS_PER_RES
-            if current_atoms + atom_count > self.max_atoms and len(current_batch) > 0:
-                batches.append(current_batch)
-                current_batch = []
-                current_atoms = 0
-            current_batch.append(idx)
-            current_atoms += atom_count
-
-        if current_batch:
-            batches.append(current_batch)
-
-        if self.shuffle:
-            import random
-            random.shuffle(batches)
-
-        yield from batches
-
-    def __len__(self):
-        # Approximate number of batches based on average atom count per protein
-        return max(1, len(self.lengths) * MAX_ATOMS_PER_RES // self.max_atoms)

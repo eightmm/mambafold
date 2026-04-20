@@ -5,7 +5,6 @@ import torch.nn as nn
 from torch import Tensor
 
 from mambafold.data.constants import MAX_ATOMS_PER_RES
-from mambafold.data.esm import EvolutionaryScalePLM
 from mambafold.data.types import ProteinBatch
 from mambafold.model.embeddings import AtomFeatureEmbedder, SequenceFourierEmbedder
 from mambafold.model.bimamba3 import MambaStack
@@ -75,14 +74,11 @@ class MambaFoldEqM(nn.Module):
         self,
         d_atom: int = 256,
         d_res: int = 768,
-        d_plm: int = 1024,
+        d_plm: int = 1536,
         n_atom_enc: int = 4,
         n_trunk: int = 24,
         n_atom_dec: int = 4,
         use_plm: bool = True,
-        plm_mode: str = "blend",
-        esm3_model_name: str = "esm3-open",
-        esmc_model_name: str = "esmc_600m",
         d_res_pos: int = 0,
         d_atom_slot: int = 0,
         # Atom encoder/decoder SSM config
@@ -105,8 +101,8 @@ class MambaFoldEqM(nn.Module):
                 Default: 256.
             d_res (int): Residue token dimension in the trunk.
                 Residue tensors have shape [B, L, d_res]. Default: 768.
-            d_plm (int): Output dimension of the protein language model (PLM).
-                PLM embeddings have shape [B, L, d_plm]. Default: 1024.
+            d_plm (int): ESM3 embedding dimension. Must match the pre-computed
+                embeddings loaded via esm_dir (ESM3-open = 1536). Default: 1536.
             n_atom_enc (int): Number of MambaStack layers in the atom encoder.
                 Default: 4.
             n_trunk (int): Number of MambaStack layers in the residue trunk.
@@ -114,11 +110,7 @@ class MambaFoldEqM(nn.Module):
             n_atom_dec (int): Number of MambaStack layers in the atom decoder.
                 Default: 4.
             use_plm (bool): If True, concatenate PLM embeddings [B, L, d_plm]
-                into the trunk input. Default: True.
-            plm_mode (str): Blending mode passed to EvolutionaryScalePLM
-                ("blend" or "esm3" or "esmc"). Default: "blend".
-            esm3_model_name (str): ESM3 model identifier. Default: "esm3-open".
-            esmc_model_name (str): ESMC model identifier. Default: "esmc_600m".
+                into the trunk input. Requires batch.esm to be non-None. Default: True.
             d_res_pos (int): Dimension of the sequence-position Fourier embedding
                 [B, L, d_res_pos] broadcast into atom and trunk features.
                 Set to 0 to disable. Default: 0.
@@ -149,12 +141,12 @@ class MambaFoldEqM(nn.Module):
                                        expand=atom_expand, headdim=atom_headdim, bidirectional=atom_bidirectional)
 
         self.use_plm = use_plm
+        self.d_plm = d_plm
         if use_plm:
-            self.plm = EvolutionaryScalePLM(d_out=d_plm, mode=plm_mode,
-                                            esm3_model_name=esm3_model_name, esmc_model_name=esmc_model_name)
+            self.plm_proj = nn.Linear(d_plm, d_plm)
             trunk_in_dim = d_atom + d_plm + d_res_pos + 2
         else:
-            self.plm = None
+            self.plm_proj = None
             trunk_in_dim = d_atom + d_res_pos + 2
 
         self.trunk_proj = nn.Linear(trunk_in_dim, d_res)
@@ -208,10 +200,12 @@ class MambaFoldEqM(nn.Module):
         # 2. Grouping: atoms → residues
         res0 = group_atoms_to_residues(atom, batch.atom_mask)  # [B, L, d_atom]
 
-        # 3. PLM conditioning
+        # 3. PLM conditioning (zero-fill if ESM missing for some examples)
         plm = None
         if self.use_plm:
-            plm = batch.esm if batch.esm is not None else (self.plm(batch.res_type, batch.res_mask) if self.plm else None)
+            esm = batch.esm if batch.esm is not None else torch.zeros(
+                B, L, self.d_plm, device=batch.res_type.device, dtype=res0.dtype)
+            plm = self.plm_proj(esm)
 
         # 4. Trunk
         obs_frac = (batch.valid_mask.float().sum(dim=-1) /

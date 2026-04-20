@@ -17,7 +17,7 @@ class ProteinExample:
     observed_mask: torch.Tensor   # [L, A] bool — experimentally observed atoms
     res_seq_nums: torch.Tensor    # [L] int — residue sequence numbers
     seq_len: int                  # number of residues
-    esm: Optional[torch.Tensor] = None  # [L, 1536] float — pre-cached ESM3 embeddings
+    esm: Optional[torch.Tensor] = None  # [L, d_esm] float — pre-computed ESM embeddings
 
 
 @dataclass

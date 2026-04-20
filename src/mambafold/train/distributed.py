@@ -3,6 +3,7 @@
 import os
 import subprocess
 import threading
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -17,8 +18,10 @@ def setup_dist():
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if local_rank < 0:
         return False, 0, 1, "cuda" if torch.cuda.is_available() else "cpu"
-    dist.init_process_group("nccl")
+
     torch.cuda.set_device(local_rank)
+    backend = os.environ.get("DIST_BACKEND", "nccl")
+    dist.init_process_group(backend, timeout=timedelta(minutes=30))
     return True, dist.get_rank(), dist.get_world_size(), f"cuda:{local_rank}"
 
 

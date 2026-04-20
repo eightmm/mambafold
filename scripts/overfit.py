@@ -15,9 +15,7 @@ Output (all in --out_dir):
 
 import argparse
 import json
-import subprocess
 import sys
-import threading
 from pathlib import Path
 
 import numpy as np
@@ -33,7 +31,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from mambafold.data.collate import ProteinCollator
-from mambafold.data.constants import CA_ATOM_ID, MAX_ATOMS_PER_RES, PAIR_PAD_ID
+from mambafold.data.constants import CA_ATOM_ID
 from mambafold.data.dataset import AFDBDataset, RCSBDataset
 from mambafold.data.transforms import center_and_scale
 from mambafold.data.types import ProteinBatch
@@ -46,47 +44,9 @@ from mambafold.train.trainer import cosine_warmup_lr
 # ── constants ──────────────────────────────────────────────────────────────
 
 GAMMA_GRID = [(i + 0.5) / 50 for i in range(50)]   # 0.01, 0.03, ..., 0.99
-COORD_SCALE = 10.0
-
-
-# ── GPU monitor ─────────────────────────────────────────────────────────────
-
-class _GPUMonitor:
-    """Background thread: polls nvidia-smi every `interval` seconds."""
-
-    def __init__(self, interval: int = 30):
-        self.interval = interval
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def start(self):
-        self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        self._thread.join(timeout=5)
-
-    def _run(self):
-        while not self._stop.wait(self.interval):
-            try:
-                out = subprocess.check_output(
-                    [
-                        "nvidia-smi",
-                        "--query-gpu=index,name,utilization.gpu,memory.used,memory.total",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    text=True,
-                ).strip()
-                for line in out.splitlines():
-                    idx, name, util, used, total = [x.strip() for x in line.split(",")]
-                    print(
-                        f"  [GPU:{idx}] {name} | util={util}% | vram={used}/{total} MiB",
-                        flush=True,
-                    )
-                    if wandb.run is not None:
-                        wandb.log({"gpu/util_pct": int(util), "gpu/vram_used_mib": int(used)})
-            except Exception:
-                pass
+from mambafold.data.constants import COORD_SCALE
+from mambafold.data.loader import _has_files as has_files
+from mambafold.train.distributed import GPUMonitor as _GPUMonitor
 
 
 # ── data ───────────────────────────────────────────────────────────────────
@@ -94,7 +54,7 @@ class _GPUMonitor:
 def load_examples(data_dir, n: int = 16, max_length: int = 512):
     data_dir = Path(data_dir)
     # Auto-detect format: .npz → RCSBDataset, .pt → AFDBDataset
-    if any(data_dir.glob("*.npz")):
+    if has_files(data_dir, "*.npz"):
         ds = RCSBDataset(data_dir=str(data_dir), max_length=max_length)
     else:
         ds = AFDBDataset(data_dir=str(data_dir), max_length=max_length)
@@ -148,7 +108,6 @@ def build_model(args, device):
         n_trunk=args.n_trunk,
         n_atom_dec=args.n_atom_dec,
         use_plm=getattr(args, "use_plm", False),
-        plm_mode=getattr(args, "plm_mode", "blend"),
         d_res_pos=args.d_res_pos,
         d_atom_slot=args.d_atom_slot,
         atom_d_state=args.d_state,
@@ -812,12 +771,11 @@ def main():
     parser.add_argument("--n_atom_dec", type=int, default=2)
     parser.add_argument("--d_res_pos", type=int, default=64)
     parser.add_argument("--d_atom_slot", type=int, default=32)
-    parser.add_argument("--d_local_frame", type=int, default=64)
     # PLM
     parser.add_argument("--use_plm", action="store_true", default=False)
-    parser.add_argument("--d_plm", type=int, default=1024)
-    parser.add_argument("--plm_mode", default="blend",
-                        help="blend | esm3 | esmc")
+    parser.add_argument("--d_plm", type=int, default=1536)
+    parser.add_argument("--esm_dir", default=None,
+                        help="Dir with pre-computed ESM .npy files")
     parser.add_argument("--gamma_schedule", default="logit_normal",
                         help="logit_normal | uniform")
     parser.add_argument("--n_seeds", type=int, default=3,

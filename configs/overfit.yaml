@@ -3,7 +3,7 @@
 # 여기서 직접 수정하며 실험할 것.
 
 # ── Data ──────────────────────────────────────────────────────────────────
-data_dir: /home/jaemin/project/protein/folding/data/rcsb
+data_dir: /home/jaemin/DB/RCSB/processed/structures/rcsb_processed_targets_v2
 max_length: 256
 
 # ── Output ────────────────────────────────────────────────────────────────
@@ -26,9 +26,11 @@ headdim: 64
 n_atom_enc: 3
 n_trunk: 8
 n_atom_dec: 3
+d_atom_slot: 32
 
 # ── PLM ───────────────────────────────────────────────────────────────────
 use_plm: false
+esm_dir: null
 
 # ── W&B ───────────────────────────────────────────────────────────────────
 wandb_project: mambafold

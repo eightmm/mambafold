@@ -1,7 +1,38 @@
 """Geometry utilities for protein coordinate operations."""
 
+import numpy as np
 import torch
 from torch import Tensor
+
+
+# ── NumPy utilities (for inference / visualization) ──────────────────────────
+
+def kabsch_align(mobile: np.ndarray, ref: np.ndarray):
+    """Kabsch-align mobile onto ref. Both [N, 3].
+
+    Returns:
+        aligned: [N, 3] aligned mobile coordinates
+        R: [3, 3] rotation matrix
+        rmsd: float Kabsch RMSD
+    """
+    t_ref = ref.mean(0)
+    t_mob = mobile.mean(0)
+    r = ref - t_ref
+    m = mobile - t_mob
+    H = m.T @ r
+    U, S, Vt = np.linalg.svd(H)
+    d = np.linalg.det(Vt.T @ U.T)
+    D = np.diag([1.0, 1.0, d])
+    R = Vt.T @ D @ U.T
+    aligned = (m @ R.T) + t_ref
+    rmsd = float(np.sqrt(((aligned - ref) ** 2).sum(-1).mean()))
+    return aligned, R, rmsd
+
+
+def kabsch_rmsd(pred: np.ndarray, true: np.ndarray, mask: np.ndarray) -> float:
+    """Kabsch-aligned RMSD for masked Cα coordinates."""
+    _, _, rmsd = kabsch_align(pred[mask], true[mask])
+    return rmsd
 
 
 def random_rotation_matrix(device: torch.device = None) -> Tensor:
@@ -59,17 +90,3 @@ def apply_rotation(coords: Tensor, rot: Tensor) -> Tensor:
     return coords @ rot.T
 
 
-def pairwise_distances(coords: Tensor, mask: Tensor) -> tuple[Tensor, Tensor]:
-    """Compute pairwise distances between atoms.
-
-    Args:
-        coords: [*, N, 3]
-        mask: [*, N] bool
-
-    Returns:
-        dists: [*, N, N] distances
-        pair_mask: [*, N, N] bool — both atoms valid
-    """
-    dists = torch.linalg.norm(coords.unsqueeze(-2) - coords.unsqueeze(-3), dim=-1)
-    pair_mask = mask.unsqueeze(-1) & mask.unsqueeze(-2)
-    return dists, pair_mask

@@ -40,34 +40,7 @@ from mambafold.data.dataset import AFDBDataset
 from mambafold.data.transforms import center_and_scale
 from mambafold.data.types import ProteinBatch
 from mambafold.losses.eqm import eqm_reconstruction_scale
-from mambafold.model.mambafold import MambaFoldEqM
-
-
-# ── helpers ────────────────────────────────────────────────────────────────
-
-def load_model(ckpt_path: str, device: str):
-    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-    a = ckpt["args"]
-    model = MambaFoldEqM(
-        d_atom=a["d_atom"],
-        d_res=a["d_res"],
-        d_plm=32,
-        n_atom_enc=a["n_atom_enc"],
-        n_trunk=a["n_trunk"],
-        n_atom_dec=a["n_atom_dec"],
-        use_plm=False,
-        d_res_pos=a.get("d_res_pos", 0),
-        d_atom_slot=a.get("d_atom_slot", 0),
-        atom_d_state=a["d_state"],
-        atom_mimo_rank=a["mimo_rank"],
-        atom_headdim=a["headdim"],
-        d_state=a["d_state"],
-        mimo_rank=a["mimo_rank"],
-        headdim=a["headdim"],
-    ).to(device)
-    model.load_state_dict(ckpt["model"])
-    model.eval()
-    return model
+from mambafold.train.trainer import load_from_checkpoint
 
 
 def load_example(data_dir: str, idx: int = 0):
@@ -264,9 +237,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    model = load_model(args.ckpt, device)
-    n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"Model: {n_params:.2f}M params")
+    model = load_from_checkpoint(args.ckpt, device, use_ema=False)
 
     example = load_example(args.data_dir, args.protein_idx)
     ex_c = center_and_scale(example)

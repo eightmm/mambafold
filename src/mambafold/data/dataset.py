@@ -1,6 +1,5 @@
 """AFDB / RCSB dataset loading and canonicalization."""
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -35,7 +34,7 @@ class AFDBDataset(Dataset):
 
         # Collect struct .pt files, excluding ESM cache files
         self.files = sorted(
-            f for f in self.data_dir.glob("*.pt")
+            f for f in self.data_dir.rglob("*.pt")
             if not (f.name.endswith(".esm3.pt") or f.name.endswith(".esmc.pt"))
         )
         if len(self.files) == 0:
@@ -147,55 +146,78 @@ class RCSBDataset(Dataset):
     MOL_TYPE_PROTEIN = 0
 
     def __init__(self, data_dir: str, max_length: int = 512,
-                 min_length: int = 20, min_obs_ratio: float = 0.5):
+                 min_length: int = 20, min_obs_ratio: float = 0.5,
+                 file_list: str | None = None, esm_dir: str | None = None):
         self.data_dir = Path(data_dir)
         self.max_length = max_length
         self.min_length = min_length
         self.min_obs_ratio = min_obs_ratio
-        self.files = sorted(self.data_dir.glob("*.npz"))
+        self.esm_dir = Path(esm_dir) if esm_dir else None
+        if file_list is not None:
+            self.files = sorted(
+                self.data_dir / line.strip()
+                for line in Path(file_list).read_text().splitlines()
+                if line.strip()
+            )
+        else:
+            self.files = sorted(self.data_dir.rglob("*.npz"))
         if len(self.files) == 0:
             raise ValueError(f"No .npz files found in {data_dir}")
 
     def __len__(self) -> int:
         return len(self.files)
 
-    def __getitem__(self, idx: int) -> ProteinExample | None:
-        try:
-            data = np.load(self.files[idx])
-            return self._canonicalize(data)
-        except Exception:
-            return None
+    def __getitem__(self, idx: int) -> ProteinExample:
+        n = len(self.files)
+        for attempt in range(n):
+            i = (idx + attempt) % n
+            try:
+                path = self.files[i]
+                data = np.load(path)
+                ex = self._canonicalize(data, path)
+            except Exception:
+                ex = None
+            if ex is not None:
+                return ex
+        raise RuntimeError("RCSBDataset: no valid sample in entire dataset")
 
-    def _canonicalize(self, data) -> ProteinExample | None:
+    def _canonicalize(self, data, path: Path | None = None) -> ProteinExample | None:
         residues = data["residues"]
         atoms = data["atoms"]
         chains = data["chains"]
 
-        # Collect residue indices from protein chains only
-        prot_res_indices = []
+        # Collect residue indices per protein chain (track original index for ESM lookup)
+        protein_chains = []       # filtered residue lists
+        protein_chain_origins = [] # original protein-chain index (matches precompute _ch{j}.npy)
+        prot_chain_idx = 0
         for ch in chains:
             if ch["mol_type"] != self.MOL_TYPE_PROTEIN:
                 continue
             r_start = int(ch["res_idx"])
             r_end = r_start + int(ch["res_num"])
-            prot_res_indices.extend(range(r_start, r_end))
+            chain_valid = [
+                i for i in range(r_start, r_end)
+                if residues[i]["is_standard"] and residues[i]["name"] in AA_TO_ID
+                   and residues[i]["name"] != "UNK"
+            ]
+            if len(chain_valid) >= self.min_length:
+                protein_chains.append(chain_valid)
+                protein_chain_origins.append(prot_chain_idx)
+            prot_chain_idx += 1
 
-        if not prot_res_indices:
+        if not protein_chains:
             return None
 
-        # Filter to standard amino acids
-        valid = [
-            i for i in prot_res_indices
-            if residues[i]["is_standard"] and residues[i]["name"] in AA_TO_ID
-               and residues[i]["name"] != "UNK"
-        ]
-        if len(valid) < self.min_length:
-            return None
+        # Pick one chain randomly
+        pick = int(torch.randint(0, len(protein_chains), (1,)).item())
+        valid = protein_chains[pick]
+        esm_chain_idx = protein_chain_origins[pick]  # for ESM file lookup
 
         # Random crop
+        esm_start = 0
         if len(valid) > self.max_length:
-            start = torch.randint(0, len(valid) - self.max_length, (1,)).item()
-            valid = valid[start: start + self.max_length]
+            esm_start = int(torch.randint(0, len(valid) - self.max_length, (1,)).item())
+            valid = valid[esm_start: esm_start + self.max_length]
 
         L = len(valid)
         A = MAX_ATOMS_PER_RES
@@ -238,6 +260,17 @@ class RCSBDataset(Dataset):
         if n_atoms > 0 and n_obs / n_atoms < self.min_obs_ratio:
             return None
 
+        # ESM embedding (pre-computed per chain)
+        esm = None
+        if self.esm_dir is not None and path is not None:
+            esm_path = self.esm_dir / f"{path.stem}_ch{esm_chain_idx}.npy"
+            if esm_path.exists():
+                try:
+                    arr = np.load(esm_path)          # [n_chain_residues, d_esm]
+                    esm = torch.from_numpy(arr[esm_start:esm_start + L].copy())
+                except Exception:
+                    pass
+
         return ProteinExample(
             res_type=res_type,
             atom_type=atom_type,
@@ -247,5 +280,5 @@ class RCSBDataset(Dataset):
             observed_mask=observed_mask,
             res_seq_nums=res_seq_nums,
             seq_len=L,
-            esm=None,
+            esm=esm,
         )

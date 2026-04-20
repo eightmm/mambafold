@@ -1,128 +1,83 @@
-"""On-the-fly protein language model embeddings via EvolutionaryScale ESM."""
+"""Standalone ESM embedding extractor (not part of model weights).
+
+Usage:
+    embedder = ESMEmbedder("esm3-open")
+    # In collator or inference:
+    esm_out = embedder(sequences, max_length=384)  # [B, max_length, d_esm]
+"""
 
 from __future__ import annotations
 
-from typing import Iterable
-
 import torch
-import torch.nn as nn
 from torch import Tensor
 
-from mambafold.data.constants import AA_3TO1, ID_TO_AA
 
-SUPPORTED_PLM_MODES = {"esm3", "esmc", "blend", "concat"}
+class ESMEmbedder:
+    """Standalone ESM embedding extractor.
 
+    Loads an ESM model (ESMC or ESM3) and extracts per-residue embeddings.
+    Not an nn.Module — ESM weights are never part of the training model.
+    """
 
-def residue_ids_to_sequences(res_type: Tensor, res_mask: Tensor) -> list[str]:
-    """Convert residue type IDs into one-letter protein sequences."""
-    sequences: list[str] = []
-    for ids, mask in zip(res_type, res_mask):
-        tokens = []
-        for aa_id in ids[mask].tolist():
-            aa3 = ID_TO_AA.get(int(aa_id), "UNK")
-            tokens.append(AA_3TO1.get(aa3, "X"))
-        sequences.append("".join(tokens))
-    return sequences
+    def __init__(self, model_name: str = "esm3-open", device: str = "cuda"):
+        self.model_name = model_name
+        self.device = torch.device(device)
+        self._client = None
+        self._api = None
+        self.d_esm: int | None = None
 
+    @torch.no_grad()
+    def __call__(
+        self, sequences: list[str], max_length: int | None = None,
+    ) -> Tensor:
+        """Extract ESM embeddings for a list of protein sequences.
 
-class EvolutionaryScalePLM(nn.Module):
-    """Frozen ESM3/ESMC embedder with selectable or mixed outputs."""
+        Args:
+            sequences: List of one-letter amino acid sequences.
+            max_length: Pad/truncate to this length. If None, use max seq len.
 
-    def __init__(
-        self,
-        d_out: int = 1024,
-        mode: str = "blend",
-        esm3_model_name: str = "esm3-open",
-        esmc_model_name: str = "esmc_600m",
-    ):
-        super().__init__()
-        if mode not in SUPPORTED_PLM_MODES:
-            raise ValueError(f"Unsupported PLM mode: {mode}")
+        Returns:
+            Tensor of shape [B, L, d_esm] (float32, on self.device).
+        """
+        client = self._get_client()
+        _, _, ESMProtein, LogitsConfig = self._get_api()
 
-        self.d_out = d_out
-        self.mode = mode
-        self.esm3_model_name = esm3_model_name
-        self.esmc_model_name = esmc_model_name
-
-        self.esm3_proj = nn.LazyLinear(d_out)
-        self.esmc_proj = nn.LazyLinear(d_out)
-        self.mix_gate = nn.Sequential(
-            nn.Linear(2 * d_out, d_out),
-            nn.SiLU(),
-            nn.Linear(d_out, d_out),
-        )
-        self.concat_proj = nn.Linear(2 * d_out, d_out)
-
-        self._esm3_client = None
-        self._esmc_client = None
-        self._esm_api = None
-
-    def forward(self, res_type: Tensor, res_mask: Tensor) -> Tensor:
-        """Return [B, L, d_out] PLM embeddings padded to batch length."""
-        sequences = residue_ids_to_sequences(res_type, res_mask)
-        device = res_type.device
-
-        if self.mode == "esm3":
-            esm3 = self.esm3_proj(self._embed_esm3(sequences, device))
-            return esm3 * res_mask.unsqueeze(-1).to(esm3.dtype)
-
-        if self.mode == "esmc":
-            esmc = self.esmc_proj(self._embed_esmc(sequences, device))
-            return esmc * res_mask.unsqueeze(-1).to(esmc.dtype)
-
-        esm3 = self.esm3_proj(self._embed_esm3(sequences, device))
-        esmc = self.esmc_proj(self._embed_esmc(sequences, device))
-
-        if self.mode == "blend":
-            gate = torch.sigmoid(self.mix_gate(torch.cat([esm3, esmc], dim=-1)))
-            mixed = gate * esm3 + (1.0 - gate) * esmc
-        else:
-            mixed = self.concat_proj(torch.cat([esm3, esmc], dim=-1))
-
-        return mixed * res_mask.unsqueeze(-1).to(mixed.dtype)
-
-    def _embed_esm3(self, sequences: Iterable[str], device: torch.device) -> Tensor:
-        client = self._get_esm3_client(device)
-        return self._embed_sequences(client, sequences, device)
-
-    def _embed_esmc(self, sequences: Iterable[str], device: torch.device) -> Tensor:
-        client = self._get_esmc_client(device)
-        return self._embed_sequences(client, sequences, device)
-
-    def _embed_sequences(self, client, sequences: Iterable[str], device: torch.device) -> Tensor:
-        _, _, ESMProtein, LogitsConfig = self._load_esm_api()
         embeddings = []
-        max_len = 0
-        feature_dim = None
-
-        for sequence in sequences:
-            if not sequence:
-                seq_embed = torch.zeros(0, self.d_out, device=device)
-                embeddings.append(seq_embed)
+        for seq in sequences:
+            if not seq:
+                embeddings.append(None)
                 continue
+            protein = ESMProtein(sequence=seq)
+            protein_tensor = client.encode(protein)
+            logits_output = client.logits(
+                protein_tensor,
+                LogitsConfig(sequence=True, return_embeddings=True),
+            )
+            emb = self._trim_special_tokens(logits_output.embeddings, len(seq))
+            embeddings.append(emb.to(device=self.device, dtype=torch.float32))
 
-            with torch.no_grad():
-                protein = ESMProtein(sequence=sequence)
-                protein_tensor = client.encode(protein)
-                logits_output = client.logits(
-                    protein_tensor,
-                    LogitsConfig(sequence=True, return_embeddings=True),
-                )
-                seq_embed = self._trim_special_tokens(logits_output.embeddings, len(sequence))
-            embeddings.append(seq_embed.to(device=device, dtype=torch.float32))
-            max_len = max(max_len, seq_embed.shape[0])
-            feature_dim = seq_embed.shape[-1]
+        # Determine dimensions
+        real = [e for e in embeddings if e is not None]
+        if not real:
+            d = self.d_esm or 1
+            L = max_length or 1
+            return torch.zeros(len(sequences), L, d, device=self.device)
 
-        feature_dim = feature_dim or self.d_out
-        padded = torch.zeros(len(embeddings), max_len, feature_dim, device=device)
-        for i, seq_embed in enumerate(embeddings):
-            if seq_embed.numel() > 0:
-                padded[i, : seq_embed.shape[0]] = seq_embed
-        return padded
+        d = real[0].shape[-1]
+        self.d_esm = d
+        L = max_length or max(e.shape[0] for e in real)
+
+        # Pad to [B, L, d]
+        out = torch.zeros(len(embeddings), L, d, device=self.device)
+        for i, emb in enumerate(embeddings):
+            if emb is not None:
+                seq_len = min(emb.shape[0], L)
+                out[i, :seq_len] = emb[:seq_len]
+        return out
 
     def _trim_special_tokens(self, embeddings: Tensor | None, seq_len: int) -> Tensor:
         if embeddings is None:
-            raise RuntimeError("EvolutionaryScale ESM did not return embeddings.")
+            raise RuntimeError("ESM did not return embeddings.")
         if embeddings.dim() == 3:
             embeddings = embeddings.squeeze(0)
         if embeddings.shape[0] == seq_len + 2:
@@ -130,47 +85,37 @@ class EvolutionaryScalePLM(nn.Module):
         if embeddings.shape[0] == seq_len:
             return embeddings
         raise RuntimeError(
-            f"Unexpected embedding length: got {embeddings.shape[0]}, expected {seq_len} or {seq_len + 2}."
+            f"Unexpected embedding length: got {embeddings.shape[0]}, "
+            f"expected {seq_len} or {seq_len + 2}."
         )
 
-    def _get_esm3_client(self, device: torch.device):
-        if self._esm3_client is None:
-            ESM3, _, _, _ = self._load_esm_api()
-            self._esm3_client = ESM3.from_pretrained(self.esm3_model_name).to(device)
-            self._freeze(self._esm3_client)
-        return self._move_client(self._esm3_client, device)
+    def _get_client(self):
+        if self._client is not None:
+            return self._client
+        api = self._get_api()
+        name = self.model_name
+        if name.startswith("esmc"):
+            _, ESMC, _, _ = api
+            self._client = ESMC.from_pretrained(name).to(self.device)
+        else:
+            ESM3, _, _, _ = api
+            self._client = ESM3.from_pretrained(name).to(self.device)
+        self._client.eval()
+        for p in self._client.parameters():
+            p.requires_grad_(False)
+        return self._client
 
-    def _get_esmc_client(self, device: torch.device):
-        if self._esmc_client is None:
-            _, ESMC, _, _ = self._load_esm_api()
-            self._esmc_client = ESMC.from_pretrained(self.esmc_model_name).to(device)
-            self._freeze(self._esmc_client)
-        return self._move_client(self._esmc_client, device)
-
-    def _move_client(self, client, device: torch.device):
-        if hasattr(client, "device") and client.device != device:
-            client = client.to(device)
-        return client
-
-    def _freeze(self, client) -> None:
-        client.eval()
-        for param in client.parameters():
-            param.requires_grad_(False)
-
-    def _load_esm_api(self):
-        if self._esm_api is not None:
-            return self._esm_api
-
+    def _get_api(self):
+        if self._api is not None:
+            return self._api
         try:
             from esm.models.esm3 import ESM3
             from esm.models.esmc import ESMC
             from esm.sdk.api import ESMProtein, LogitsConfig
         except ImportError as exc:
             raise RuntimeError(
-                "EvolutionaryScale ESM is required for ESM3/ESMC support. "
-                "Install `esm` from https://github.com/evolutionaryscale/esm "
-                "and remove the legacy `fair-esm` package."
+                "EvolutionaryScale ESM is required. "
+                "Install from https://github.com/evolutionaryscale/esm"
             ) from exc
-
-        self._esm_api = (ESM3, ESMC, ESMProtein, LogitsConfig)
-        return self._esm_api
+        self._api = (ESM3, ESMC, ESMProtein, LogitsConfig)
+        return self._api

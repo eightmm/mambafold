@@ -68,7 +68,7 @@ def train_step(
     loss = loss_eqm + alpha * loss_lddt
 
     loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip).item()
     optimizer.step()
 
     return {
@@ -76,6 +76,8 @@ def train_step(
         "eqm": loss_eqm.item(),
         "lddt": loss_lddt.item(),
         "alpha": alpha,
+        "grad_norm": grad_norm,
+        "gamma_mean": batch.gamma.mean().item(),
     }
 
 

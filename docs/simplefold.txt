@@ -1,0 +1,233 @@
+================================================================================
+  MambaFold (SimpleFold) Architecture
+================================================================================
+
+Overview
+--------
+EqM (Equilibrium Matching) 기반 전체-원자 단백질 구조 생성 모델.
+Mamba-3 (SSM) 기반의 BiMamba3 블록을 atom/residue 두 해상도에서 사용.
+time-unconditional 설계: γ는 모델 trunk에 scalar feature로만 입력.
+
+좌표 스케일: COORD_SCALE = 10.0 (Angstrom → normalized)
+원자 수 per 잔기: MAX_ATOMS_PER_RES = 14 (표준 heavy atoms, N/CA/C/O + 사이드체인)
+
+================================================================================
+  Forward Pipeline
+================================================================================
+
+입력: ProteinBatch
+  - x_gamma    [B, L, A, 3]   : 노이즈 혼합 좌표 (normalized)
+  - res_type   [B, L]         : 아미노산 ID
+  - atom_type  [B, L, A]      : 원자 타입 ID
+  - pair_type  [B, L, A]      : (잔기, 원자) 페어 타입 (167 종류)
+  - atom_mask  [B, L, A]      : 유효 원자 마스크
+  - res_mask   [B, L]         : 유효 잔기 마스크
+  - res_seq_nums [B, L]       : 잔기 시퀀스 번호 (위치 임베딩용)
+  - gamma      [B, 1, 1, 1]   : EqM 노이즈 레벨
+  - esm        [B, L, 1536]   : ESM3 pre-cached 임베딩 (optional)
+
+출력: [B, L, A, 3] predicted EqM gradient
+
+
+Step 1: SequenceFourierEmbedder (optional, d_res_pos=64)
+---------------------------------------------------------
+잔기 위치 정보를 atom/trunk 양쪽에 공급하는 Fourier 임베딩.
+
+  seq_nums → rel / rel_norm → sin/cos (freqs=2^[0..4], 8 bands)
+  feature dim: 2 + 4×8 = 34 → Linear(34, 64)
+
+  출력: [B, L, 64]  (res_mask로 마스킹)
+
+
+Step 2: AtomFeatureEmbedder → atom0 [B, L, A, d_atom]
+------------------------------------------------------
+각 원자 토큰의 초기 임베딩. 다음 성분을 concat 후 Linear 투영:
+
+  ┌─────────────────────────────────────────────────────┬────────────┐
+  │ 성분                                                 │ dim        │
+  ├─────────────────────────────────────────────────────┼────────────┤
+  │ res_type_embed   Embedding(NUM_AA, d_atom)           │ d_atom     │
+  │   + atom_type_embed Embedding(NUM_ATOM, d_atom)      │            │
+  │   + pair_embed   Embedding(167, d_atom)              │            │
+  │   + element_embed Embedding(4, d_atom)  [C/N/O/S]   │            │
+  ├─────────────────────────────────────────────────────┼────────────┤
+  │ coord_embed (CoordinateFourierEmbedder)              │ d_fourier  │
+  │   raw [x,y,z] + sin/cos×16freqs (2^[-3..4])          │   =128     │
+  │   dim: 3 + 3×32 = 99 → Linear(99, 128)              │            │
+  ├─────────────────────────────────────────────────────┼────────────┤
+  │ res_pos_feat (from Step1, broadcast over atoms)      │ d_res_pos  │
+  ├─────────────────────────────────────────────────────┼────────────┤
+  │ atom_slot_embed  Embedding(14, d_atom_slot)          │ d_atom_slot│
+  │   원자 슬롯 위치 (0~13) 임베딩                        │            │
+  ├─────────────────────────────────────────────────────┼────────────┤
+  │ observed_mask binary flag                            │ 1          │
+  │   training: 50% 확률로 atom_mask 사용 (노이즈 노출)   │            │
+  ├─────────────────────────────────────────────────────┼────────────┤
+  │ backbone/sidechain flag                              │ 1          │
+  │   슬롯 0-3 (N,CA,C,O) = 1.0, 나머지 = 0.0            │            │
+  └─────────────────────────────────────────────────────┴────────────┘
+
+  총 in_dim = d_atom + d_fourier + d_res_pos + d_atom_slot + 2
+           → Linear(in_dim, d_atom)  →  × atom_mask
+
+
+Step 3: Atom Encoder (BiMamba3)
+-------------------------------
+per-residue 원자 시퀀스에 대한 SSM 처리.
+
+  입력:  [B*L, A, d_atom]  (A=14 atoms per residue)
+  처리:  MambaStack (n_atom_enc layers, bidirectional=True)
+  출력:  [B*L, A, d_atom]  → reshape [B, L, A, d_atom]
+
+  각 레이어: forward BiMamba3 + backward BiMamba3 → gated sum
+
+
+Step 4: Grouping — Atoms → Residues
+-------------------------------------
+원자 토큰을 masked average pooling으로 잔기 토큰으로 집약.
+
+  [B, L, A, d_atom]  →  [B, L, d_atom]
+
+  res0[b,l] = Σ_a(atom[b,l,a] * mask[b,l,a]) / Σ_a(mask[b,l,a])
+
+
+Step 5: Trunk Projection
+------------------------
+잔기 수준 feature들을 d_res로 투영.
+
+  trunk_parts = [res0, obs_frac, gamma_feat, (res_pos), (plm)]
+
+  - obs_frac   [B, L, 1]  : 잔기별 관측 원자 비율
+  - gamma_feat [B, L, 1]  : 현재 γ 값 (time conditioning)
+  - plm        [B, L, d_plm] : ESM3/ESMC 임베딩 (use_plm=True 시)
+
+  총 dim (use_plm=False): d_atom + d_res_pos + 2
+  총 dim (use_plm=True):  d_atom + d_plm + d_res_pos + 2
+  → Linear(·, d_res)  →  trunk_in [B, L, d_res]
+
+
+Step 6: Residue Trunk (BiMamba3)
+----------------------------------
+잔기 시퀀스 전체에 걸친 장거리 의존성 모델링.
+
+  입력:  [B, L, d_res]
+  처리:  MambaStack (n_trunk layers, bidirectional=True)
+  출력:  [B, L, d_res]
+
+
+Step 7: Ungrouping — Residues → Atoms (Skip Connection)
+---------------------------------------------------------
+잔기 토큰을 원자 위치로 broadcast한 후, atom encoder 출력과 더함.
+
+  ResidueToAtomBroadcast:
+    projected = Linear(d_res, d_atom)(res)            [B, L, d_atom]
+    gate = sigmoid(Embedding(14, d_atom)(arange(14))) [A, d_atom]  (zero-init)
+    broadcast = projected.unsqueeze(2) * gate         [B, L, A, d_atom]
+
+  dec_in = atom (Step3 출력) + broadcast              [B, L, A, d_atom]
+  → Skip connection: atom encoder 특징 보존
+
+
+Step 8: Atom Decoder (BiMamba3 + Gradient Head)
+-------------------------------------------------
+원자 단위 EqM gradient 예측.
+
+  입력:  [B*L, A, d_atom]
+  처리:  MambaStack (n_atom_dec layers, bidirectional=True)
+  head:  LN → Linear(d_atom, d_atom//2) → GELU → Linear(d_atom//2, 3)
+  출력:  [B*L, A, 3]  → reshape [B, L, A, 3]
+
+
+Step 9: GlobalAtomRefinement (optional)
+----------------------------------------
+cross-residue 원자 간 상호작용 (사이드체인 패킹, 입체 충돌 인식).
+
+  입력:  [B, L, A, d_atom]  → flatten  [B, L*A, d_atom]
+  처리:  MambaStack (n_global_atom layers, bidirectional=True)
+         unflatten [B, L, A, d_atom]
+  head:  LN → Linear(d_atom, d_atom//2) → GELU → Linear(d_atom//2, 3)
+         (마지막 Linear 가중치/bias zero-init → 초기엔 delta≈0)
+  출력:  delta [B, L, A, 3]  → grad = grad + delta
+
+최종 출력: [B, L, A, 3] × atom_mask
+
+
+================================================================================
+  EqM Training
+================================================================================
+
+Corruption:
+  ε ~ N(0, I),  ε 중심 제거 (masked centroid subtraction)
+  γ ~ U(0, 1)  (uniform schedule)
+  x_γ = γ·x_clean + (1-γ)·ε
+
+Target gradient:
+  c(γ) = lam × { 1           if γ ≤ a
+                { (1-γ)/(1-a) if γ > a    (truncated_c, a=0.8, lam=4.0)
+  target = (ε - x_clean) · c(γ)
+
+Loss:
+  L = MSE(f(x_γ), target)  masked mean over valid atoms
+
+
+================================================================================
+  EqM Inference — Euler ODE Sampler
+================================================================================
+
+초기화:
+  x_0 ~ N(0, I) × atom_mask,  중심 제거 (remove_translation)
+  γ schedule: linspace(0, 0.99, n_steps+1)
+
+각 스텝 i:
+  1. 모델 호출: pred = f(x, γ_i)
+  2. 스케일:  scale = (1-γ)/lam  (γ≤a),  (1-a)/lam  (γ>a)
+  3. x̂ = x - scale · pred
+  4. velocity = (x̂ - x) / (1 - γ_i)
+  5. x = (x + dγ · velocity) × atom_mask
+
+최종 스텝:
+  pred_final = f(x, γ_last)
+  x̂_final = x - scale_final · pred_final
+  coords = x̂_final × COORD_SCALE  [Angstrom]
+
+
+================================================================================
+  Hyperparameters (overfit_test config)
+================================================================================
+
+  d_atom       = 256    # atom token dim
+  d_res        = 256    # residue token dim
+  d_fourier    = 128    # coordinate Fourier embedding dim
+  d_res_pos    = 64     # sequence position embedding dim
+  d_atom_slot  = 0      # atom slot embedding (disabled)
+  d_state      = 32     # Mamba SSM state dim
+  mimo_rank    = 2      # MIMO rank
+  headdim      = 64     # Mamba head dim
+  n_atom_enc   = 2      # atom encoder layers
+  n_trunk      = 6      # residue trunk layers
+  n_atom_dec   = 2      # atom decoder layers
+  n_global_atom= 2      # global atom refinement layers
+  use_plm      = False  # PLM conditioning (ESM3/ESMC)
+
+
+================================================================================
+  Data Flow Summary (dimensions)
+================================================================================
+
+  x_gamma       [B, L, A, 3]
+      ↓ AtomFeatureEmbedder
+  atom0         [B, L, A, 256]
+      ↓ AtomEncoder (BiMamba3 ×2, per-residue)
+  atom          [B, L, A, 256]
+      ↓ group_atoms_to_residues (masked avg pool)
+  res0          [B, L, 256]
+      ↓ trunk_proj (cat obs_frac + gamma + res_pos → Linear)
+  trunk_in      [B, L, 256]
+      ↓ ResidueTrunk (BiMamba3 ×6)
+  res           [B, L, 256]
+      ↓ ResidueToAtomBroadcast + skip (atom)
+  dec_in        [B, L, 14, 256]
+      ↓ AtomDecoder (BiMamba3 ×2 + grad_head)
+  grad          [B, L, 14, 3]
+      ↓ GlobalAtomRefinement (BiMamba3 ×2, cross-residue, optional)
+  grad_final    [B, L, 14, 3]  ← EqM gradient output
