@@ -88,7 +88,11 @@ def main():
     resume_run_id = None
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        resume_run_id = ckpt.get("wandb_run_id")
+        # Only resume the wandb run when continuing the same training curve.
+        # When --reset_optimizer (stage transition), start a fresh wandb run
+        # so the new step counter doesn't clash with the old one.
+        if not args.reset_optimizer:
+            resume_run_id = ckpt.get("wandb_run_id")
         raw_model = model.module if is_dist else model
         raw_model.load_state_dict(ckpt["model"])
         ema.load_state_dict(ckpt["ema"])
