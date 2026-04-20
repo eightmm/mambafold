@@ -17,9 +17,9 @@ val_data_dir: null
 file_list: data/splits/train_valid.txt
 val_file_list: null
 max_length: 512               # ← 256 → 512 (bridge)
-batch_size: 4                 # per-GPU (8 → 4 for VRAM)
+batch_size: 8                 # H100 80GB에 ~55 GB 사용 (여유 25 GB)
 num_workers: 4
-copies_per_protein: 2         # 4 → 2 (effective batch 4×2=8)
+copies_per_protein: 2         # effective batch 8×2=16 (pretrain 32의 절반)
 
 # ── Output ────────────────────────────────────────────────────────────────
 out_dir: null
