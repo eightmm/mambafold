@@ -1,0 +1,68 @@
+# MambaFold EqM — Finetune Stage C: crop=1024 main
+#
+# Purpose: 핵심 finetune. 실제 단백질 98% cover.
+#   - Load weights+EMA from finetune_512 끝 체크포인트 (~550k 근처)
+#   - 150k step, 전 단백질 사용 (< 1024 거의 전부)
+#   - Mamba O(L)이라 Transformer 대비 OOM 없이 가능
+#
+# Usage (SLURM, H100 80GB):
+#   RESUME=outputs/train/<512run>/ckpt_latest.pt \
+#     sbatch scripts/slurm/train_h100.sh \
+#       --config configs/finetune_1024.yaml \
+#       --reset_optimizer --start_step 0
+
+# ── Data ──────────────────────────────────────────────────────────────────
+data_dir: data/rcsb
+val_data_dir: null
+file_list: data/splits/train_valid.txt
+val_file_list: null
+max_length: 1024              # ← 512 → 1024
+batch_size: 2                 # per-GPU (4 → 2 for VRAM)
+num_workers: 4
+copies_per_protein: 2         # effective batch 2×2 = 4 samples/step
+
+# ── Output ────────────────────────────────────────────────────────────────
+out_dir: null
+resume: null                  # pass via env var RESUME= in slurm script
+
+# ── Training ──────────────────────────────────────────────────────────────
+total_steps: 150_000          # main finetune (~6 days on H100)
+lr: 3.0e-5                    # 512 단계 5e-5 → 3e-5 (더 긴 context용 추가 감소)
+warmup_steps: 1_000
+grad_clip: 1.0
+gamma_schedule: logit_normal
+ema_decay: 0.9995
+log_interval: 50
+ckpt_interval: 5_000
+eval_interval: 5_000          # 활성화 권장 (val 셋 L 구간별 추적)
+seed: 0
+
+# ── Finetune-specific ─────────────────────────────────────────────────────
+alpha_mode: ramp
+
+# ── Model (반드시 pretrain과 일치) ────────────────────────────────────────
+d_atom: 384
+d_res: 768
+d_res_pos: 64
+d_atom_slot: 32
+n_atom_enc: 4
+n_trunk: 12
+n_atom_dec: 4
+d_state: 64
+mimo_rank: 4
+headdim: 64
+expand: 2
+
+# ── PLM ───────────────────────────────────────────────────────────────────
+use_plm: true
+d_plm: 1536
+esm_dir: data/rcsb_esm
+# NOTE: ESM3-open context=1024. data/rcsb_esm는 max_length=2048로 precompute됐으면
+#       L=1024까지 그대로 사용 가능. (precompute_esm.py --max_length 2048)
+
+# ── W&B ───────────────────────────────────────────────────────────────────
+wandb_project: mambafold
+wandb_name: null
+wandb_tags: [finetune, crop1024, main]
+wandb_offline: false
+no_wandb: false

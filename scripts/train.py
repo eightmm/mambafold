@@ -87,11 +87,27 @@ def main():
     start_step = 0
     resume_run_id = None
     if args.resume:
-        ckpt = torch.load(args.resume, map_location="cpu", weights_only=False)
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         resume_run_id = ckpt.get("wandb_run_id")
+        raw_model = model.module if is_dist else model
+        raw_model.load_state_dict(ckpt["model"])
+        ema.load_state_dict(ckpt["ema"])
+        if args.reset_optimizer:
+            # Stage transition (e.g. 256→512): keep weights+EMA, fresh
+            # optimizer/scheduler with current args (lr, warmup, total_steps).
+            start_step = args.start_step
+            if is_main:
+                print(f"Resumed weights from {args.resume} at ckpt step "
+                      f"{ckpt['step']} → fresh optimizer/scheduler, "
+                      f"start_step={start_step}", flush=True)
+        else:
+            optimizer.load_state_dict(ckpt["optimizer"])
+            scheduler.load_state_dict(ckpt["scheduler"])
+            start_step = ckpt["step"]
+            if is_main:
+                print(f"Resumed full state from {args.resume} at step "
+                      f"{start_step}", flush=True)
         del ckpt
-        start_step = load_checkpoint(
-            Path(args.resume), model, ema, optimizer, scheduler, device)
 
     # ── wandb ────────────────────────────────────────────────────────────────
     if is_main:
@@ -120,7 +136,7 @@ def main():
             try:
                 metrics = train_step(model, batch, optimizer,
                                      grad_clip=args.grad_clip,
-                                     alpha_mode="const", use_amp=True)
+                                     alpha_mode=args.alpha_mode, use_amp=True)
             except torch.cuda.OutOfMemoryError:
                 oom = True
                 torch.cuda.empty_cache()

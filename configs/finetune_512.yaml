@@ -1,0 +1,68 @@
+# MambaFold EqM — Finetune Stage B: crop=512 bridge
+#
+# Purpose: smooth transition from crop=256 pretrain → longer crops.
+#   - Load weights+EMA from pretrain 500k checkpoint
+#   - Fresh optimizer + scheduler with lower LR
+#   - Short (50k steps) — just adapt to longer context
+#
+# Usage (SLURM, H100 80GB):
+#   RESUME=outputs/train/<run>/ckpt_0500000.pt \
+#     sbatch scripts/slurm/train_h100.sh \
+#       --config configs/finetune_512.yaml \
+#       --reset_optimizer --start_step 500000
+
+# ── Data ──────────────────────────────────────────────────────────────────
+data_dir: data/rcsb
+val_data_dir: null
+file_list: data/splits/train_valid.txt
+val_file_list: null
+max_length: 512               # ← 256 → 512 (bridge)
+batch_size: 4                 # per-GPU (8 → 4 for VRAM)
+num_workers: 4
+copies_per_protein: 2         # 4 → 2 (effective batch 4×2=8)
+
+# ── Output ────────────────────────────────────────────────────────────────
+out_dir: null
+resume: null                  # pass via env var RESUME= in slurm script
+
+# ── Training ──────────────────────────────────────────────────────────────
+total_steps: 50_000           # short bridge (~1.5 days on H100)
+lr: 5.0e-5                    # pretrain 1e-4 → finetune 5e-5
+warmup_steps: 1_000           # short fresh warmup
+grad_clip: 1.0
+gamma_schedule: logit_normal
+ema_decay: 0.9995             # tighter EMA for finetune
+log_interval: 50
+ckpt_interval: 5_000          # more frequent (stage is shorter)
+eval_interval: 0              # set to 5000 once val set is ready
+seed: 0
+
+# ── Finetune-specific ─────────────────────────────────────────────────────
+alpha_mode: ramp              # lDDT weight α = (1 + 8·ReLU(γ-0.5)).mean()
+                              #   clean-side (γ≥0.5) → LDDT 가중↑
+# reset_optimizer / start_step는 CLI 플래그로 전달 (재현 안 되는 side effect이므로)
+
+# ── Model (pretrain과 동일해야 체크포인트 호환) ──────────────────────────
+d_atom: 384
+d_res: 768
+d_res_pos: 64
+d_atom_slot: 32
+n_atom_enc: 4
+n_trunk: 12
+n_atom_dec: 4
+d_state: 64
+mimo_rank: 4
+headdim: 64
+expand: 2
+
+# ── PLM ───────────────────────────────────────────────────────────────────
+use_plm: true
+d_plm: 1536
+esm_dir: data/rcsb_esm
+
+# ── W&B ───────────────────────────────────────────────────────────────────
+wandb_project: mambafold
+wandb_name: null
+wandb_tags: [finetune, crop512, bridge]
+wandb_offline: false
+no_wandb: false

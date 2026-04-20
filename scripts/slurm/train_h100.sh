@@ -17,13 +17,16 @@ echo "=== Environment (single H100) ==="
 $VENV_PY -c "import torch; print(f'torch={torch.__version__}, cuda={torch.version.cuda}, n_gpu={torch.cuda.device_count()}')"
 nvidia-smi --query-gpu=name,memory.total --format=csv
 
-echo "=== Training (H100 80GB, batch_size=8) ==="
-# H100 80GB: 6000 Ada (48GB) 대비 ~1.7x VRAM → batch 4→8로 증량
-# 단일 GPU이므로 DDP/NCCL 이슈 없음
+echo "=== Training (single H100 80GB) ==="
+# Config 선택: CONFIG 환경변수 우선, 없으면 기본 pretrain config
+CONFIG="${CONFIG:-configs/train_base.yaml}"
+# batch_size는 yaml에서 결정 (pretrain=8, finetune_512=4, finetune_1024=2)
+echo "Config : $CONFIG"
+echo "Resume : ${RESUME:-none}"
+
 PYTHONPATH=src PYTHONUNBUFFERED=1 $VENV_PY -u scripts/train.py \
-    --config configs/train_base.yaml \
+    --config "$CONFIG" \
     --out_dir outputs/train/${SLURM_JOB_ID} \
-    --batch_size 8 \
     "$@" \
     ${RESUME:+--resume $RESUME}
 

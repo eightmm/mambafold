@@ -1,0 +1,72 @@
+# MambaFold EqM — Finetune Stage D (선택): crop=2048 ultra
+#
+# Purpose: 매우 긴 멀티도메인 단백질 (>1024) 커버.
+# 선행 조건:
+#   1. ESM 재계산: precompute_esm.py --max_length 2048 (기존 1024 캐시는 truncated)
+#      (또는 ESM chunking/sliding window 구현)
+#   2. VRAM 확인: H100 80GB에서 batch 1, copies 1-2로 시작해 OOM 없는지 1k step 테스트
+#   3. lDDT loss O(L²) 비용 확인: L=2048이면 ~4M pair, 시간 vs 메모리 trade-off
+#
+# Usage (SLURM, H100 80GB):
+#   RESUME=outputs/train/<1024run>/ckpt_latest.pt \
+#     sbatch scripts/slurm/train_h100.sh \
+#       --config configs/finetune_2048.yaml \
+#       --reset_optimizer --start_step 0
+
+# ── Data ──────────────────────────────────────────────────────────────────
+data_dir: data/rcsb
+val_data_dir: null
+file_list: data/splits/train_valid.txt
+val_file_list: null
+max_length: 2048              # ← 1024 → 2048
+batch_size: 1                 # per-GPU (VRAM 한계)
+num_workers: 4
+copies_per_protein: 2         # effective batch 1×2 = 2 samples/step (작지만 grad accumulation 가능)
+
+# ── Output ────────────────────────────────────────────────────────────────
+out_dir: null
+resume: null                  # pass via env var RESUME= in slurm script
+
+# ── Training ──────────────────────────────────────────────────────────────
+total_steps: 50_000           # 짧게 (~5일 H100). 긴 단백질 학습 신호 희박
+lr: 1.0e-5                    # 더 낮은 LR (weight 변동 최소화)
+warmup_steps: 500
+grad_clip: 1.0
+gamma_schedule: logit_normal
+ema_decay: 0.9999             # 매우 tight
+log_interval: 50
+ckpt_interval: 2_000          # 더 자주
+eval_interval: 5_000
+seed: 0
+
+# ── Finetune-specific ─────────────────────────────────────────────────────
+alpha_mode: ramp
+
+# ── Model ────────────────────────────────────────────────────────────────
+d_atom: 384
+d_res: 768
+d_res_pos: 64
+d_atom_slot: 32
+n_atom_enc: 4
+n_trunk: 12
+n_atom_dec: 4
+d_state: 64
+mimo_rank: 4
+headdim: 64
+expand: 2
+
+# ── PLM ───────────────────────────────────────────────────────────────────
+use_plm: true
+d_plm: 1536
+esm_dir: data/rcsb_esm
+# WARNING: L>1024 시퀀스는 ESM3-open 단일 forward로 안 들어가. 다음 중 택1:
+#   (a) ESMEmbedder에 chunking 추가 (1024 window + overlap)
+#   (b) 2048 길이 전체 커버되는 모델 사용 (ESMC 등)
+#   (c) precompute_esm.py 수정해서 L>1024는 chunking으로 처리
+
+# ── W&B ───────────────────────────────────────────────────────────────────
+wandb_project: mambafold
+wandb_name: null
+wandb_tags: [finetune, crop2048, ultra]
+wandb_offline: false
+no_wandb: false

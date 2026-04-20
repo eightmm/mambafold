@@ -43,6 +43,15 @@ def parse_args(argv=None):
     parser.add_argument("--gamma_schedule", default="logit_normal")
     parser.add_argument("--ema_decay", type=float, default=0.999)
     parser.add_argument("--seed", type=int, default=0)
+    # Finetune-specific
+    parser.add_argument("--alpha_mode", default="const",
+                        help="lDDT weight mode: 'const' (pretrain) or 'ramp' (finetune).")
+    parser.add_argument("--reset_optimizer", action="store_true", default=False,
+                        help="On --resume, keep model+ema weights but re-initialize "
+                             "optimizer and scheduler with current args (lr/warmup/"
+                             "total_steps). Use when switching stages (e.g. 256→512).")
+    parser.add_argument("--start_step", type=int, default=0,
+                        help="Override starting step counter (for fresh stage start).")
     # Model
     parser.add_argument("--d_atom", type=int, default=256)
     parser.add_argument("--d_res", type=int, default=256)
