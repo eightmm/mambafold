@@ -14,8 +14,16 @@ wandb/
 logs/
 outputs/
 .ruff_cache/
+.cache/
 
 # Heavy data (not pushed to git)
 data/rcsb
 data/rcsb_esm/
 data/overfit/
+
+# Benchmark results (large PDB outputs, regenerable)
+benchmarks/results/
+
+# Scoring venv + pip tmp dir (large, regenerable via uv)
+tools/scoring_venv/
+tools/pip_tmp/
