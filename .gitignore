@@ -24,6 +24,9 @@ data/overfit/
 # Benchmark results (large PDB outputs, regenerable)
 benchmarks/results/
 
+# CASP15 raw downloads (regenerable via benchmarks/casp15/download.sh)
+benchmarks/casp15/raw/
+
 # Scoring venv + pip tmp dir (large, regenerable via uv)
 tools/scoring_venv/
 tools/pip_tmp/
