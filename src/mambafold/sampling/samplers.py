@@ -157,8 +157,10 @@ def _stage2_step(model_two_stage, batch_fn, state, ti, dt, device):
     """One Euler step for Stage 2 within TwoStageMambaFold.
 
     The Stage 1 outputs (s1_ca, s1_latent) are pre-cached on the wrapper so
-    each step only re-runs Stage 2. The CA slot is initialized from s1_ca but
-    may move by the learned residual field.
+    each step only re-runs Stage 2. The CA slot is kept pinned to the Stage 1
+    anchor at every step so the model sees the same on-distribution input it
+    saw in training (where the CA slot is always the anchor regardless of t).
+    The refined CA is recovered by the caller's final one-step recon.
     """
     x, mask_f = state["x"], state["mask_f"]
     batch = batch_fn(x, ti)
@@ -170,6 +172,7 @@ def _stage2_step(model_two_stage, batch_fn, state, ti, dt, device):
             s1_latent=state["s1_latent"],
         ).squeeze(0)                                # [L, A, 3]
     x_new = x + dt * v_atom
+    x_new[..., CA_ATOM_ID, :] = state["s1_ca"][0]   # re-pin CA to the anchor
     x_new = x_new * mask_f
     return {**state, "x": x_new, "x_prev": x}
 

@@ -333,7 +333,6 @@ class RCSBDataset(Dataset):
         # ESM embeddings: per chain file `{stem}_ch{origin}.npy`, reassembled per crop
         esm = None
         if self.esm_dir is not None and path is not None:
-            d_esm = None
             per_chain_cache: dict[int, np.ndarray] = {}
             esm_rows: list[torch.Tensor] = []
             ok = True
@@ -352,8 +351,6 @@ class RCSBDataset(Dataset):
                 if loc >= arr.shape[0]:
                     ok = False
                     break
-                if d_esm is None:
-                    d_esm = arr.shape[1]
                 esm_rows.append(torch.from_numpy(arr[loc].copy()))
             if ok and esm_rows:
                 esm = torch.stack(esm_rows, dim=0)

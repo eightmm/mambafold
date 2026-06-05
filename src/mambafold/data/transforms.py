@@ -1,5 +1,7 @@
 """Data transforms for protein structure training."""
 
+from dataclasses import replace
+
 import torch
 from torch import Tensor
 
@@ -10,22 +12,7 @@ from mambafold.utils.geometry import apply_rotation, masked_centroid, random_rot
 
 def _with_coords(example: ProteinExample, coords: Tensor) -> ProteinExample:
     """Return a copy of `example` with coords replaced, preserving all other fields."""
-    return ProteinExample(
-        res_type=example.res_type,
-        atom_type=example.atom_type,
-        pair_type=example.pair_type,
-        coords=coords,
-        atom_mask=example.atom_mask,
-        observed_mask=example.observed_mask,
-        res_seq_nums=example.res_seq_nums,
-        seq_len=example.seq_len,
-        chain_id=example.chain_id,
-        entity_id=example.entity_id,
-        sym_id=example.sym_id,
-        is_nterm=example.is_nterm,
-        is_cterm=example.is_cterm,
-        esm=example.esm,
-    )
+    return replace(example, coords=coords)
 
 
 def center_and_scale(example: ProteinExample) -> ProteinExample:

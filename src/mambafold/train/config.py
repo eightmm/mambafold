@@ -68,7 +68,8 @@ def parse_args(argv=None):
     parser.add_argument("--reset_optimizer", action="store_true", default=False,
                         help="On --resume, keep model+ema weights but re-initialize "
                              "optimizer and scheduler with current args (lr/warmup/"
-                             "total_steps). Use when switching stages (e.g. 256→512).")
+                             "total_steps). Use at a stage transition (e.g. PT L=512 "
+                             "→ CT L=1024).")
     parser.add_argument("--start_step", type=int, default=0,
                         help="Override starting step counter (for fresh stage start).")
     # Model

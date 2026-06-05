@@ -24,9 +24,8 @@
 #     bash scripts/train.sh
 #
 # References:
-#   docs/architecture.md      — full spec
+#   docs/architecture.md      — full spec + decision log
 #   docs/pair_module.md       — pair stack equations
-#   docs/architecture.md    — I3 details + decision log
 
 # ── Model dispatch ────────────────────────────────────────────────────────
 stage: 1

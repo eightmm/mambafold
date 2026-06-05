@@ -1,15 +1,11 @@
 """coarse-to-fine 2-stage MambaFold.
 
-Stage 1: CA-only flow matching with Linear Triangle Attention pair stack.
-Stage 2: All-atom flow matching conditioned on Stage 1 CA + trunk latents.
+Stage 1: CA-only flow matching with a Linear Triangle Attention pair stack.
+Stage 2: all-atom flow matching conditioned on the Stage 1 CA + trunk latent.
 
 See:
-  * docs/architecture.md      — main spec
-  * docs/pair_module.md       — pair block (LinearTriAttn + MultUpdate)
-  * docs/architecture.md    — file-level roadmap
-
-Modules are added incrementally per the I0–I7 plan. Imports stay light
-during I0 (skeleton) — heavier symbols become available as I1–I4 land.
+  * docs/architecture.md  — main spec
+  * docs/pair_module.md   — pair block (LinearTriAttn + MultUpdate)
 """
 
 from mambafold.model.fold.conditioning import (

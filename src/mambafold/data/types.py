@@ -1,6 +1,6 @@
 """Typed data containers for protein batches."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from typing import Optional
 
 import torch
@@ -90,62 +90,28 @@ class ProteinBatch:
 
     def with_coords(self, new_coords: torch.Tensor) -> "ProteinBatch":
         """Return a copy with x_t replaced (for sampling)."""
-        return ProteinBatch(
-            res_type=self.res_type,
-            res_seq_nums=self.res_seq_nums,
-            atom_type=self.atom_type,
-            pair_type=self.pair_type,
-            res_mask=self.res_mask,
-            atom_mask=self.atom_mask,
-            valid_mask=self.valid_mask,
-            ca_mask=self.ca_mask,
-            chain_id=self.chain_id,
-            entity_id=self.entity_id,
-            sym_id=self.sym_id,
-            is_nterm=self.is_nterm,
-            is_cterm=self.is_cterm,
-            x_clean=self.x_clean,
-            x_t=new_coords,
-            eps=self.eps,
-            t=self.t,
-            esm=self.esm,
-        )
+        return replace(self, x_t=new_coords)
 
     def to(self, device: torch.device) -> "ProteinBatch":
-        """Move all tensors to device."""
-        fields = {}
-        for k, v in self.__dict__.items():
-            if isinstance(v, torch.Tensor):
-                fields[k] = v.to(device)
-            else:
-                fields[k] = v
-        return ProteinBatch(**fields)
+        """Move all tensor fields to `device`; non-tensors pass through."""
+        moved = {
+            f.name: v.to(device)
+            for f in fields(self)
+            if isinstance(v := getattr(self, f.name), torch.Tensor)
+        }
+        return replace(self, **moved)
 
     def truncate_length(self, max_L: int) -> "ProteinBatch":
-        """Return a copy with the L-axis cropped to `max_L`. No-op if already shorter.
+        """Return a copy with the L-axis (dim 1) cropped to `max_L`.
 
-        `t` is shape-invariant so it's passed through.
+        No-op if already shorter. Every tensor field carries L at dim 1
+        except `t` ([B,1,1,1]), which is shape-invariant and passes through.
         """
         if self.res_type.shape[1] <= max_L:
             return self
-        sl = (slice(None), slice(0, max_L))
-        return ProteinBatch(
-            res_type=self.res_type[sl],
-            res_seq_nums=self.res_seq_nums[sl],
-            atom_type=self.atom_type[sl],
-            pair_type=self.pair_type[sl],
-            res_mask=self.res_mask[sl],
-            atom_mask=self.atom_mask[sl],
-            valid_mask=self.valid_mask[sl],
-            ca_mask=self.ca_mask[sl],
-            chain_id=self.chain_id[sl],
-            entity_id=self.entity_id[sl],
-            sym_id=self.sym_id[sl],
-            is_nterm=self.is_nterm[sl],
-            is_cterm=self.is_cterm[sl],
-            x_clean=self.x_clean[sl],
-            x_t=self.x_t[sl],
-            eps=self.eps[sl],
-            t=self.t,
-            esm=self.esm[sl] if self.esm is not None else None,
-        )
+        cropped = {
+            f.name: v[:, :max_L]
+            for f in fields(self)
+            if f.name != "t" and isinstance(v := getattr(self, f.name), torch.Tensor)
+        }
+        return replace(self, **cropped)

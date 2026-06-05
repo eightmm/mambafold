@@ -113,7 +113,7 @@ class MambaFoldStage2(nn.Module):
         self.s1_latent_broadcast = Stage1LatentBroadcast(d_res=d_s1_res, d_atom=d_atom)
         self.t_embed = nn.Linear(1, d_atom)
 
-        # ── Atom encoder (per-residue BiMamba on the A=24 axis) ─────────
+        # ── Atom encoder (per-residue BiMamba over the A atom slots) ────
         self.atom_encoder = MambaStack(
             d_atom, n_atom_enc,
             d_state=d_state, mimo_rank=mimo_rank, expand=expand, headdim=headdim,
@@ -193,7 +193,7 @@ class MambaFoldStage2(nn.Module):
         t_feat = self.t_embed(t_scalar)                                     # [B, d_atom]
         atom = atom + t_feat[:, None, None, :]                              # [B, 1, 1, d_atom]
 
-        # 3. Atom encoder per-residue (flatten over BL, A=24 is the seq axis)
+        # 3. Atom encoder per-residue (flatten over BL; the A atom slots are the seq axis)
         atom_flat = atom.reshape(B * L, A, -1)
         am_flat = batch.atom_mask.reshape(B * L, A)
         atom_flat = self.atom_encoder(atom_flat, am_flat)

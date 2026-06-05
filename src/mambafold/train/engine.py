@@ -1,12 +1,22 @@
-"""Training step functions (CA-only Stage 1, all-atom Stage 2, joint).
+"""Training/eval step functions for the 2-stage coarse-to-fine pipeline.
 
-Single-chain training path.
+Single-chain training path. The three training stages share two reusable
+"loss surfaces" so the forward/loss math lives in exactly one place:
 
-Stage 1 (CA-only FM + aux):
-    L = L_fm_ca + alpha(t)*L_lddt_ca + gamma*L_bond_caca + lambda*L_distogram
+    Stage 1 (CA-only FM + aux):
+        L = L_fm_ca + α(t)·w_lddt·L_lddt_ca + w_bond·L_bond_caca + w_dist·L_distogram
 
-Stage 2 (all-atom FM + aux, CA residual-refined from Stage 1 anchor):
-    L = L_fm_atom(non-CA) + alpha(t)*L_lddt_full + omega*L_bond + zeta*L_clash + eta*L_ca_anchor
+    Stage 2 (all-atom FM + aux, CA residual-refined from the Stage 1 anchor):
+        L = L_fm_atom(non-CA) + α(t)·w_lddt·L_lddt_full
+            + w_bond·L_bond + w_clash·L_clash + w_anchor·L_ca_anchor
+
+    joint (Phase 3):
+        L = w_stage1·L_stage1 + L_stage2   (both surfaces, both backprop)
+
+Conventions (flow matching, normalized units):
+    x_t = t·x_clean + (1-t)·ε         (built by the collator)
+    velocity target = x_clean - ε
+    one-step recon  = x_t + (1-t)·v   (used for lDDT/geometry metrics)
 """
 
 from __future__ import annotations
@@ -29,12 +39,175 @@ from mambafold.losses.geometry import (
 from mambafold.losses.lddt import soft_lddt_ca_loss
 
 
+# ── shared low-level helpers ──────────────────────────────────────────────
+
+
+def _alpha(t: Tensor, mode: str) -> float:
+    """lDDT weight schedule. `const` → 1; `ramp` → 1 + 8·ReLU(t-0.5).mean."""
+    if mode == "const":
+        return 1.0
+    return (1.0 + 8.0 * F.relu(t - 0.5)).mean().item()
+
+
+def _recon_ca(x_t_ca: Tensor, t: Tensor, v_ca: Tensor) -> Tensor:
+    """One-step FM reconstruction of CA positions. [B, L, 3]."""
+    one_minus_t = (1.0 - t.squeeze(-1).squeeze(-1).squeeze(-1)).float()   # [B]
+    return x_t_ca + one_minus_t.view(-1, 1, 1) * v_ca
+
+
+def _recon_atom(x_t: Tensor, t: Tensor, v_atom: Tensor) -> Tensor:
+    """One-step FM reconstruction for all atom slots. [B, L, A, 3]."""
+    one_minus_t = (1.0 - t.squeeze(-1).squeeze(-1)).view(-1, 1, 1, 1)     # [B,1,1,1]
+    return x_t + one_minus_t * v_atom
+
+
 def _fm_loss_ca(v_pred: Tensor, x_clean: Tensor, eps: Tensor, mask: Tensor) -> Tensor:
-    """Masked MSE for FM target (x_clean − eps) on CA positions."""
+    """Masked MSE for the FM target (x_clean − eps) on CA positions."""
     target = x_clean - eps                            # [B, L, 3]
     diff_sq = (v_pred - target).pow(2).sum(dim=-1)    # [B, L]
     m = mask.to(diff_sq.dtype)
     return (diff_sq * m).sum() / m.sum().clamp(min=1)
+
+
+def _fm_loss_atom(v_pred: Tensor, x_clean: Tensor, eps: Tensor, mask: Tensor) -> Tensor:
+    """Masked MSE for the FM target on per-atom velocity. mask: [B, L, A]."""
+    target = x_clean - eps                                  # [B, L, A, 3]
+    diff_sq = (v_pred - target).pow(2).sum(dim=-1)          # [B, L, A]
+    m = mask.to(diff_sq.dtype)
+    return (diff_sq * m).sum() / m.sum().clamp(min=1)
+
+
+def _non_ca_atom_mask(atom_mask: Tensor) -> Tensor:
+    """Per-atom mask that excludes the CA slot (Stage 1 owns CA)."""
+    A = atom_mask.shape[-1]
+    not_ca = torch.arange(A, device=atom_mask.device) != CA_ATOM_ID
+    return atom_mask & not_ca.view(1, 1, A)
+
+
+def _inject_ca(x_t: Tensor, ca: Tensor) -> Tensor:
+    """Return a copy of x_t with the CA slot overwritten by `ca`."""
+    out = x_t.clone()
+    out[..., CA_ATOM_ID, :] = ca
+    return out
+
+
+def _ca_anchor_loss(x_hat: Tensor, s1_ca: Tensor, ca_mask: Tensor) -> Tensor:
+    """Pull the Stage-2 refined CA toward the Stage-1 scaffold.
+
+    The anchor is a fixed *target*, so it is detached: gradients refine the
+    Stage-2 CA only and never drag Stage 1 toward Stage 2 (matters in joint,
+    where Stage 1 still has grad).
+    """
+    pred_ca = x_hat[..., CA_ATOM_ID, :]
+    diff_sq = (pred_ca - s1_ca.detach()).pow(2).sum(dim=-1)
+    m = ca_mask.to(diff_sq.dtype)
+    return (diff_sq * m).sum() / m.sum().clamp(min=1)
+
+
+# ── reusable loss surfaces (shared by forward + joint) ─────────────────────
+
+
+def _stage1_loss_surface(
+    out: dict,
+    batch: ProteinBatch,
+    *,
+    alpha_mode: str,
+    w_lddt_ca: float,
+    w_bond_caca: float,
+    w_distogram: float,
+) -> tuple[Tensor, dict]:
+    """Stage 1 composite loss + per-component metrics from a model output dict.
+
+    `out` must carry `v_ca` and `distogram_logits` (model called with
+    return_aux=True). The FM main loss is on raw velocity; `x_hat_ca` is the
+    one-step recon used by the lDDT-style auxiliaries.
+    """
+    v_ca = out["v_ca"].float()
+    dist_logits = out["distogram_logits"].float()
+
+    x_clean_ca = batch.x_clean[..., CA_ATOM_ID, :].float()    # [B, L, 3]
+    eps_ca = batch.eps[..., CA_ATOM_ID, :].float()
+    x_t_ca = batch.x_t[..., CA_ATOM_ID, :].float()
+
+    loss_fm = _fm_loss_ca(v_ca, x_clean_ca, eps_ca, batch.ca_mask)
+    x_hat_ca = _recon_ca(x_t_ca, batch.t, v_ca)
+    loss_lddt = soft_lddt_ca_only(x_hat_ca, x_clean_ca, batch.ca_mask)
+    loss_bond = ca_ca_bond_loss(x_hat_ca, batch.ca_mask, batch.chain_id)
+    loss_dist = distogram_loss_ca_only(dist_logits, x_clean_ca, batch.ca_mask)
+
+    alpha = _alpha(batch.t, alpha_mode)
+    total = (
+        loss_fm
+        + alpha * w_lddt_ca * loss_lddt
+        + w_bond_caca * loss_bond
+        + w_distogram * loss_dist
+    )
+    metrics = {
+        "fm":        loss_fm.item(),
+        "lddt":      loss_lddt.item(),
+        "bond_caca": loss_bond.item(),
+        "distogram": loss_dist.item(),
+        "alpha":     alpha,
+    }
+    return total, metrics
+
+
+def _stage2_loss_surface(
+    out: dict,
+    batch: ProteinBatch,
+    *,
+    alpha_mode: str,
+    w_lddt_full: float,
+    w_bond: float,
+    w_clash: float,
+    w_ca_anchor: float,
+    lddt_cutoff: float,
+) -> tuple[Tensor, dict]:
+    """Stage 2 composite loss + metrics from a model output dict.
+
+    Non-CA atoms get the FM loss. CA is initialized from Stage 1 (`s1_ca_cond`)
+    and may move via lDDT/geometry gradients, but the anchor loss keeps it near
+    the Stage 1 scaffold.
+    """
+    v_atom = out["v_atom"].float()
+    s1_ca = out["s1_ca"].float()
+    s1_ca_cond = out.get("s1_ca_cond", out["s1_ca"]).float()
+
+    non_ca_mask = _non_ca_atom_mask(batch.atom_mask)               # [B, L, A]
+    loss_fm = _fm_loss_atom(
+        v_atom, batch.x_clean.float(), batch.eps.float(),
+        non_ca_mask & batch.valid_mask,
+    )
+
+    x_t_s2 = _inject_ca(batch.x_t.float(), s1_ca_cond)
+    x_hat = _recon_atom(x_t_s2, batch.t, v_atom)
+
+    loss_lddt = soft_lddt_ca_loss(x_hat, batch.x_clean.float(),
+                                  batch.ca_mask, cutoff=lddt_cutoff)
+    loss_bond = bond_length_loss(x_hat, batch.res_type, batch.atom_mask, batch.res_mask)
+    loss_clash = ca_clash_loss(x_hat, batch.res_mask, chain_id=batch.chain_id)
+    loss_anchor = _ca_anchor_loss(x_hat, s1_ca, batch.ca_mask)
+
+    alpha = _alpha(batch.t, alpha_mode)
+    total = (
+        loss_fm
+        + alpha * w_lddt_full * loss_lddt
+        + w_bond * loss_bond
+        + w_clash * loss_clash
+        + w_ca_anchor * loss_anchor
+    )
+    metrics = {
+        "fm_atom":   loss_fm.item(),
+        "lddt_full": loss_lddt.item(),
+        "bond":      loss_bond.item(),
+        "clash":     loss_clash.item(),
+        "ca_anchor": loss_anchor.item(),
+        "alpha":     alpha,
+    }
+    return total, metrics
+
+
+# ── Stage 1 (CA-only) ──────────────────────────────────────────────────────
 
 
 def stage1_forward_and_loss(
@@ -49,105 +222,48 @@ def stage1_forward_and_loss(
 ):
     """Stage 1 forward + composite loss + per-component metrics.
 
-    Notes:
-        - Distogram aux is always computed (return_aux=True) so the pair stack
-          gets gradient on the binning signal from step 1.
-        - The FM main loss is on raw velocity `v_ca`; reconstruction
-          `x_hat_ca = x_t_ca + (1-t) · v_ca` is used for lDDT-type metrics.
+    Distogram aux is always computed (return_aux=True) so the pair stack gets
+    gradient on the binning signal from step 1.
     """
     model.train()
     amp_enabled = use_amp and batch.device.type == "cuda"
-
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
         out = model(batch, return_aux=True)
-        v_ca = out["v_ca"]
-        dist_logits = out["distogram_logits"]
 
-    v_ca_f32 = v_ca.float()
-
-    x_clean_ca = batch.x_clean[..., CA_ATOM_ID, :].float()                # [B, L, 3]
-    eps_ca = batch.eps[..., CA_ATOM_ID, :].float()
-    x_t_ca = batch.x_t[..., CA_ATOM_ID, :].float()
-
-    # 1) FM main loss on CA velocity
-    loss_fm = _fm_loss_ca(v_ca_f32, x_clean_ca, eps_ca, batch.ca_mask)
-
-    # 2) One-step recon for lDDT-style metrics
-    one_minus_t = (1.0 - batch.t.squeeze(-1).squeeze(-1).squeeze(-1)).float()  # [B]
-    x_hat_ca = x_t_ca + one_minus_t.view(-1, 1, 1) * v_ca_f32                  # [B, L, 3]
-
-    # 3) lDDT aux losses (zero if no valid pairs)
-    loss_lddt = soft_lddt_ca_only(x_hat_ca, x_clean_ca, batch.ca_mask)
-    loss_bond = ca_ca_bond_loss(x_hat_ca, batch.ca_mask, batch.chain_id)
-    loss_dist = distogram_loss_ca_only(
-        dist_logits.float(), x_clean_ca, batch.ca_mask,
-        n_bins=model.n_distogram_bins if hasattr(model, "n_distogram_bins") else 64,
+    loss, metrics = _stage1_loss_surface(
+        out, batch, alpha_mode=alpha_mode,
+        w_lddt_ca=w_lddt_ca, w_bond_caca=w_bond_caca, w_distogram=w_distogram,
     )
-
-    # 4) Alpha schedule for lDDT (shared `ramp` policy)
-    if alpha_mode == "const":
-        alpha = 1.0
-    else:
-        alpha = (1.0 + 8.0 * F.relu(batch.t - 0.5)).mean().item()
-
-    loss = (
-        loss_fm
-        + alpha * w_lddt_ca * loss_lddt
-        + w_bond_caca * loss_bond
-        + w_distogram * loss_dist
-    )
-
-    metrics = {
-        "loss":       loss.item(),
-        "fm":         loss_fm.item(),
-        "lddt":       loss_lddt.item(),
-        "bond_caca":  loss_bond.item(),
-        "distogram":  loss_dist.item(),
-        "alpha":      alpha,
-        "t_mean":     batch.t.mean().item(),
-    }
+    metrics["loss"] = loss.item()
+    metrics["t_mean"] = batch.t.mean().item()
     return loss, metrics
 
 
-# ── Stage 2 (TwoStageMambaFold with frozen S1) ────────────────────────────
+@torch.no_grad()
+def stage1_eval_step(model, batch: ProteinBatch, use_amp: bool = True) -> dict:
+    """No-grad eval for Stage 1."""
+    model.eval()
+    amp_enabled = use_amp and batch.device.type == "cuda"
+    with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
+        v_ca, _ = model(batch)
+        n_valid = batch.ca_mask.sum().clamp(min=1)
+        v_rms = (v_ca.pow(2).sum() / n_valid / 3).sqrt()
+
+    v_ca = v_ca.float()
+    x_clean_ca = batch.x_clean[..., CA_ATOM_ID, :].float()
+    eps_ca = batch.eps[..., CA_ATOM_ID, :].float()
+    x_t_ca = batch.x_t[..., CA_ATOM_ID, :].float()
+
+    x_hat_ca = _recon_ca(x_t_ca, batch.t, v_ca)
+    return {
+        "fm":        _fm_loss_ca(v_ca, x_clean_ca, eps_ca, batch.ca_mask).item(),
+        "lddt":      soft_lddt_ca_only(x_hat_ca, x_clean_ca, batch.ca_mask).item(),
+        "bond_caca": ca_ca_bond_loss(x_hat_ca, batch.ca_mask, batch.chain_id).item(),
+        "v_rms":     v_rms.item(),
+    }
 
 
-def _non_ca_atom_mask(atom_mask: Tensor) -> Tensor:
-    """Per-atom mask that excludes the CA slot (Stage 1 owns CA)."""
-    A = atom_mask.shape[-1]
-    not_ca = torch.arange(A, device=atom_mask.device) != CA_ATOM_ID
-    return atom_mask & not_ca.view(1, 1, A)
-
-
-def _fm_loss_atom(
-    v_pred: Tensor, x_clean: Tensor, eps: Tensor, mask: Tensor,
-) -> Tensor:
-    """Masked MSE for FM target on per-atom velocity. mask: [B, L, A]."""
-    target = x_clean - eps                                  # [B, L, A, 3]
-    diff_sq = (v_pred - target).pow(2).sum(dim=-1)          # [B, L, A]
-    m = mask.to(diff_sq.dtype)
-    return (diff_sq * m).sum() / m.sum().clamp(min=1)
-
-
-def _x_hat_atom(
-    x_t: Tensor, t: Tensor, v_atom: Tensor,
-) -> Tensor:
-    """FM reconstruction for all atom slots, including a residual CA update."""
-    one_minus_t = (1.0 - t.squeeze(-1).squeeze(-1)).view(-1, 1, 1, 1)  # [B,1,1,1]
-    return x_t + one_minus_t * v_atom
-
-
-def _inject_ca(x_t: Tensor, ca: Tensor) -> Tensor:
-    out = x_t.clone()
-    out[..., CA_ATOM_ID, :] = ca
-    return out
-
-
-def _ca_anchor_loss(x_hat: Tensor, s1_ca: Tensor, ca_mask: Tensor) -> Tensor:
-    pred_ca = x_hat[..., CA_ATOM_ID, :]
-    diff_sq = (pred_ca - s1_ca).pow(2).sum(dim=-1)
-    m = ca_mask.to(diff_sq.dtype)
-    return (diff_sq * m).sum() / m.sum().clamp(min=1)
+# ── Stage 2 (TwoStageMambaFold with frozen S1) ─────────────────────────────
 
 
 def stage2_forward_and_loss(
@@ -164,116 +280,50 @@ def stage2_forward_and_loss(
     ca_condition_noise_prob: float = 0.0,
     lddt_cutoff: float = 1.5,
 ):
-    """Stage 2 forward (S1 frozen via TwoStage wrapper) + atom-side losses.
-
-    Non-CA atoms receive the FM loss. CA may move through lDDT/geometry gradients,
-    but `w_ca_anchor` keeps it close to Stage 1 to avoid fold drift.
-    """
+    """Stage 2 forward (S1 frozen via TwoStage wrapper) + atom-side losses."""
     model.train()
     amp_enabled = use_amp and batch.device.type == "cuda"
-
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
-        # return_aux=False — we don't need distogram_logits in Phase 2 (frozen S1).
+        # return_aux=False — no distogram needed in Phase 2 (frozen S1).
         out = model(
             batch, return_aux=False,
             ca_condition_noise_std=ca_condition_noise_std,
             ca_condition_noise_prob=ca_condition_noise_prob,
         )
-        v_atom = out["v_atom"]
-        s1_ca = out["s1_ca"]
-        s1_ca_cond = out.get("s1_ca_cond", s1_ca)
 
-    v_atom_f32 = v_atom.float()
-    s1_ca_f32 = s1_ca.float()
-    s1_ca_cond_f32 = s1_ca_cond.float()
-
-    # FM main loss on non-CA atoms.
-    non_ca_mask = _non_ca_atom_mask(batch.atom_mask)               # [B, L, A]
-    loss_fm = _fm_loss_atom(
-        v_atom_f32, batch.x_clean.float(), batch.eps.float(),
-        non_ca_mask & batch.valid_mask,
+    loss, metrics = _stage2_loss_surface(
+        out, batch, alpha_mode=alpha_mode,
+        w_lddt_full=w_lddt_full, w_bond=w_bond, w_clash=w_clash,
+        w_ca_anchor=w_ca_anchor, lddt_cutoff=lddt_cutoff,
     )
-
-    x_t_s2 = _inject_ca(batch.x_t.float(), s1_ca_cond_f32)
-    x_hat = _x_hat_atom(x_t_s2, batch.t.float(), v_atom_f32)
-
-    # Aux losses; CA residual is allowed but anchored to Stage 1.
-    loss_lddt = soft_lddt_ca_loss(x_hat, batch.x_clean.float(),
-                                  batch.ca_mask, cutoff=lddt_cutoff)
-    loss_bond = bond_length_loss(x_hat, batch.res_type, batch.atom_mask, batch.res_mask)
-    loss_clash = ca_clash_loss(x_hat, batch.res_mask, chain_id=batch.chain_id)
-    loss_ca_anchor = _ca_anchor_loss(x_hat, s1_ca_f32, batch.ca_mask)
-    # alpha schedule
-    if alpha_mode == "const":
-        alpha = 1.0
-    else:
-        alpha = (1.0 + 8.0 * F.relu(batch.t - 0.5)).mean().item()
-
-    loss = (
-        loss_fm
-        + alpha * w_lddt_full * loss_lddt
-        + w_bond * loss_bond
-        + w_clash * loss_clash
-        + w_ca_anchor * loss_ca_anchor
-    )
-    metrics = {
-        "loss":        loss.item(),
-        "fm_atom":     loss_fm.item(),
-        "lddt_full":   loss_lddt.item(),
-        "bond":        loss_bond.item(),
-        "clash":       loss_clash.item(),
-        "ca_anchor":   loss_ca_anchor.item(),
-        "alpha":       alpha,
-        "t_mean":      batch.t.mean().item(),
-    }
+    metrics["loss"] = loss.item()
+    metrics["t_mean"] = batch.t.mean().item()
     return loss, metrics
 
 
 @torch.no_grad()
 def stage2_eval_step(
-    model,
-    batch: ProteinBatch,
-    lddt_cutoff: float = 1.5,
-    use_amp: bool = True,
+    model, batch: ProteinBatch, lddt_cutoff: float = 1.5, use_amp: bool = True,
 ) -> dict:
     """No-grad eval step for Phase 2 / Phase 3 (TwoStage model)."""
     model.eval()
     amp_enabled = use_amp and batch.device.type == "cuda"
-
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
         out = model(batch, return_aux=False)
-        v_atom = out["v_atom"]
-        s1_ca = out["s1_ca"]
-        s1_ca_cond = out.get("s1_ca_cond", s1_ca)
         n_valid = batch.valid_mask.sum().clamp(min=1)
-        v_rms = (v_atom.pow(2).sum() / n_valid / 3).sqrt()
+        v_rms = (out["v_atom"].pow(2).sum() / n_valid / 3).sqrt()
 
-    v_atom_f32 = v_atom.float()
-    s1_ca_f32 = s1_ca.float()
-    s1_ca_cond_f32 = s1_ca_cond.float()
-    non_ca_mask = _non_ca_atom_mask(batch.atom_mask)
-    loss_fm = _fm_loss_atom(
-        v_atom_f32, batch.x_clean.float(), batch.eps.float(),
-        non_ca_mask & batch.valid_mask,
+    _, metrics = _stage2_loss_surface(
+        out, batch, alpha_mode="const",
+        w_lddt_full=1.0, w_bond=0.0, w_clash=0.0, w_ca_anchor=0.0,
+        lddt_cutoff=lddt_cutoff,
     )
-    x_t_s2 = _inject_ca(batch.x_t.float(), s1_ca_cond_f32)
-    x_hat = _x_hat_atom(x_t_s2, batch.t.float(), v_atom_f32)
-    loss_lddt = soft_lddt_ca_loss(x_hat, batch.x_clean.float(),
-                                  batch.ca_mask, cutoff=lddt_cutoff)
-    loss_bond = bond_length_loss(x_hat, batch.res_type, batch.atom_mask, batch.res_mask)
-    loss_clash = ca_clash_loss(x_hat, batch.res_mask, chain_id=batch.chain_id)
-    loss_ca_anchor = _ca_anchor_loss(x_hat, s1_ca_f32, batch.ca_mask)
-    return {
-        "fm_atom":     loss_fm.item(),
-        "lddt_full":   loss_lddt.item(),
-        "bond":        loss_bond.item(),
-        "clash":       loss_clash.item(),
-        "ca_anchor":   loss_ca_anchor.item(),
-        "v_rms":       v_rms.item(),
-    }
+    metrics.pop("alpha", None)
+    metrics["v_rms"] = v_rms.item()
+    return metrics
 
 
-# ── joint (Phase 3) — both stages backprop ─────────────────────────────
+# ── joint (Phase 3) — both stages backprop ─────────────────────────────────
 
 
 def joint_forward_and_loss(
@@ -297,177 +347,70 @@ def joint_forward_and_loss(
     w_stage1: float = 1.0,
     lddt_cutoff: float = 1.5,
 ):
-    """Joint Phase 3 loss — Stage 1 + residual-refining Stage 2."""
+    """Joint Phase 3 loss — Stage 1 + residual-refining Stage 2 (both backprop)."""
     model.train()
     amp_enabled = use_amp and batch.device.type == "cuda"
-
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
         out = model(
             batch, return_aux=True,
             ca_condition_noise_std=ca_condition_noise_std,
             ca_condition_noise_prob=ca_condition_noise_prob,
         )
-        v_ca = out["v_ca"]
-        v_atom = out["v_atom"]
-        s1_ca = out["s1_ca"]
-        s1_ca_cond = out.get("s1_ca_cond", s1_ca)
-        dist_logits = out["distogram_logits"]
 
-    # Stage 1 loss surface (CA-only)
-    v_ca_f32 = v_ca.float()
-    x_clean_ca = batch.x_clean[..., CA_ATOM_ID, :].float()
-    eps_ca = batch.eps[..., CA_ATOM_ID, :].float()
-    x_t_ca = batch.x_t[..., CA_ATOM_ID, :].float()
-
-    loss_s1_fm = _fm_loss_ca(v_ca_f32, x_clean_ca, eps_ca, batch.ca_mask)
-    one_minus_t = (1.0 - batch.t.squeeze(-1).squeeze(-1).squeeze(-1)).float()
-    x_hat_ca = x_t_ca + one_minus_t.view(-1, 1, 1) * v_ca_f32
-    loss_s1_lddt = soft_lddt_ca_only(x_hat_ca, x_clean_ca, batch.ca_mask)
-    loss_s1_bond = ca_ca_bond_loss(x_hat_ca, batch.ca_mask, batch.chain_id)
-    loss_s1_dist = distogram_loss_ca_only(
-        dist_logits.float(), x_clean_ca, batch.ca_mask,
+    loss_s1, m_s1 = _stage1_loss_surface(
+        out, batch, alpha_mode=alpha_mode,
+        w_lddt_ca=w_lddt_ca, w_bond_caca=w_bond_caca, w_distogram=w_distogram,
     )
-
-    # Stage 2 loss surface (all-atom, CA residual-refined from Stage 1 anchor)
-    v_atom_f32 = v_atom.float()
-    s1_ca_f32 = s1_ca.float()
-    s1_ca_cond_f32 = s1_ca_cond.float()
-    non_ca_mask = _non_ca_atom_mask(batch.atom_mask)
-    loss_s2_fm = _fm_loss_atom(
-        v_atom_f32, batch.x_clean.float(), batch.eps.float(),
-        non_ca_mask & batch.valid_mask,
+    loss_s2, m_s2 = _stage2_loss_surface(
+        out, batch, alpha_mode=alpha_mode,
+        w_lddt_full=w_lddt_full, w_bond=w_bond, w_clash=w_clash,
+        w_ca_anchor=w_ca_anchor, lddt_cutoff=lddt_cutoff,
     )
-    x_t_s2 = _inject_ca(batch.x_t.float(), s1_ca_cond_f32)
-    x_hat_atom = _x_hat_atom(x_t_s2, batch.t.float(), v_atom_f32)
-    loss_s2_lddt = soft_lddt_ca_loss(x_hat_atom, batch.x_clean.float(),
-                                     batch.ca_mask, cutoff=lddt_cutoff)
-    loss_s2_bond = bond_length_loss(x_hat_atom, batch.res_type,
-                                    batch.atom_mask, batch.res_mask)
-    loss_s2_clash = ca_clash_loss(x_hat_atom, batch.res_mask,
-                                  chain_id=batch.chain_id)
-    loss_s2_ca_anchor = _ca_anchor_loss(x_hat_atom, s1_ca_f32, batch.ca_mask)
-
-    if alpha_mode == "const":
-        alpha = 1.0
-    else:
-        alpha = (1.0 + 8.0 * F.relu(batch.t - 0.5)).mean().item()
-
-    loss_s1_total = (
-        loss_s1_fm
-        + alpha * w_lddt_ca * loss_s1_lddt
-        + w_bond_caca * loss_s1_bond
-        + w_distogram * loss_s1_dist
-    )
-    loss_s2_total = (
-        loss_s2_fm
-        + alpha * w_lddt_full * loss_s2_lddt
-        + w_bond * loss_s2_bond
-        + w_clash * loss_s2_clash
-        + w_ca_anchor * loss_s2_ca_anchor
-    )
-    loss = w_stage1 * loss_s1_total + loss_s2_total
+    loss = w_stage1 * loss_s1 + loss_s2
 
     metrics = {
-        "loss":              loss.item(),
-        "s1_fm":             loss_s1_fm.item(),
-        "s1_lddt":           loss_s1_lddt.item(),
-        "s1_bond_caca":      loss_s1_bond.item(),
-        "s1_distogram":      loss_s1_dist.item(),
-        "s2_fm_atom":        loss_s2_fm.item(),
-        "s2_lddt_full":      loss_s2_lddt.item(),
-        "s2_bond":           loss_s2_bond.item(),
-        "s2_clash":          loss_s2_clash.item(),
-        "s2_ca_anchor":      loss_s2_ca_anchor.item(),
-        "alpha":             alpha,
-        "t_mean":            batch.t.mean().item(),
+        "loss":         loss.item(),
+        "s1_fm":        m_s1["fm"],
+        "s1_lddt":      m_s1["lddt"],
+        "s1_bond_caca": m_s1["bond_caca"],
+        "s1_distogram": m_s1["distogram"],
+        "s2_fm_atom":   m_s2["fm_atom"],
+        "s2_lddt_full": m_s2["lddt_full"],
+        "s2_bond":      m_s2["bond"],
+        "s2_clash":     m_s2["clash"],
+        "s2_ca_anchor": m_s2["ca_anchor"],
+        "alpha":        m_s1["alpha"],
+        "t_mean":       batch.t.mean().item(),
     }
     return loss, metrics
 
 
 @torch.no_grad()
 def joint_eval_step(
-    model,
-    batch: ProteinBatch,
-    use_amp: bool = True,
-    lddt_cutoff: float = 1.5,
+    model, batch: ProteinBatch, use_amp: bool = True, lddt_cutoff: float = 1.5,
 ) -> dict:
     """No-grad eval for joint Phase 3 — both stages' key metrics."""
     model.eval()
     amp_enabled = use_amp and batch.device.type == "cuda"
-
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
         out = model(batch, return_aux=False)
-        v_ca = out["v_ca"]
-        v_atom = out["v_atom"]
-        s1_ca = out["s1_ca"]
-        s1_ca_cond = out.get("s1_ca_cond", s1_ca)
 
-    v_ca_f32 = v_ca.float()
-    v_atom_f32 = v_atom.float()
-    s1_ca_f32 = s1_ca.float()
-    s1_ca_cond_f32 = s1_ca_cond.float()
-
+    v_ca = out["v_ca"].float()
     x_clean_ca = batch.x_clean[..., CA_ATOM_ID, :].float()
     eps_ca = batch.eps[..., CA_ATOM_ID, :].float()
     x_t_ca = batch.x_t[..., CA_ATOM_ID, :].float()
-    loss_s1_fm = _fm_loss_ca(v_ca_f32, x_clean_ca, eps_ca, batch.ca_mask)
-    one_minus_t = (1.0 - batch.t.squeeze(-1).squeeze(-1).squeeze(-1)).float()
-    x_hat_ca = x_t_ca + one_minus_t.view(-1, 1, 1) * v_ca_f32
-    loss_s1_lddt = soft_lddt_ca_only(x_hat_ca, x_clean_ca, batch.ca_mask)
+    x_hat_ca = _recon_ca(x_t_ca, batch.t, v_ca)
 
-    non_ca_mask = _non_ca_atom_mask(batch.atom_mask)
-    loss_s2_fm = _fm_loss_atom(
-        v_atom_f32, batch.x_clean.float(), batch.eps.float(),
-        non_ca_mask & batch.valid_mask,
+    _, m_s2 = _stage2_loss_surface(
+        out, batch, alpha_mode="const",
+        w_lddt_full=1.0, w_bond=0.0, w_clash=0.0, w_ca_anchor=0.0,
+        lddt_cutoff=lddt_cutoff,
     )
-    x_t_s2 = _inject_ca(batch.x_t.float(), s1_ca_cond_f32)
-    x_hat_atom = _x_hat_atom(x_t_s2, batch.t.float(), v_atom_f32)
-    loss_s2_lddt = soft_lddt_ca_loss(x_hat_atom, batch.x_clean.float(),
-                                     batch.ca_mask, cutoff=lddt_cutoff)
-    loss_s2_clash = ca_clash_loss(x_hat_atom, batch.res_mask,
-                                  chain_id=batch.chain_id)
-    loss_s2_ca_anchor = _ca_anchor_loss(x_hat_atom, s1_ca_f32, batch.ca_mask)
     return {
-        "s1_fm":          loss_s1_fm.item(),
-        "s1_lddt":        loss_s1_lddt.item(),
-        "s2_fm_atom":     loss_s2_fm.item(),
-        "s2_lddt_full":   loss_s2_lddt.item(),
-        "s2_clash":       loss_s2_clash.item(),
-        "s2_ca_anchor":   loss_s2_ca_anchor.item(),
-    }
-
-
-# ── Stage 1 eval (kept below new Stage 2 / joint blocks for readability) ──
-
-
-@torch.no_grad()
-def stage1_eval_step(
-    model,
-    batch: ProteinBatch,
-    use_amp: bool = True,
-) -> dict:
-    """No-grad eval for Stage 1."""
-    model.eval()
-    amp_enabled = use_amp and batch.device.type == "cuda"
-
-    with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
-        v_ca, _ = model(batch)
-        n_valid = batch.ca_mask.sum().clamp(min=1)
-        v_rms = (v_ca.pow(2).sum() / n_valid / 3).sqrt()
-
-    v_ca_f32 = v_ca.float()
-    x_clean_ca = batch.x_clean[..., CA_ATOM_ID, :].float()
-    eps_ca = batch.eps[..., CA_ATOM_ID, :].float()
-    x_t_ca = batch.x_t[..., CA_ATOM_ID, :].float()
-
-    loss_fm = _fm_loss_ca(v_ca_f32, x_clean_ca, eps_ca, batch.ca_mask)
-    one_minus_t = (1.0 - batch.t.squeeze(-1).squeeze(-1).squeeze(-1)).float()
-    x_hat_ca = x_t_ca + one_minus_t.view(-1, 1, 1) * v_ca_f32
-    loss_lddt = soft_lddt_ca_only(x_hat_ca, x_clean_ca, batch.ca_mask)
-    loss_bond = ca_ca_bond_loss(x_hat_ca, batch.ca_mask, batch.chain_id)
-    return {
-        "fm":         loss_fm.item(),
-        "lddt":       loss_lddt.item(),
-        "bond_caca":  loss_bond.item(),
-        "v_rms":      v_rms.item(),
+        "s1_fm":        _fm_loss_ca(v_ca, x_clean_ca, eps_ca, batch.ca_mask).item(),
+        "s1_lddt":      soft_lddt_ca_only(x_hat_ca, x_clean_ca, batch.ca_mask).item(),
+        "s2_fm_atom":   m_s2["fm_atom"],
+        "s2_lddt_full": m_s2["lddt_full"],
+        "s2_clash":     m_s2["clash"],
+        "s2_ca_anchor": m_s2["ca_anchor"],
     }

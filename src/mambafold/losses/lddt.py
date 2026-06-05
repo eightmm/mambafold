@@ -3,6 +3,8 @@
 import torch
 from torch import Tensor
 
+from mambafold.data.constants import CA_ATOM_ID
+
 
 def soft_lddt_ca_loss(
     pred_coords: Tensor,
@@ -24,9 +26,9 @@ def soft_lddt_ca_loss(
 
     Returns: scalar loss (1 - mean LDDT)
     """
-    # Extract CA coordinates (slot 1: N, CA, C, O, ...)
-    pred_ca = pred_coords[:, :, 1, :]  # [B, L, 3]
-    true_ca = true_coords[:, :, 1, :]  # [B, L, 3]
+    # Extract CA coordinates (atom14 slot order: N, CA, C, O, ...)
+    pred_ca = pred_coords[:, :, CA_ATOM_ID, :]  # [B, L, 3]
+    true_ca = true_coords[:, :, CA_ATOM_ID, :]  # [B, L, 3]
 
     # Pairwise distances
     pred_dist = torch.linalg.norm(pred_ca.unsqueeze(2) - pred_ca.unsqueeze(1), dim=-1)  # [B, L, L]
@@ -48,39 +50,3 @@ def soft_lddt_ca_loss(
     lddt_score = (lddt_per_pair * mask_f).sum() / mask_f.sum().clamp(min=1)
 
     return 1.0 - lddt_score  # loss = 1 - LDDT
-
-
-def per_residue_lddt_ca(
-    pred_coords: Tensor,
-    true_coords: Tensor,
-    ca_mask: Tensor,
-    cutoff: float = 1.5,
-    thresholds: tuple[float, ...] = (0.05, 0.1, 0.2, 0.4),
-) -> Tensor:
-    """Per-residue Cα-LDDT score (NOT a loss).
-
-    Used as the regression / classification target for the pLDDT confidence
-    head. Same definition as `soft_lddt_ca_loss` but reduced over the j-axis
-    only — one score per residue.
-
-    Returns: [B, L] float in [0, 1].
-    """
-    pred_ca = pred_coords[:, :, 1, :]  # [B, L, 3]
-    true_ca = true_coords[:, :, 1, :]
-    pred_dist = torch.linalg.norm(pred_ca.unsqueeze(2) - pred_ca.unsqueeze(1), dim=-1)
-    true_dist = torch.linalg.norm(true_ca.unsqueeze(2) - true_ca.unsqueeze(1), dim=-1)
-
-    pair_mask = ca_mask.unsqueeze(2) & ca_mask.unsqueeze(1)
-    pair_mask = pair_mask & (true_dist < cutoff)
-    L = pred_ca.shape[1]
-    eye = torch.eye(L, dtype=torch.bool, device=pred_ca.device).unsqueeze(0)
-    pair_mask = pair_mask & ~eye
-
-    dist_error = torch.abs(pred_dist - true_dist)
-    lddt_per_pair = sum(
-        torch.sigmoid((thr - dist_error) * 5.0) for thr in thresholds
-    ) / len(thresholds)                                  # [B, L, L]
-
-    mask_f = pair_mask.to(lddt_per_pair.dtype)
-    per_res = (lddt_per_pair * mask_f).sum(dim=2) / mask_f.sum(dim=2).clamp(min=1)  # [B, L]
-    return per_res

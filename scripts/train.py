@@ -95,8 +95,11 @@ def main():
     if is_main:
         print(f"Model: {n_params:.2f}M params")
 
+    # Only optimize trainable params. In Phase 2 the Stage 1 weights are frozen
+    # (requires_grad=False), so this skips ~273M params' worth of AdamW state.
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=1e-2,
+        trainable_params, lr=args.lr, weight_decay=1e-2,
         fused=torch.cuda.is_available(),
     )
     scheduler = cosine_warmup_lr(optimizer, args.warmup_steps, args.total_steps)
