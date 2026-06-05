@@ -11,15 +11,16 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mambafold.data.types import ProteinBatch
-from mambafold.model.mambafold import MambaFoldEqM
-from mambafold.model.ssm.bimamba3 import BiMamba3Block, Mamba3Block
-from mambafold.model.ssm.mamba3 import Mamba3Layer
+from mambafold.model.bimamba3 import BiMamba3Block, Mamba3Block, Mamba3Layer
+from mambafold.model.fold import MambaFoldStage1
 
 
 def test_mamba3_layer_shape_and_mask():
-    layer = Mamba3Layer(d_model=16, d_state=8, mimo_rank=2)
-    x = torch.randn(2, 5, 16)
-    mask = torch.tensor([[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]], dtype=torch.bool)
+    # d_model * expand must be divisible by headdim (default 64 in Mamba3Layer).
+    layer = Mamba3Layer(d_model=64, d_state=16, mimo_rank=2).cuda()
+    x = torch.randn(2, 5, 64, device="cuda")
+    mask = torch.tensor([[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]],
+                        dtype=torch.bool, device="cuda")
 
     y = layer(x, mask)
 
@@ -28,11 +29,12 @@ def test_mamba3_layer_shape_and_mask():
 
 
 def test_causal_and_bidirectional_blocks_run():
-    x = torch.randn(2, 6, 24)
-    mask = torch.tensor([[1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 1]], dtype=torch.bool)
+    x = torch.randn(2, 6, 64, device="cuda")
+    mask = torch.tensor([[1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 1]],
+                        dtype=torch.bool, device="cuda")
 
-    causal = Mamba3Block(d_model=24, d_state=8, mimo_rank=2)
-    bidir = BiMamba3Block(d_model=24, d_state=8, mimo_rank=2)
+    causal = Mamba3Block(d_model=64, d_state=16, mimo_rank=2).cuda()
+    bidir = BiMamba3Block(d_model=64, d_state=16, mimo_rank=2).cuda()
 
     y_causal = causal(x, mask)
     y_bidir = bidir(x, mask)
@@ -43,38 +45,48 @@ def test_causal_and_bidirectional_blocks_run():
     assert torch.allclose(y_bidir[0, 4:], torch.zeros_like(y_bidir[0, 4:]))
 
 
-def test_mambafold_runs_with_causal_paper_blocks():
+def test_stage1_runs_with_mamba_blocks():
     B, L, A = 2, 4, 15
+    dev = "cuda"
     batch = ProteinBatch(
-        res_type=torch.zeros(B, L, dtype=torch.long),
-        atom_type=torch.zeros(B, L, A, dtype=torch.long),
-        res_mask=torch.ones(B, L, dtype=torch.bool),
-        atom_mask=torch.ones(B, L, A, dtype=torch.bool),
-        valid_mask=torch.ones(B, L, A, dtype=torch.bool),
-        ca_mask=torch.ones(B, L, dtype=torch.bool),
-        x_clean=torch.randn(B, L, A, 3),
-        x_gamma=torch.randn(B, L, A, 3),
-        eps=torch.randn(B, L, A, 3),
-        gamma=torch.rand(B, 1, 1, 1),
-        esm=torch.randn(B, L, 32),
+        res_type=torch.zeros(B, L, dtype=torch.long, device=dev),
+        res_seq_nums=torch.arange(L, device=dev).unsqueeze(0).expand(B, L).contiguous(),
+        atom_type=torch.zeros(B, L, A, dtype=torch.long, device=dev),
+        pair_type=torch.zeros(B, L, A, dtype=torch.long, device=dev),
+        res_mask=torch.ones(B, L, dtype=torch.bool, device=dev),
+        atom_mask=torch.ones(B, L, A, dtype=torch.bool, device=dev),
+        valid_mask=torch.ones(B, L, A, dtype=torch.bool, device=dev),
+        ca_mask=torch.ones(B, L, dtype=torch.bool, device=dev),
+        chain_id=torch.zeros(B, L, dtype=torch.long, device=dev),
+        entity_id=torch.zeros(B, L, dtype=torch.long, device=dev),
+        sym_id=torch.zeros(B, L, dtype=torch.long, device=dev),
+        is_nterm=torch.zeros(B, L, dtype=torch.bool, device=dev),
+        is_cterm=torch.zeros(B, L, dtype=torch.bool, device=dev),
+        x_clean=torch.randn(B, L, A, 3, device=dev),
+        x_t=torch.randn(B, L, A, 3, device=dev),
+        eps=torch.randn(B, L, A, 3, device=dev),
+        t=torch.rand(B, 1, 1, 1, device=dev),
+        esm=torch.randn(B, L, 32, device=dev),
     )
 
-    model = MambaFoldEqM(
-        d_atom=16,
-        d_res=32,
+    model = MambaFoldStage1(
+        d_res=64,
         d_plm=32,
-        n_atom_enc=1,
+        d_plm_proj=32,
+        d_ca_emb=32,
         n_trunk=1,
-        n_atom_dec=1,
+        d_pair=32,
+        n_pair_blocks=1,
+        n_pair_heads=2,
+        d_pair_head=16,
+        pair_mult_c=32,
         use_plm=True,
-        atom_d_state=8,
-        atom_mimo_rank=2,
-        atom_bidirectional=False,
-        d_state=8,
+        d_state=16,
         mimo_rank=2,
-        trunk_bidirectional=False,
-    )
+        headdim=32,
+    ).to(dev)
 
-    out = model(batch)
+    out = model(batch, return_aux=True)
 
-    assert out.shape == (B, L, A, 3)
+    assert out["v_ca"].shape == (B, L, 3)
+    assert out["distogram_logits"].shape[:3] == (B, L, L)

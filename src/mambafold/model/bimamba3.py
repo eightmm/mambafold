@@ -11,9 +11,27 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from mamba_ssm.modules.mamba3 import Mamba3 as _Mamba3
 from torch import Tensor
 
-from mamba_ssm.modules.mamba3 import Mamba3 as _Mamba3
+
+def _default_chunk_size(mimo_rank: int) -> int:
+    """GPU-aware chunk size for Mamba-3 SSD kernels.
+
+    Ampere (A5000, A100): 32 // mimo_rank.
+    Hopper+ (H100, B200): 64 // mimo_rank — larger shared mem lets bigger chunks
+    reduce kernel-launch overhead without OOM.
+    """
+    if mimo_rank <= 1:
+        return 64
+    base = 32
+    if torch.cuda.is_available():
+        try:
+            if torch.cuda.get_device_capability() >= (9, 0):
+                base = 64
+        except Exception:
+            pass
+    return max(1, base // mimo_rank)
 
 
 # ── Primitives ─────────────────────────────────────────────────────────────
@@ -106,7 +124,7 @@ class Mamba3Layer(nn.Module):
         """
         super().__init__()
         is_mimo = mimo_rank > 1
-        self.chunk_size = max(1, 32 // mimo_rank) if is_mimo else 64
+        self.chunk_size = _default_chunk_size(mimo_rank)
         self.ssm = _Mamba3(
             d_model=d_model,
             d_state=d_state,

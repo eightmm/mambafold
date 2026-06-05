@@ -17,10 +17,17 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from mambafold.data.constants import (
-    AA_TO_ID, RESIDUE_ATOMS,
-    BOLTZ_RESIDUES_DTYPE as RESIDUES_DTYPE,
+    AA_TO_ID,
+    RESIDUE_ATOMS,
+)
+from mambafold.data.constants import (
     BOLTZ_ATOMS_DTYPE as ATOMS_DTYPE,
+)
+from mambafold.data.constants import (
     BOLTZ_CHAINS_DTYPE as CHAINS_DTYPE,
+)
+from mambafold.data.constants import (
+    BOLTZ_RESIDUES_DTYPE as RESIDUES_DTYPE,
 )
 
 MOL_TYPE_PROTEIN = 0

@@ -1,36 +1,38 @@
-"""Collation and batching for protein data."""
+"""Collation and batching for protein data (flow-matching corruption)."""
 
 from typing import Optional
 
 import torch
 
 from mambafold.data.constants import CA_ATOM_ID, MAX_ATOMS_PER_RES, PAIR_PAD_ID
-from mambafold.data.transforms import center_and_scale, eqm_corrupt, random_so3_augment
+from mambafold.data.transforms import center_and_scale, flow_corrupt, random_so3_augment
 from mambafold.data.types import ProteinBatch, ProteinExample
 
 
 class ProteinCollator:
-    """Collate ProteinExamples into a padded ProteinBatch with EqM corruption."""
+    """Collate ProteinExamples into a padded ProteinBatch with FM corruption.
+
+    Each batch element gets:
+        x_t = t · x_clean + (1-t) · ε,   t ~ schedule (default uniform)
+    """
 
     def __init__(
         self,
         augment: bool = True,
         copies_per_protein: int = 1,
-        gamma_schedule: str = "logit_normal",
+        t_schedule: str = "uniform",
         max_length: Optional[int] = None,
     ):
         self.augment = augment
         self.copies_per_protein = copies_per_protein
-        self.gamma_schedule = gamma_schedule
+        self.t_schedule = t_schedule
         self.max_length = max_length
 
     def __call__(self, examples: list[ProteinExample]) -> ProteinBatch | None:
-        # Filter None examples
         examples = [e for e in examples if e is not None]
         if len(examples) == 0:
             return None
 
-        # Apply per-example transforms and duplicate for multiple corruptions
         processed = []
         for ex in examples:
             ex = center_and_scale(ex)
@@ -40,11 +42,9 @@ class ProteinCollator:
                 processed.append(ex)
 
         B = len(processed)
-        # Use fixed max_length if provided (prevents TileLang recompilation for varying lengths)
         max_L = self.max_length if self.max_length is not None else max(ex.seq_len for ex in processed)
         A = MAX_ATOMS_PER_RES
 
-        # Initialize batch tensors
         res_type = torch.zeros(B, max_L, dtype=torch.long)
         res_seq_nums = torch.zeros(B, max_L, dtype=torch.long)
         atom_type = torch.zeros(B, max_L, A, dtype=torch.long)
@@ -53,10 +53,15 @@ class ProteinCollator:
         atom_mask = torch.zeros(B, max_L, A, dtype=torch.bool)
         valid_mask = torch.zeros(B, max_L, A, dtype=torch.bool)
         ca_mask = torch.zeros(B, max_L, dtype=torch.bool)
+        chain_id = torch.zeros(B, max_L, dtype=torch.long)
+        entity_id = torch.zeros(B, max_L, dtype=torch.long)
+        sym_id = torch.zeros(B, max_L, dtype=torch.long)
+        is_nterm = torch.zeros(B, max_L, dtype=torch.bool)
+        is_cterm = torch.zeros(B, max_L, dtype=torch.bool)
         x_clean = torch.zeros(B, max_L, A, 3)
-        x_gamma = torch.zeros(B, max_L, A, 3)
+        x_t = torch.zeros(B, max_L, A, 3)
         eps = torch.zeros(B, max_L, A, 3)
-        gamma = torch.zeros(B, 1, 1, 1)
+        t = torch.zeros(B, 1, 1, 1)
 
         for i, ex in enumerate(processed):
             L = ex.seq_len
@@ -68,13 +73,17 @@ class ProteinCollator:
             atom_mask[i, :L] = ex.atom_mask
             valid_mask[i, :L] = ex.atom_mask & ex.observed_mask
             ca_mask[i, :L] = ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID]
+            chain_id[i, :L] = ex.chain_id
+            entity_id[i, :L] = ex.entity_id
+            sym_id[i, :L] = ex.sym_id
+            is_nterm[i, :L] = ex.is_nterm
+            is_cterm[i, :L] = ex.is_cterm
             x_clean[i, :L] = ex.coords
 
-            # EqM corruption
-            xg, ep, gm = eqm_corrupt(ex.coords, ex.atom_mask, self.gamma_schedule)
-            x_gamma[i, :L] = xg
+            xt, ep, ti = flow_corrupt(ex.coords, ex.atom_mask, self.t_schedule)
+            x_t[i, :L] = xt
             eps[i, :L] = ep
-            gamma[i, 0, 0, 0] = gm
+            t[i, 0, 0, 0] = ti
 
         # ESM embeddings from pre-computed dataset
         esm = None
@@ -95,9 +104,14 @@ class ProteinCollator:
             atom_mask=atom_mask,
             valid_mask=valid_mask,
             ca_mask=ca_mask,
+            chain_id=chain_id,
+            entity_id=entity_id,
+            sym_id=sym_id,
+            is_nterm=is_nterm,
+            is_cterm=is_cterm,
             x_clean=x_clean,
-            x_gamma=x_gamma,
+            x_t=x_t,
             eps=eps,
-            gamma=gamma,
+            t=t,
             esm=esm,
         )

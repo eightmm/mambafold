@@ -1,52 +1,41 @@
-# scripts/ — Training and Inference Scripts
+# scripts/ — Training and Data Scripts
+
+## `train.sh`
+
+Preferred launcher. It defaults to `configs/stage1.yaml`, sets W&B/NCCL environment variables, and invokes `torchrun` with one process per visible GPU.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh
+```
+
+Resume:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+RESUME=outputs/train/<run>/ckpt_latest.pt \
+bash scripts/train.sh
+```
 
 ## `train.py`
-**Full DDP training script** (single/multi-GPU).
+
+Underlying DDP entrypoint:
 
 ```bash
-# Single GPU
-PYTHONPATH=src python -u scripts/train.py --config configs/train_base.yaml
-
-# Multi-GPU (torchrun)
-PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py \
-    --config configs/train_base.yaml
-
-# Resume
-PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py \
-    --config configs/train_base.yaml \
-    --resume outputs/train/run1/ckpt_latest.pt
+PYTHONPATH=src uv run torchrun --nproc_per_node=4 scripts/train.py \
+  --config configs/stage1.yaml
 ```
 
-Outputs: Checkpoints, W&B logging, config.json
+Outputs checkpoints, W&B logs, and `config.json`.
 
-## `overfit.py`
-**Quick validation** on ~16 examples. Train → Eval → Visualize in one script.
+## Data prep
 
-```bash
-PYTHONPATH=src python -u scripts/overfit.py \
-    --config configs/overfit_base.yaml \
-    --out_dir outputs/overfit/test1
+```text
+download_rcsb_cif.sh -> batch_convert_cif.py -> build_metadata.py
+                                      |
+                                      v
+extract_deposit_dates.py -> make_val_split.py -> train.txt / val.txt / val_casp.txt
 ```
 
-Outputs:
-- `checkpoint.pt` — model + ema + optimizer
-- `metrics.json` — per-gamma LDDT/RMSD
-- `viz.png` — loss curve, LDDT, RMSD plots
-- `inference.npz` — full inference results for notebooks
+## ESM precompute
 
-## `export_inference.py`
-Re-export inference.npz from trained checkpoint.
-
-```bash
-PYTHONPATH=src python scripts/export_inference.py \
-    --ckpt outputs/train/run1/ckpt_latest.pt \
-    --data_dir afdb_data/train \
-    --out outputs/train/run1/inference.npz
-```
-
-## `viz_sampler.py`
-Visualize sampler trajectories (NAG, Euler).
-
-## SLURM Scripts
-
-See `slurm/AGENTS.md` for submission scripts.
+Use `precompute_esm.py` or the 8-GPU wrapper `precompute_esm_8gpu.sh` to populate `data/rcsb_esm`.

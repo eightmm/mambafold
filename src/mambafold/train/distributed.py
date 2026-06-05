@@ -25,6 +25,61 @@ def setup_dist():
     return True, dist.get_rank(), dist.get_world_size(), f"cuda:{local_rank}"
 
 
+def _redirect_tmpdir_if_noexec():
+    """If /tmp is mounted noexec, TileLang/ninja JIT .so loads fail. Redirect
+    TMPDIR to a project-local .cache/tmp before any JIT kernel compiles."""
+    import tempfile
+    if os.environ.get("TMPDIR"):
+        return  # respect user override
+    tmp = tempfile.gettempdir()
+    probe = os.path.join(tmp, ".mf_exec_probe.sh")
+    try:
+        with open(probe, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(probe, 0o755)
+        exec_ok = os.access(probe, os.X_OK) and subprocess.call(
+            [probe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ) == 0
+    except Exception:
+        exec_ok = False
+    finally:
+        try:
+            os.unlink(probe)
+        except OSError:
+            pass
+    if exec_ok:
+        return
+    # Fallback: write next to the repo's working tree.
+    fallback = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", ".cache", "tmp")
+    )
+    os.makedirs(fallback, exist_ok=True)
+    os.environ["TMPDIR"] = fallback
+    tempfile.tempdir = fallback
+
+
+def enable_cuda_perf_flags():
+    """Enable CUDA/cuDNN fast paths that are safe with bf16 autocast training.
+
+    - TF32 for leftover fp32 matmuls (loss/optimizer math).
+    - cuDNN benchmark for static-shape conv kernels.
+    - bf16 reduced-precision reduction (stays within bf16 dynamic range).
+    - Redirect TMPDIR if /tmp is noexec (required for TileLang JIT on B200).
+    No-op for CUDA flags if CUDA isn't available; TMPDIR redirect always runs.
+    """
+    _redirect_tmpdir_if_noexec()
+    if not torch.cuda.is_available():
+        return
+    torch.set_float32_matmul_precision("high")
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+    # bf16 has the same dynamic range as fp32, so reduced-precision reduction
+    # in bf16 matmuls is safe and noticeably faster on Hopper/Blackwell.
+    if hasattr(torch.backends.cuda.matmul, "allow_bf16_reduced_precision_reduction"):
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
+
+
 def all_reduce_mean(tensor: torch.Tensor) -> float:
     """모든 rank의 텐서를 sum한 뒤 world_size로 나눈 평균 반환."""
     dist.all_reduce(tensor, op=dist.ReduceOp.SUM)

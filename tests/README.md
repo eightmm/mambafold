@@ -1,22 +1,13 @@
-# tests/ - Unit Tests
+# Tests
 
-## Important
-GPU tests must run on SLURM compute nodes (master node has no CUDA).
+Focused checks for the active single-chain model path:
 
-## Running Tests
+- `test_mamba3.py` — Mamba block and Stage 1 smoke shape checks
+- `test_pair_blocks.py` — pair block shape/mask/gradient checks
+- `test_geometry_loss.py` — geometry auxiliary losses
+
+Run:
 
 ```bash
-# On GPU node via srun
-srun --partition=test --gres=gpu:1 --time=00:30:00 python -m pytest tests/
-
-# Or submit via sbatch
-sbatch scripts/slurm/run_tests.sh
+uv run pytest -q
 ```
-
-## Test Files
-- `test_data.py` — Dataset loading, data transforms
-- `test_model.py` — Model forward pass, shape validation
-- `test_forward_shapes.py` — End-to-end shape pipeline
-- `test_eqm.py` — EqM loss math verification
-- `test_sampler.py` — NAG/Euler sampler validation
-- `test_utils.py` — Geometry utilities, metrics

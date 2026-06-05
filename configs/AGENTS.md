@@ -1,59 +1,27 @@
-# configs/ — Configuration Files
+# configs/ — Training Configurations
 
-YAML keys map 1:1 to script argument names. CLI flags override YAML values.
+Active configs: `stage1.yaml`, `stage1_ct.yaml`, `stage2.yaml`, `joint.yaml`.
 
-## Files
+YAML keys map 1:1 to `scripts/train.py` arguments. CLI flags override YAML.
 
-### `train_base.yaml`
-Full-scale training config for multi-GPU DDP.
-- `total_steps: 200000`
-- `lr: 1e-4`, `warmup_steps: 2000`
-- `batch_size: 8` (per-GPU)
-- `max_length: 256` (pretrain)
+## stage configs
 
-### `overfit_base.yaml`
-Template for quick validation (small dataset, ~16 proteins).
+Current production training setup:
 
-### `overfit_test.yaml`
-Test partition config.
-- `n_steps: 5000`
-- `lr: 1e-3`
-- `d_atom: 256, d_res: 256, n_trunk: 6`
-
-### `overfit_6000ada.yaml`
-Larger overfit on 6000ada.
-- `d_atom: 384, d_res: 384, n_trunk: 8`
-- `n_steps: 10000`
-
-### `overfit_plm.yaml`
-Overfit with ESM PLM enabled.
-- `use_plm: true`
-
-## Key Parameters
-
-| Setting | Meaning |
-|---------|---------|
-| `data_dir` | AFDB data path |
-| `max_length` | Max protein length (256 train, 512 finetune) |
-| `batch_size` | Per-GPU batch size |
-| `total_steps` | Training steps |
-| `lr` | Learning rate |
-| `warmup_steps` | Linear warmup to lr |
-| `d_atom` | Atom token dimension |
-| `d_res` | Residue token dimension |
-| `n_atom_enc`, `n_trunk`, `n_atom_dec` | Layer counts |
-| `use_plm` | Enable ESM PLM |
-| `gamma_schedule` | "logit_normal" or "uniform" |
+| Setting | Value |
+|---|---|
+| Objective | flow matching |
+| Data | `data/rcsb`, `data/splits/train.txt`, `data/splits/val.txt` |
+| Length | `max_length: 1024` |
+| Batch | `batch_size: 8`, `grad_accum_steps: 3` |
+| PLM | `use_plm: true`, `esm_dir: data/rcsb_esm`, `d_plm: 1536` |
+| Model | `d_atom=384`, `d_res=1024`, `n_trunk=16` |
+| Aux losses | bond, clash, distogram, pLDDT |
 
 ## Usage
 
 ```bash
-# Use config
-python scripts/train.py --config configs/train_base.yaml
-
-# Override single param
-python scripts/train.py --config configs/train_base.yaml --lr 5e-5
-
-# Disable W&B
-python scripts/train.py --config configs/overfit_test.yaml --no_wandb
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh --lr 5e-5
+CUDA_VISIBLE_DEVICES=0 bash scripts/train.sh --total_steps 100 --no_wandb
 ```

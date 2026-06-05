@@ -30,3 +30,7 @@ benchmarks/casp15/raw/
 # Scoring venv + pip tmp dir (large, regenerable via uv)
 tools/scoring_venv/
 tools/pip_tmp/
+data/rcsb_cif/
+data/rcsb_esmc/
+tools/
+data/splits/sequences.fasta

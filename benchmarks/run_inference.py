@@ -1,13 +1,12 @@
-"""Run MambaFold inference on a benchmark id list (mono + multi).
+"""Run MambaFold inference on a single-chain benchmark id list.
 
-Reads a text file of PDB IDs (one per line, e.g. benchmarks/sets/t1_quick.txt),
-samples one prediction per id with EqM Euler, and writes paired PDBs:
+Reads a text file of PDB IDs (one per line), samples one prediction per id with
+FM Euler ODE, and writes paired PDBs:
 
-    <out_dir>/<pdb_id>_pred.pdb   # model prediction (multi-chain, Kabsch-aligned to GT)
-    <out_dir>/<pdb_id>_gt.pdb     # ground truth     (multi-chain)
+    <out_dir>/<pdb_id>_pred.pdb   # model prediction (Kabsch-aligned to GT)
+    <out_dir>/<pdb_id>_gt.pdb     # ground truth
 
-Both files use the same per-residue → chain-letter mapping so DockQ /
-TM-align / lDDT can pair them up directly without --mapping plumbing.
+Multichain examples are skipped by the dataset loader.
 
 Usage:
     PYTHONPATH=src .venv/bin/python benchmarks/run_inference.py \
@@ -36,13 +35,12 @@ from mambafold.data.constants import CA_ATOM_ID, COORD_SCALE, ID_TO_AA, RESIDUE_
 from mambafold.data.dataset import RCSBDataset
 from mambafold.data.transforms import center_and_scale
 from mambafold.data.types import ProteinBatch
-from mambafold.sampling import sample_euler
+from mambafold.sampling import sample
 from mambafold.train.distributed import enable_cuda_perf_flags
 from mambafold.train.trainer import load_from_checkpoint
 from mambafold.utils.geometry import kabsch_align
 
-
-# A..Z then a..z then 0..9 — DockQ accepts any single-char chain id
+# A..Z then a..z then 0..9
 _CHAIN_LETTERS = (
     [chr(c) for c in range(ord("A"), ord("Z") + 1)]
     + [chr(c) for c in range(ord("a"), ord("z") + 1)]
@@ -50,8 +48,8 @@ _CHAIN_LETTERS = (
 )
 
 
-def save_pdb_multichain(coords_aa, res_type_ids, atom_mask, b_factors, chain_id, out_path):
-    """Write all-atom PDB with one chain per unique chain_id value.
+def save_pdb(coords_aa, res_type_ids, atom_mask, b_factors, chain_id, out_path):
+    """Write all-atom PDB for a single-chain prediction.
 
     Args:
         coords_aa:    [L, A, 3] coords in Å.
@@ -101,7 +99,7 @@ def save_pdb_multichain(coords_aa, res_type_ids, atom_mask, b_factors, chain_id,
     Path(out_path).write_text("".join(lines))
 
 
-def make_batch(x, ex, gamma_cur, device):
+def make_batch(x, ex, t_cur, device):
     L = ex.seq_len
     return ProteinBatch(
         res_type=ex.res_type.unsqueeze(0).to(device),
@@ -114,12 +112,13 @@ def make_batch(x, ex, gamma_cur, device):
         ca_mask=(ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID]).unsqueeze(0).to(device),
         chain_id=ex.chain_id.unsqueeze(0).to(device),
         entity_id=ex.entity_id.unsqueeze(0).to(device),
+        sym_id=ex.sym_id.unsqueeze(0).to(device),
         is_nterm=ex.is_nterm.unsqueeze(0).to(device),
         is_cterm=ex.is_cterm.unsqueeze(0).to(device),
         x_clean=ex.coords.unsqueeze(0).to(device),
-        x_gamma=x.unsqueeze(0),
+        x_t=x.unsqueeze(0),
         eps=torch.zeros_like(x).unsqueeze(0),
-        gamma=torch.tensor([[[[float(gamma_cur)]]]]).to(device),
+        t=torch.tensor([[[[float(t_cur)]]]]).to(device),
         esm=ex.esm.unsqueeze(0).to(device) if ex.esm is not None else None,
     )
 
@@ -147,7 +146,8 @@ def main():
     p.add_argument("--esm_dir", default=None,
                    help="optional ESM dir (must match training: leave unset for no-ESM models)")
     p.add_argument("--max_length", type=int, default=2048)
-    p.add_argument("--n_steps", type=int, default=50)
+    p.add_argument("--n_steps", type=int, default=50,
+                   help="Euler ODE integration steps")
     p.add_argument("--n_seeds", type=int, default=1,
                    help="Number of independent samples per target. Each is written as "
                         "`<pid>_pred_seed<i>.pdb`; the seed-0 file is also linked at "
@@ -156,6 +156,18 @@ def main():
                    help="Sampling seeds = [seed_offset, seed_offset+1, ...]")
     p.add_argument("--use_ema", action="store_true", default=True)
     p.add_argument("--no_ema", dest="use_ema", action="store_false")
+    p.add_argument("--n_recycle", type=int, default=0,
+                   help="Inference-time recycling iterations (0 = baseline). "
+                        "Applies to both stages unless --n_recycle_s1/--n_recycle_s2 are set.")
+    p.add_argument("--recycle_t_start", type=float, default=0.5,
+                   help="t value to re-noise to at each recycle iter (0.5 = midpoint).")
+    # Stage-specific inference knobs.
+    p.add_argument("--n_steps_s2", type=int, default=None,
+                   help="Stage 2 Euler steps. Defaults to --n_steps.")
+    p.add_argument("--n_recycle_s1", type=int, default=None,
+                   help="Stage 1 recycle iters. Defaults to --n_recycle.")
+    p.add_argument("--n_recycle_s2", type=int, default=None,
+                   help="Stage 2 recycle iters. Defaults to --n_recycle.")
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -165,6 +177,29 @@ def main():
     print(f"[load] ckpt={args.ckpt} ema={args.use_ema} device={device}")
     model = load_from_checkpoint(args.ckpt, device, use_ema=args.use_ema)
     model.eval()
+
+    if type(model).__name__ != "TwoStageMambaFold":
+        raise RuntimeError(f"expected TwoStageMambaFold checkpoint, got {type(model).__name__}")
+    n_steps_s2 = args.n_steps_s2 if args.n_steps_s2 is not None else args.n_steps
+    n_recycle_s1 = args.n_recycle_s1 if args.n_recycle_s1 is not None else args.n_recycle
+    n_recycle_s2 = args.n_recycle_s2 if args.n_recycle_s2 is not None else args.n_recycle
+    print(f"[infer] two-stage sampler "
+          f"(n_steps_s1={args.n_steps} s2={n_steps_s2} "
+          f"recycle s1={n_recycle_s1} s2={n_recycle_s2} t={args.recycle_t_start})")
+
+    # Auto-fill --esm_dir from the ckpt's saved args when the ckpt was
+    # trained with use_plm=True. This avoids silent "batch.esm is None"
+    # failures when callers (run_eval.sh, run_recycle_ablation.sh) forget
+    # to forward --esm_dir explicitly. Explicit --esm_dir takes priority.
+    if args.esm_dir is None:
+        ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+        ck_args = ck.get("args", {})
+        if not isinstance(ck_args, dict):
+            ck_args = vars(ck_args)
+        if ck_args.get("use_plm", False):
+            args.esm_dir = ck_args.get("esm_dir") or "data/rcsb_esm"
+            print(f"[esm] auto-detected from ckpt: esm_dir={args.esm_dir}")
+        del ck
 
     ids = [s.strip() for s in Path(args.ids).read_text().split() if s.strip()]
     print(f"[load] eval ids={len(ids)} from {args.ids}")
@@ -176,6 +211,7 @@ def main():
         min_length=10,
         min_obs_ratio=0.0,
         esm_dir=args.esm_dir,
+        single_chain_only=True,
     )
 
     summary_rows: list[dict] = []
@@ -188,11 +224,11 @@ def main():
         ds.files = [npz_path]
         try:
             ex = ds[0]
-        except Exception as e:
-            print(f"[skip] {pid}: load fail {e}")
+        except Exception:
+            print(f"[skip] {pid}: not single-chain or invalid")
             continue
         if ex is None:
-            print(f"[skip] {pid}: no valid example")
+            print(f"[skip] {pid}: not single-chain or invalid")
             continue
 
         ex_c = center_and_scale(ex)
@@ -209,7 +245,7 @@ def main():
         b_zero = np.zeros_like(aa_mask, dtype=np.float32)
 
         # GT written once
-        save_pdb_multichain(true_aa, res_type, atom_mask_np, b_zero,
+        save_pdb(true_aa, res_type, atom_mask_np, b_zero,
                             chain_id_np, out_dir / f"{pid}_gt.pdb")
 
         n_ok = 0
@@ -217,9 +253,15 @@ def main():
         for si, sd in enumerate(seeds):
             try:
                 with torch.no_grad():
-                    _, pred_aa, _, _ = sample_euler(
-                        model, ex, lambda x, g: make_batch(x, ex_c, g, device),
-                        n_steps=args.n_steps, seed=sd, device=device,
+                    _, pred_aa, _, _ = sample(
+                        model, ex,
+                        lambda x, ti: make_batch(x, ex_c, ti, device),
+                        n_steps_s1=args.n_steps,
+                        n_steps_s2=n_steps_s2,
+                        n_recycle_s1=n_recycle_s1,
+                        n_recycle_s2=n_recycle_s2,
+                        recycle_t_start=args.recycle_t_start,
+                        seed=sd, device=device,
                     )
             except torch.cuda.OutOfMemoryError:
                 print(f"[oom] {pid}: L={L} chains={n_chains} seed={sd}")
@@ -231,11 +273,11 @@ def main():
 
             pred_aa_aligned = kabsch_align_to_gt(pred_aa, true_aa, aa_mask)
             seed_path = out_dir / f"{pid}_pred_seed{si}.pdb"
-            save_pdb_multichain(pred_aa_aligned, res_type, atom_mask_np, b_zero,
+            save_pdb(pred_aa_aligned, res_type, atom_mask_np, b_zero,
                                 chain_id_np, seed_path)
             # First successful seed also written as the canonical "<pid>_pred.pdb"
             if n_ok == 0:
-                save_pdb_multichain(pred_aa_aligned, res_type, atom_mask_np, b_zero,
+                save_pdb(pred_aa_aligned, res_type, atom_mask_np, b_zero,
                                     chain_id_np, out_dir / f"{pid}_pred.pdb")
             n_ok += 1
 
@@ -250,15 +292,22 @@ def main():
         print(f"[{i+1:>4}/{len(ids)}] {pid}  L={L:>5}  chains={n_chains:>2}  "
               f"elapsed={elapsed:6.1f}s  eta={eta:6.1f}s")
 
-    (out_dir / "manifest.json").write_text(json.dumps({
+    manifest = {
         "ckpt": str(args.ckpt),
         "ids_file": str(args.ids),
         "n_steps": args.n_steps,
+        "n_recycle": args.n_recycle,
+        "recycle_t_start": args.recycle_t_start,
         "max_length": args.max_length,
         "use_ema": args.use_ema,
+        "single_chain_only": True,
         "n_predicted": len(summary_rows),
         "rows": summary_rows,
-    }, indent=2))
+    }
+    manifest["n_steps_s2"] = n_steps_s2
+    manifest["n_recycle_s1"] = n_recycle_s1
+    manifest["n_recycle_s2"] = n_recycle_s2
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"[done] predictions written: {len(summary_rows)} → {out_dir}")
 
 

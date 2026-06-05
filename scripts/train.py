@@ -1,42 +1,55 @@
 #!/usr/bin/env python
-"""MambaFold EqM — full training script (single/multi-GPU DDP).
+"""MambaFold — full training script (single/multi-GPU DDP).
 
-Single GPU:
-    PYTHONPATH=src python -u scripts/train.py --config configs/train_base.yaml
+Preferred launcher (sets NETRC / NCCL / CUDA_VISIBLE_DEVICES for you):
+    CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh
 
-Multi-GPU (torchrun):
+Direct torchrun (equivalent):
     PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py \
-        --config configs/train_base.yaml
+        --config configs/stage1.yaml
 
 Resume:
-    PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py \
-        --config configs/train_base.yaml \
-        --resume outputs/train/run1/ckpt_latest.pt
+    RESUME=outputs/train/run1/ckpt_latest.pt \
+        CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh
 """
 
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.distributed as dist
 import torch.optim as optim
-import wandb
 from torch.nn.parallel import DistributedDataParallel as DDP
+
+import wandb
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mambafold.data.loader import build_dataloaders, inf_loader
 from mambafold.train.config import parse_args
-from mambafold.train.distributed import GPUMonitor, all_reduce_mean, setup_dist
+from mambafold.train.crop_schedule import pick_crop_length
+from mambafold.train.distributed import (
+    GPUMonitor,
+    all_reduce_mean,
+    enable_cuda_perf_flags,
+    setup_dist,
+)
 from mambafold.train.ema import EMA
-from mambafold.train.engine import eval_step, train_step
+from mambafold.train.engine import (
+    joint_eval_step,
+    joint_forward_and_loss,
+    stage1_eval_step,
+    stage1_forward_and_loss,
+    stage2_eval_step,
+    stage2_forward_and_loss,
+)
 from mambafold.train.logging import init_wandb, log_metrics, log_val_metrics
 from mambafold.train.trainer import (
     build_model,
     cosine_warmup_lr,
-    load_checkpoint,
     save_checkpoint,
     seed_all,
 )
@@ -47,6 +60,7 @@ def main():
     is_dist, rank, world_size, device = setup_dist()
     is_main = (rank == 0)
     args, _ = parse_args()
+    enable_cuda_perf_flags()
 
     if is_main:
         print(f"Config: {args.config}")
@@ -58,14 +72,15 @@ def main():
         (out_dir / "config.json").write_text(json.dumps(vars(args), indent=2))
         print(f"Output dir: {out_dir}")
         print(f"Device: {device} | world_size: {world_size} "
-              f"| total_batch: {args.batch_size * world_size}")
+              f"| total_batch: {args.batch_size * world_size * args.grad_accum_steps}")
 
     # ── dataset ──────────────────────────────────────────────────────────────
     loader, sampler, val_loader, dataset = build_dataloaders(args, is_dist)
     if is_main:
         print(f"Dataset: {len(dataset)} proteins "
               f"| per-GPU batch={args.batch_size} "
-              f"| effective batch={args.batch_size * world_size}")
+              f"| grad_accum={args.grad_accum_steps} "
+              f"| effective batch={args.batch_size * world_size * args.grad_accum_steps}")
 
     # ── model ────────────────────────────────────────────────────────────────
     seed_all(args.seed)
@@ -80,7 +95,10 @@ def main():
     if is_main:
         print(f"Model: {n_params:.2f}M params")
 
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-2)
+    optimizer = optim.AdamW(
+        model.parameters(), lr=args.lr, weight_decay=1e-2,
+        fused=torch.cuda.is_available(),
+    )
     scheduler = cosine_warmup_lr(optimizer, args.warmup_steps, args.total_steps)
 
     # ── resume ───────────────────────────────────────────────────────────────
@@ -127,50 +145,118 @@ def main():
     step = start_step
     metric_sums: dict[str, float] = {}
     metric_count = 0
+    grad_accum = max(1, int(getattr(args, "grad_accum_steps", 1)))
+    crop_schedule = getattr(args, "crop_schedule", None)
+    loader_iter = iter(inf_loader(loader, sampler))
 
     try:
-        for batch in inf_loader(loader, sampler):
-            if step >= args.total_steps:
-                break
-            if batch is None:
-                continue
+        while step < args.total_steps:
+            target_L = pick_crop_length(step, crop_schedule, args.max_length)
 
-            batch = batch.to(torch.device(device))
+            optimizer.zero_grad(set_to_none=True)
+            accum: dict[str, float] = {}
             oom = False
-            try:
-                metrics = train_step(model, batch, optimizer,
-                                     grad_clip=args.grad_clip,
-                                     alpha_mode=args.alpha_mode, use_amp=True)
-            except torch.cuda.OutOfMemoryError:
-                oom = True
-                torch.cuda.empty_cache()
+            for micro_idx in range(grad_accum):
+                try:
+                    batch = next(loader_iter)
+                except StopIteration:
+                    loader_iter = iter(inf_loader(loader, sampler))
+                    batch = next(loader_iter)
+                if batch is None:
+                    oom = True
+                    break
+                batch = batch.to(torch.device(device)).truncate_length(target_L)
+
+                is_last = (micro_idx == grad_accum - 1)
+                # Skip DDP all-reduce on intermediate micro-steps; final micro
+                # synchronizes the accumulated grads across ranks once.
+                sync_ctx = (model.no_sync() if (is_dist and not is_last)
+                            else nullcontext())
+                try:
+                    with sync_ctx:
+                        stage = getattr(args, "stage", 1)
+                        if stage == 1:
+                            loss, m = stage1_forward_and_loss(
+                                model, batch,
+                                alpha_mode=args.alpha_mode, use_amp=True,
+                                w_lddt_ca=getattr(args, "w_lddt_ca", 1.0),
+                                w_bond_caca=getattr(args, "w_bond_caca", 0.1),
+                                w_distogram=getattr(args, "w_distogram", 0.5),
+                            )
+                        elif stage == 2:
+                            loss, m = stage2_forward_and_loss(
+                                model, batch,
+                                alpha_mode=args.alpha_mode, use_amp=True,
+                                w_lddt_full=getattr(args, "w_lddt_full", 1.0),
+                                w_bond=getattr(args, "w_bond", 0.05),
+                                w_clash=getattr(args, "w_clash", 0.01),
+                                w_ca_anchor=getattr(args, "w_ca_anchor", 2.0),
+                                ca_condition_noise_std=getattr(args, "ca_condition_noise_std", 0.0),
+                                ca_condition_noise_prob=getattr(args, "ca_condition_noise_prob", 0.0),
+                            )
+                        elif stage == "joint":
+                            loss, m = joint_forward_and_loss(
+                                model, batch,
+                                alpha_mode=args.alpha_mode, use_amp=True,
+                                w_lddt_ca=getattr(args, "w_lddt_ca", 1.0),
+                                w_bond_caca=getattr(args, "w_bond_caca", 0.1),
+                                w_distogram=getattr(args, "w_distogram", 0.5),
+                                w_lddt_full=getattr(args, "w_lddt_full", 1.0),
+                                w_bond=getattr(args, "w_bond", 0.05),
+                                w_clash=getattr(args, "w_clash", 0.01),
+                                w_ca_anchor=getattr(args, "w_ca_anchor", 2.0),
+                                ca_condition_noise_std=getattr(args, "ca_condition_noise_std", 0.0),
+                                ca_condition_noise_prob=getattr(args, "ca_condition_noise_prob", 0.0),
+                                w_stage1=getattr(args, "w_stage1", 1.0),
+                            )
+                        else:
+                            raise ValueError(f"unknown stage: {stage!r}")
+                        if not torch.isfinite(loss):
+                            oom = True
+                            break
+                        (loss / grad_accum).backward()
+                except torch.cuda.OutOfMemoryError:
+                    oom = True
+                    torch.cuda.empty_cache()
+                    break
+                for k, v in m.items():
+                    accum[k] = accum.get(k, 0.0) + v / grad_accum
+
+            if oom:
                 optimizer.zero_grad(set_to_none=True)
 
-            # Check for NaN loss (indicates corrupted batch)
-            if not oom and not np.isfinite(metrics["loss"]):
-                oom = True  # reuse skip path
-                optimizer.zero_grad(set_to_none=True)
-
-            # Sync skip flag across ranks so all skip together
+            # Sync skip across ranks so all rank skip together
             if is_dist:
                 skip_t = torch.tensor([1 if oom else 0], device=device)
                 dist.all_reduce(skip_t, op=dist.ReduceOp.MAX)
                 oom = skip_t.item() > 0
             if oom:
                 if is_main:
-                    print(f"[step {step}] OOM/NaN — skipped batch "
-                          f"(L={batch.res_mask.shape[1]})", flush=True)
+                    print(f"[step {step}] OOM/NaN — skipped (target_L={target_L})",
+                          flush=True)
                 continue
 
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), args.grad_clip).item()
+            skipped = (not (grad_norm < 1e4)) or (grad_norm != grad_norm)
+            if not skipped:
+                optimizer.step()
             scheduler.step()
-            ema.update(model.module if is_dist else model)
+            if not skipped:
+                ema.update(model.module if is_dist else model)
+            elif is_main:
+                print(f"[step {step}] gnorm spike skipped "
+                      f"(gnorm={grad_norm:.2e})", flush=True)
+
+            accum["grad_norm"] = grad_norm
+            accum["target_L"] = float(target_L)
             step += 1
 
             # Metric accumulation
             if is_dist:
-                t = torch.tensor(metrics["loss"], device=device)
-                metrics["loss"] = all_reduce_mean(t)
-            for k, v in metrics.items():
+                t = torch.tensor(accum["loss"], device=device)
+                accum["loss"] = all_reduce_mean(t)
+            for k, v in accum.items():
                 metric_sums[k] = metric_sums.get(k, 0.0) + v
             metric_count += 1
 
@@ -193,7 +279,21 @@ def main():
                             if vbatch is None:
                                 continue
                             vbatch = vbatch.to(torch.device(device))
-                            vm = eval_step(ema.shadow, vbatch, use_amp=True)
+                            stage = getattr(args, "stage", 1)
+                            if stage == 1:
+                                vm = stage1_eval_step(
+                                    ema.shadow, vbatch, use_amp=True,
+                                )
+                            elif stage == 2:
+                                vm = stage2_eval_step(
+                                    ema.shadow, vbatch, use_amp=True,
+                                )
+                            elif stage == "joint":
+                                vm = joint_eval_step(
+                                    ema.shadow, vbatch, use_amp=True,
+                                )
+                            else:
+                                raise ValueError(f"unknown stage: {stage!r}")
                             for k, v in vm.items():
                                 val_metrics.setdefault(k, []).append(v)
                     log_val_metrics(step,

@@ -9,7 +9,6 @@ from torch.utils.data import Dataset
 from mambafold.data.constants import (
     AA_TO_ID,
     ATOM_NAME_TO_ID,
-    CA_ATOM_ID,
     MAX_ATOMS_PER_RES,
     PAIR_PAD_ID,
     PAIR_TO_ID,
@@ -121,6 +120,12 @@ class AFDBDataset(Dataset):
                         atom_mask[i, slot] = True
                         observed_mask[i, slot] = raw_obs[j] if j < len(raw_obs) else False
 
+        # Legacy path: single chain, single entity; mark true N/C terminus.
+        is_nterm_t = torch.zeros(L, dtype=torch.bool)
+        is_cterm_t = torch.zeros(L, dtype=torch.bool)
+        if L > 0:
+            is_nterm_t[0] = True
+            is_cterm_t[L - 1] = True
         return ProteinExample(
             res_type=res_type,
             atom_type=atom_type,
@@ -130,6 +135,8 @@ class AFDBDataset(Dataset):
             observed_mask=observed_mask,
             res_seq_nums=res_seq_nums,
             seq_len=L,
+            is_nterm=is_nterm_t,
+            is_cterm=is_cterm_t,
             esm=esm_raw,
         )
 
@@ -147,12 +154,14 @@ class RCSBDataset(Dataset):
 
     def __init__(self, data_dir: str, max_length: int = 512,
                  min_length: int = 20, min_obs_ratio: float = 0.5,
-                 file_list: str | None = None, esm_dir: str | None = None):
+                 file_list: str | None = None, esm_dir: str | None = None,
+                 single_chain_only: bool = False):
         self.data_dir = Path(data_dir)
         self.max_length = max_length
         self.min_length = min_length
         self.min_obs_ratio = min_obs_ratio
         self.esm_dir = Path(esm_dir) if esm_dir else None
+        self.single_chain_only = single_chain_only
         if file_list is not None:
             self.files = sorted(
                 self.data_dir / line.strip()
@@ -182,44 +191,93 @@ class RCSBDataset(Dataset):
         raise RuntimeError("RCSBDataset: no valid sample in entire dataset")
 
     def _canonicalize(self, data, path: Path | None = None) -> ProteinExample | None:
+        """Multi-chain canonicalization.
+
+        Walks every protein chain in the entry, stitches them into a single
+        flat residue sequence, and tags each residue with `chain_id` (0-based,
+        order-preserving) and `res_seq_nums` (original res_idx within that
+        chain so the position embedder can see per-chain gaps).
+
+        Random crop is taken as a contiguous window over the concatenation;
+        chain boundaries inside the crop are preserved in chain_id.
+        """
         residues = data["residues"]
         atoms = data["atoms"]
         chains = data["chains"]
 
-        # Collect residue indices per protein chain (track original index for ESM lookup)
-        protein_chains = []       # filtered residue lists
-        protein_chain_origins = [] # original protein-chain index (matches precompute _ch{j}.npy)
-        prot_chain_idx = 0
+        # Gather (residue_idx, chain_local_idx, chain_id, chain_origin_idx) entries
+        entries: list[tuple[int, int, int, int]] = []
+        per_chain_counts: list[int] = []          # chain_id → total standard residues (before crop)
+        per_chain_entity: list[int] = []          # chain_id → entity_id (same value for chains with identical sequence)
+        per_chain_sym: list[int] = []             # chain_id → sym_id (copy number within entity, AF3 style)
+        chain_origin_idx = 0             # original protein-chain index (for ESM lookup)
+        chain_id_next = 0                # 0-based id for kept chains
+        chain_origin_map: list[int] = [] # chain_id → origin_idx
+        seq_to_entity: dict[tuple, int] = {}      # residue-name tuple → entity_id
+        seq_to_sym_count: dict[tuple, int] = {}   # residue-name tuple → next sym_id (copy 0, 1, ...)
         for ch in chains:
             if ch["mol_type"] != self.MOL_TYPE_PROTEIN:
                 continue
             r_start = int(ch["res_idx"])
             r_end = r_start + int(ch["res_num"])
-            chain_valid = [
-                i for i in range(r_start, r_end)
-                if residues[i]["is_standard"] and residues[i]["name"] in AA_TO_ID
-                   and residues[i]["name"] != "UNK"
-            ]
-            if len(chain_valid) >= self.min_length:
-                protein_chains.append(chain_valid)
-                protein_chain_origins.append(prot_chain_idx)
-            prot_chain_idx += 1
+            local = 0
+            kept = []
+            for i in range(r_start, r_end):
+                r = residues[i]
+                if (r["is_standard"] and r["name"] in AA_TO_ID
+                        and r["name"] != "UNK"):
+                    kept.append((i, local))
+                    local += 1
+            if len(kept) >= self.min_length:
+                for ri, loc in kept:
+                    entries.append((ri, loc, chain_id_next, chain_origin_idx))
+                per_chain_counts.append(len(kept))
+                # Entity id: chains with identical residue-name sequence share an id.
+                seq_tuple = tuple(str(residues[ri]["name"]) for ri, _ in kept)
+                if seq_tuple not in seq_to_entity:
+                    seq_to_entity[seq_tuple] = len(seq_to_entity)
+                per_chain_entity.append(seq_to_entity[seq_tuple])
+                # Sym id: 0-based copy number within an entity (homomer copies)
+                sym_id_val = seq_to_sym_count.get(seq_tuple, 0)
+                seq_to_sym_count[seq_tuple] = sym_id_val + 1
+                per_chain_sym.append(sym_id_val)
+                chain_origin_map.append(chain_origin_idx)
+                chain_id_next += 1
+            chain_origin_idx += 1
 
-        if not protein_chains:
+        if not entries:
+            return None
+        if self.single_chain_only and chain_id_next != 1:
             return None
 
-        # Pick one chain randomly
-        pick = int(torch.randint(0, len(protein_chains), (1,)).item())
-        valid = protein_chains[pick]
-        esm_chain_idx = protein_chain_origins[pick]  # for ESM file lookup
+        # ESM precompute may intentionally cap very long chains (default 2048).
+        # When PLM features are requested, only sample residues whose chain-local
+        # index has a corresponding ESM row. Otherwise a random tail crop from a
+        # very long chain would make the whole batch lose PLM conditioning.
+        if self.esm_dir is not None and path is not None:
+            esm_lengths: dict[int, int] = {}
+            filtered_entries = []
+            for ri, loc, cid, origin in entries:
+                if origin not in esm_lengths:
+                    p = self.esm_dir / f"{path.stem}_ch{origin}.npy"
+                    if not p.exists():
+                        return None
+                    try:
+                        esm_lengths[origin] = int(np.load(p, mmap_mode="r").shape[0])
+                    except Exception:
+                        return None
+                if loc < esm_lengths[origin]:
+                    filtered_entries.append((ri, loc, cid, origin))
+            entries = filtered_entries
+            if not entries:
+                return None
 
-        # Random crop
-        esm_start = 0
-        if len(valid) > self.max_length:
-            esm_start = int(torch.randint(0, len(valid) - self.max_length, (1,)).item())
-            valid = valid[esm_start: esm_start + self.max_length]
-
-        L = len(valid)
+        # Random contiguous crop over the flat concatenation
+        start = 0
+        if len(entries) > self.max_length:
+            start = int(torch.randint(0, len(entries) - self.max_length, (1,)).item())
+            entries = entries[start: start + self.max_length]
+        L = len(entries)
         A = MAX_ATOMS_PER_RES
 
         res_type     = torch.zeros(L, dtype=torch.long)
@@ -228,18 +286,30 @@ class RCSBDataset(Dataset):
         coords       = torch.zeros(L, A, 3, dtype=torch.float32)
         atom_mask    = torch.zeros(L, A, dtype=torch.bool)
         observed_mask = torch.zeros(L, A, dtype=torch.bool)
-        res_seq_nums = torch.arange(L, dtype=torch.long)
+        res_seq_nums = torch.zeros(L, dtype=torch.long)
+        chain_id_t   = torch.zeros(L, dtype=torch.long)
+        entity_id_t  = torch.zeros(L, dtype=torch.long)
+        sym_id_t     = torch.zeros(L, dtype=torch.long)
+        is_nterm_t   = torch.zeros(L, dtype=torch.bool)
+        is_cterm_t   = torch.zeros(L, dtype=torch.bool)
 
-        for i, ri in enumerate(valid):
+        for i, (ri, loc, cid, _origin) in enumerate(entries):
             res = residues[ri]
             res_name = str(res["name"])
-            res_type[i] = AA_TO_ID.get(res_name, AA_TO_ID["UNK"])
+            res_type[i]     = AA_TO_ID.get(res_name, AA_TO_ID["UNK"])
+            res_seq_nums[i] = loc       # residue index within its chain
+            chain_id_t[i]   = cid
+            entity_id_t[i]  = per_chain_entity[cid]
+            sym_id_t[i]     = per_chain_sym[cid]
+            # Terminus refers to the ORIGINAL chain (not the crop):
+            # loc == 0 → N-terminus; loc == len(kept)-1 → C-terminus.
+            is_nterm_t[i]   = (loc == 0)
+            is_cterm_t[i]   = (loc == per_chain_counts[cid] - 1)
 
             slot_map    = RESIDUE_ATOM_TO_SLOT.get(res_name, RESIDUE_ATOM_TO_SLOT["UNK"])
             canon_names = RESIDUE_ATOMS.get(res_name, [])
             a_start     = int(res["atom_idx"])
             a_num       = int(res["atom_num"])
-
             for j in range(min(a_num, len(canon_names))):
                 atom_name = canon_names[j]
                 if atom_name not in slot_map:
@@ -248,10 +318,10 @@ class RCSBDataset(Dataset):
                 if slot >= A:
                     continue
                 a = atoms[a_start + j]
-                atom_type[i, slot]    = ATOM_NAME_TO_ID.get(atom_name, ATOM_NAME_TO_ID["PAD"])
-                pair_type[i, slot]    = PAIR_TO_ID.get((res_name, atom_name), PAIR_PAD_ID)
-                coords[i, slot]       = torch.tensor(a["coords"], dtype=torch.float32)
-                atom_mask[i, slot]    = True
+                atom_type[i, slot]     = ATOM_NAME_TO_ID.get(atom_name, ATOM_NAME_TO_ID["PAD"])
+                pair_type[i, slot]     = PAIR_TO_ID.get((res_name, atom_name), PAIR_PAD_ID)
+                coords[i, slot]        = torch.tensor(a["coords"], dtype=torch.float32)
+                atom_mask[i, slot]     = True
                 observed_mask[i, slot] = bool(a["is_present"])
 
         # Filter low-observation structures
@@ -260,16 +330,33 @@ class RCSBDataset(Dataset):
         if n_atoms > 0 and n_obs / n_atoms < self.min_obs_ratio:
             return None
 
-        # ESM embedding (pre-computed per chain)
+        # ESM embeddings: per chain file `{stem}_ch{origin}.npy`, reassembled per crop
         esm = None
         if self.esm_dir is not None and path is not None:
-            esm_path = self.esm_dir / f"{path.stem}_ch{esm_chain_idx}.npy"
-            if esm_path.exists():
-                try:
-                    arr = np.load(esm_path)          # [n_chain_residues, d_esm]
-                    esm = torch.from_numpy(arr[esm_start:esm_start + L].copy())
-                except Exception:
-                    pass
+            d_esm = None
+            per_chain_cache: dict[int, np.ndarray] = {}
+            esm_rows: list[torch.Tensor] = []
+            ok = True
+            for ri, loc, cid, origin in entries:
+                if origin not in per_chain_cache:
+                    p = self.esm_dir / f"{path.stem}_ch{origin}.npy"
+                    if not p.exists():
+                        ok = False
+                        break
+                    try:
+                        per_chain_cache[origin] = np.load(p)
+                    except Exception:
+                        ok = False
+                        break
+                arr = per_chain_cache[origin]
+                if loc >= arr.shape[0]:
+                    ok = False
+                    break
+                if d_esm is None:
+                    d_esm = arr.shape[1]
+                esm_rows.append(torch.from_numpy(arr[loc].copy()))
+            if ok and esm_rows:
+                esm = torch.stack(esm_rows, dim=0)
 
         return ProteinExample(
             res_type=res_type,
@@ -280,5 +367,10 @@ class RCSBDataset(Dataset):
             observed_mask=observed_mask,
             res_seq_nums=res_seq_nums,
             seq_len=L,
+            chain_id=chain_id_t,
+            entity_id=entity_id_t,
+            sym_id=sym_id_t,
+            is_nterm=is_nterm_t,
+            is_cterm=is_cterm_t,
             esm=esm,
         )

@@ -1,0 +1,116 @@
+# MambaFold — Stage 1 PT (Pre-Training, L=512, short-crop)
+#
+# Phase 1a of the 2-stage coarse-to-fine pipeline. PT runs at L=512 with
+# batch=4 to exploit the lower pair-tensor memory at short crops. When PT
+# finishes (60K steps), STOP this run and continue with
+# `configs/stage1_ct.yaml` (CT, L=1024, batch=1, resumes from this
+# ckpt).
+#
+# Why two phases?
+#   Pair tensor scales O(L²). At L=512 we have 4× headroom vs L=1024;
+#   using batch=4 there cuts micro-step kernel-launch overhead and
+#   roughly halves PT wall time. CT then needs batch=1 to fit the
+#   L=1024 pair stack.
+#
+# Usage:
+#   CUDA_VISIBLE_DEVICES=0,1,2,3 \
+#     CONFIG=configs/stage1.yaml \
+#     bash scripts/train.sh
+#
+# Continuation (after PT ckpt_0060000 reached):
+#   CUDA_VISIBLE_DEVICES=0,1,2,3 \
+#     CONFIG=configs/stage1_ct.yaml \
+#     RESUME=outputs/train/<pt_run>/ckpt_latest.pt \
+#     bash scripts/train.sh
+#
+# References:
+#   docs/architecture.md      — full spec
+#   docs/pair_module.md       — pair stack equations
+#   docs/architecture.md    — I3 details + decision log
+
+# ── Model dispatch ────────────────────────────────────────────────────────
+stage: 1
+
+# ── Data ──────────────────────────────────────────────────────────────────
+data_dir:      data/rcsb
+val_data_dir:  data/rcsb
+file_list:     data/splits/train.txt
+val_file_list: data/splits/val.txt
+max_length: 512               # PT — short crop. Trainer also clamps via crop_schedule.
+batch_size: 4                 # per-GPU. Pair tensor at L=512 has 4× headroom
+                              # vs L=1024 → batch=4 fits comfortably (≈80 GB / GPU).
+num_workers: 16
+copies_per_protein: 1
+single_chain_only: true
+
+# Effective batch = 4 GPUs × batch_size 4 × grad_accum 6 = 96.
+grad_accum_steps: 6
+
+# ── Length-balanced sampling (mild) ──────────────────────────────────────
+# Counters the RCSB short-tail bias that caused L=512-1024
+# mono lDDT drop 0.80 → 0.72. Mild weighting: L^0.5 clipped to [1.0, 1.5]
+# shifts the [500,1024] band from 8% → 28% of train samples, keeps the
+# short band (<200) at ~14% (vs uniform 45%). Tunable per run.
+length_balanced_sampling: true
+metadata_path: data/splits/metadata.tsv
+length_balance_mode: power
+length_balance_exponent: 0.5
+length_balance_clip_min: 1.0
+length_balance_clip_max: 1.5
+
+# ── Crop schedule — PT only (single phase, L=512). CT lives in stage1_ct.yaml.
+crop_schedule:
+  - weights: {512: 1.0}
+
+# ── Output ────────────────────────────────────────────────────────────────
+out_dir: null
+resume: null
+
+# ── Training (PT only, 60K steps; CT continues from here in stage1_ct.yaml)
+total_steps: 60_000
+lr: 1.0e-4
+warmup_steps: 3_000
+grad_clip: 1.0
+t_schedule: uniform
+ema_decay: 0.999
+log_interval: 50
+ckpt_interval: 5_000
+eval_interval: 5_000
+seed: 0
+
+# ── Stage 1 model dims ───────────────────────────────────────────────────
+d_res: 1024
+n_trunk: 12                   # 12 BiMamba layers; capacity moved to pair stack
+d_res_type: 32
+d_res_pos: 64
+d_plm_proj: 256
+d_ca_emb: 128
+d_state: 64
+mimo_rank: 4
+expand: 2
+headdim: 64
+
+# ── Pair stack (after I1 memory profile) ──────────────────────────────────
+d_pair: 192
+n_pair_blocks: 4              # 6 hits 121 GB / GPU at L=1024 batch=1 → too tight
+n_pair_heads: 4
+d_pair_head: 48
+pair_mult_c: 128
+
+# ── Loss composition (Stage 1) ─────────────────────────────────────────
+w_lddt_ca:       1.0          # soft Cα-lDDT on x_hat
+w_bond_caca:     0.1          # adjacent in-chain CA-CA bond
+w_distogram:     0.5          # AF2-style aux from pair stack
+alpha_mode: ramp              # α = 1 + 8·ReLU(t-0.5).mean
+
+# ── PLM (ESM3) ────────────────────────────────────────────────────────────
+use_plm: true
+d_plm: 1536
+esm_dir: data/rcsb_esm
+
+# ── W&B ───────────────────────────────────────────────────────────────────
+wandb_project: mambafold
+wandb_name: null
+wandb_tags: [stage1_pt, single_chain, ca_only, linear_tri_attn, pair_x4, L_512]
+wandb_offline: false
+no_wandb: false

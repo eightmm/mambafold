@@ -1,7 +1,7 @@
 [project]
 name = "mambafold"
 version = "0.1.0"
-description = "Mamba-based single-chain protein structure prediction with Equilibrium Matching"
+description = "Mamba-based all-atom protein structure prediction with flow matching and ESM3 conditioning"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "torch>=2.4",
@@ -13,6 +13,7 @@ dependencies = [
     "scipy>=1.13",
     "esm>=3.2.3",
     "causal-conv1d>=1.4",
+    "mamba-ssm",
     "ipykernel>=7.2.0",
     "ipympl>=0.10.0",
 ]
@@ -41,4 +42,9 @@ select = ["E", "F", "I"]
 testpaths = ["tests"]
 
 [tool.uv]
-find-links = ["https://download.pytorch.org/whl/cu128"]
+find-links = ["https://download.pytorch.org/whl/cu130"]
+no-build-isolation-package = ["mamba-ssm"]
+
+[tool.uv.sources]
+causal-conv1d = { url = "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4/causal_conv1d-1.6.1%2Bcu13torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" }
+mamba-ssm = { git = "https://github.com/state-spaces/mamba.git" }

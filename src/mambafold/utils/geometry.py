@@ -4,7 +4,6 @@ import numpy as np
 import torch
 from torch import Tensor
 
-
 # ── NumPy utilities (for inference / visualization) ──────────────────────────
 
 def kabsch_align(mobile: np.ndarray, ref: np.ndarray):
