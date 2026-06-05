@@ -99,6 +99,12 @@ def parse_args(argv=None):
     #   full=mult+attn (default), pairmixer=mult only (arXiv:2510.18870), attn-only.
     parser.add_argument("--pair_use_mult_update", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--pair_use_tri_attn", action=argparse.BooleanOptionalAction, default=True)
+    # Nemotron-style hybrid: make some trunk layers self-attention (gated +
+    # zero-init AttnResidual). `trunk_attn_layers` = explicit 0-based indices
+    # (e.g. [10,11] = last two of 12); `trunk_attn_every` = every k-th layer.
+    parser.add_argument("--trunk_attn_layers", type=int, nargs="*", default=None)
+    parser.add_argument("--trunk_attn_every", type=int, default=None)
+    parser.add_argument("--n_attn_heads", type=int, default=16)
     parser.add_argument("--n_pair_heads", type=int, default=4)
     parser.add_argument("--d_pair_head", type=int, default=48)
     parser.add_argument("--pair_mult_c", type=int, default=128)

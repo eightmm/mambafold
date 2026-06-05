@@ -89,6 +89,11 @@ mimo_rank: 4
 expand: 2
 headdim: 64
 
+# ── Nemotron-style hybrid trunk: last 2 of 12 layers are gated self-attention
+# (zero-init AttnResidual). Gives all-to-all residue mixing Mamba scan lacks.
+trunk_attn_layers: [10, 11]
+n_attn_heads: 16
+
 # ── Pair stack (Pairmixer preset: arXiv:2510.18870) ───────────────────────
 # Triangle multiplication is the load-bearing op; triangle attention is dropped
 # (redundant + the L attention ops are the wall-clock bottleneck). Block =

@@ -41,6 +41,9 @@ def _build_stage1_module(cfg: dict, device: str = "cpu"):
         n_cycles=cfg.get("n_cycles_train", 1),
         pair_use_mult_update=cfg.get("pair_use_mult_update", True),
         pair_use_tri_attn=cfg.get("pair_use_tri_attn", True),
+        trunk_attn_layers=cfg.get("trunk_attn_layers", None),
+        trunk_attn_every=cfg.get("trunk_attn_every", None),
+        n_attn_heads=cfg.get("n_attn_heads", 16),
     ).to(torch.device(device))
 
 

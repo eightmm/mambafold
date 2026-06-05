@@ -69,6 +69,10 @@ mimo_rank: 4
 expand: 2
 headdim: 64
 
+# Nemotron-style hybrid trunk (must match PT ckpt)
+trunk_attn_layers: [10, 11]
+n_attn_heads: 16
+
 d_pair: 192
 n_pair_blocks: 4
 n_pair_heads: 4

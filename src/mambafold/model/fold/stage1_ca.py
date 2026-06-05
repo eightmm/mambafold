@@ -88,6 +88,9 @@ class MambaFoldStage1(nn.Module):
         recycle_max_dist: float = 22.0,
         pair_use_mult_update: bool = True,
         pair_use_tri_attn: bool = True,
+        trunk_attn_layers: list[int] | None = None,
+        trunk_attn_every: int | None = None,
+        n_attn_heads: int = 16,
     ):
         super().__init__()
         self.d_res = d_res
@@ -125,6 +128,8 @@ class MambaFoldStage1(nn.Module):
             d_res, n_trunk,
             d_state=d_state, mimo_rank=mimo_rank, expand=expand, headdim=headdim,
             bidirectional=bidirectional,
+            attn_layers=trunk_attn_layers, attn_every=trunk_attn_every,
+            n_attn_heads=n_attn_heads, attn_relpos_max=relpos_max,
         )
 
         # ── Pair representation ─────────────────────────────────────────

@@ -268,42 +268,127 @@ class BiMamba3Block(nn.Module):
         return x * mask.unsqueeze(-1).to(x.dtype)
 
 
+class RelativePositionBias(nn.Module):
+    """T5-style learned relative-position bias for self-attention logits.
+
+    One scalar per (clamped signed distance, head). Adds a long-range inductive
+    bias that plain Mamba scan / absolute position features lack.
+    """
+
+    def __init__(self, n_heads: int, max_dist: int = 32):
+        super().__init__()
+        self.max_dist = max_dist
+        self.bias = nn.Embedding(2 * max_dist + 1, n_heads)
+        nn.init.zeros_(self.bias.weight)
+
+    def forward(self, seq_len: int, device) -> Tensor:
+        idx = torch.arange(seq_len, device=device)
+        rel = (idx.unsqueeze(0) - idx.unsqueeze(1)).clamp(-self.max_dist, self.max_dist)
+        return self.bias(rel + self.max_dist).permute(2, 0, 1)        # [h, S, S]
+
+
+class GatedSelfAttention(nn.Module):
+    """Multi-head self-attention with a GAU-style output gate + relpos bias.
+
+    Gives the residue trunk the all-to-all token mixing that Mamba's sequence
+    scan cannot do directly (long-range contact / β-sheet pairing). Expects a
+    pre-normed input; padding keys are masked out.
+    """
+
+    def __init__(self, d_model: int, n_heads: int = 16, relpos_max: int = 32,
+                 use_relpos: bool = True):
+        super().__init__()
+        assert d_model % n_heads == 0, (d_model, n_heads)
+        self.n_heads = n_heads
+        self.d_head = d_model // n_heads
+        self.to_qkv = nn.Linear(d_model, 3 * d_model, bias=False)
+        self.to_gate = nn.Linear(d_model, d_model)         # GAU output gate
+        self.out = nn.Linear(d_model, d_model)
+        self.relpos = RelativePositionBias(n_heads, relpos_max) if use_relpos else None
+
+    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+        B, S, D = x.shape
+        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = (t.view(B, S, self.n_heads, self.d_head).transpose(1, 2)
+                   for t in (q, k, v))                     # [B, h, S, d_head]
+
+        attn_bias = q.new_zeros(B, self.n_heads, S, S)
+        if self.relpos is not None:
+            attn_bias = attn_bias + self.relpos(S, x.device).unsqueeze(0).to(q.dtype)
+        if mask is not None:
+            key_pad = ~mask.bool()                          # [B, S] True = padding
+            attn_bias = attn_bias.masked_fill(
+                key_pad.unsqueeze(1).unsqueeze(2), float("-inf"))
+
+        ctx = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)
+        ctx = ctx.transpose(1, 2).reshape(B, S, D)          # [B, S, D]
+        gate = torch.sigmoid(self.to_gate(x))               # GAU gate
+        return self.out(ctx) * gate
+
+
+class AttnBlock(nn.Module):
+    """Nemotron-style hybrid layer: gated self-attention + SwiGLU FFN.
+
+    The attention sublayer is added through an **AttnResidual** — a per-channel
+    learnable LayerScale gate, zero-initialized so the layer starts as identity
+    and the stack behaves like pure Mamba until attention is learned to help.
+    """
+
+    def __init__(self, d_model: int, n_heads: int = 16, relpos_max: int = 32):
+        super().__init__()
+        self.norm1 = RMSNorm(d_model)
+        self.attn = GatedSelfAttention(d_model, n_heads, relpos_max)
+        self.attn_scale = nn.Parameter(torch.zeros(d_model))   # AttnResidual gate
+        self.norm2 = RMSNorm(d_model)
+        self.ffn = SwiGLU(d_model)
+
+    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+        x = x + self.attn_scale * self.attn(self.norm1(x), mask)
+        x = x + self.ffn(self.norm2(x))
+        return x * mask.unsqueeze(-1).to(x.dtype)
+
+
 class MambaStack(nn.Module):
-    """Reusable stack of Mamba-3 blocks (causal or bidirectional)."""
+    """Reusable stack of Mamba-3 blocks with optional Nemotron-style hybrid
+    attention layers interspersed."""
 
     def __init__(self, d_model: int, n_layers: int, d_state: int = 64,
                  mimo_rank: int = 4, expand: int = 2, headdim: int = 64,
-                 bidirectional: bool = True):
+                 bidirectional: bool = True,
+                 attn_layers: list[int] | None = None,
+                 attn_every: int | None = None,
+                 n_attn_heads: int = 16, attn_relpos_max: int = 32):
         """
         Args:
-            d_model (int): Token feature dimension. Input/output shape [B, S, d_model].
-            n_layers (int): Number of stacked blocks.
-            d_state (int): SSM state expansion factor for each block. Default: 64.
-            mimo_rank (int): MIMO rank forwarded to each block. Default: 4.
-            expand (int): Inner dimension multiplier inside each block's SSM.
-                Default: 2.
-            headdim (int): Dimension per head inside each block's SSM. Default: 64.
-            bidirectional (bool): If True, uses BiMamba3Block (forward + backward);
-                otherwise uses causal Mamba3Block. Default: True.
+            d_model, n_layers, d_state, mimo_rank, expand, headdim, bidirectional:
+                as before — Mamba block hyperparameters.
+            attn_layers: explicit layer indices (0-based) to make self-attention
+                instead of Mamba. e.g. [10, 11] puts attention in the last two of 12.
+            attn_every: if set (and attn_layers is None), every k-th layer is
+                attention (indices k-1, 2k-1, ...).
+            n_attn_heads, attn_relpos_max: hybrid attention layer config.
         """
         super().__init__()
         block_cls = BiMamba3Block if bidirectional else Mamba3Block
-        self.layers = nn.ModuleList([
-            block_cls(d_model=d_model, d_state=d_state, mimo_rank=mimo_rank,
-                      expand=expand, headdim=headdim)
-            for _ in range(n_layers)
-        ])
+
+        attn_idx = set(attn_layers) if attn_layers is not None else set()
+        if attn_layers is None and attn_every:
+            attn_idx = {i for i in range(n_layers) if (i + 1) % attn_every == 0}
+        self.attn_idx = sorted(attn_idx)
+
+        layers = []
+        for i in range(n_layers):
+            if i in attn_idx:
+                layers.append(AttnBlock(d_model, n_heads=n_attn_heads,
+                                        relpos_max=attn_relpos_max))
+            else:
+                layers.append(block_cls(d_model=d_model, d_state=d_state,
+                                        mimo_rank=mimo_rank, expand=expand,
+                                        headdim=headdim))
+        self.layers = nn.ModuleList(layers)
 
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
-        """
-        Args:
-            x (Tensor): Input token sequence of shape [B, S, d_model].
-            mask (Tensor): Boolean or float padding mask of shape [B, S].
-
-        Returns:
-            Tensor: Output tensor of shape [B, S, d_model] after passing through
-                all n_layers blocks sequentially.
-        """
+        """Pass through all blocks sequentially. [B, S, d_model] → same."""
         for layer in self.layers:
             x = layer(x, mask)
         return x
