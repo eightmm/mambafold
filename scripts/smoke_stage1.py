@@ -77,27 +77,31 @@ def main():
 
     batch = make_dummy_batch(B, L, A, d_plm, device)
 
-    v_ca, latent = model(batch)
-    assert v_ca.shape == (B, L, 3), v_ca.shape
-    assert latent.shape == (B, L, 128), latent.shape
+    # Lean dict forward (inference-style).
+    out = model(batch)
+    assert out["v_ca"].shape == (B, L, 3), out["v_ca"].shape
+    assert out["trunk_latent"].shape == (B, L, 128), out["trunk_latent"].shape
+    assert out["pcb_dir"].shape == (B, L, 3), out["pcb_dir"].shape
+    assert out["conf"].shape == (B, L), out["conf"].shape
 
-    # Quick backward smoke
-    loss = v_ca.pow(2).sum() + latent.pow(2).sum()
+    # Full forward: return_aux + 2-cycle recycling exercises every head and the
+    # recycle distance embedding; one backward must reach all trainable params.
+    aux = model(batch, return_aux=True, n_cycles=2)
+    assert aux["distogram_logits"].shape[:3] == (B, L, L), aux["distogram_logits"].shape
+    assert aux["contact_logits"].shape == (B, L, L), aux["contact_logits"].shape
+    loss = (aux["v_ca"].pow(2).sum() + aux["trunk_latent"].pow(2).sum()
+            + aux["pcb_dir"].pow(2).sum() + aux["conf"].sum()
+            + aux["distogram_logits"].pow(2).sum() + aux["contact_logits"].pow(2).sum())
     loss.backward()
 
-    # Distogram aux head is only used when return_aux=True.
-    aux = model(batch, return_aux=True)
-    assert aux["distogram_logits"].shape[:3] == (B, L, L), aux["distogram_logits"].shape
-    aux["distogram_logits"].pow(2).sum().backward()
-
-    # Verify all trainable params got grads across the default + aux paths.
     no_grad = [n for n, p in model.named_parameters() if p.requires_grad and p.grad is None]
     assert not no_grad, f"params without grad: {no_grad[:5]}..."
 
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"[smoke] OK — v_ca {v_ca.shape}, latent {latent.shape}")
+    print(f"[smoke] OK — v_ca {tuple(out['v_ca'].shape)}, pcb_dir {tuple(out['pcb_dir'].shape)}, "
+          f"conf {tuple(out['conf'].shape)}, contact {tuple(aux['contact_logits'].shape)}")
     print(f"[smoke] params (small smoke config): {n_params:.2f}M")
-    print(f"[smoke] all {sum(1 for _ in model.parameters())} params received gradients")
+    print(f"[smoke] all {sum(1 for _ in model.parameters())} params received gradients (2-cycle)")
 
 
 if __name__ == "__main__":

@@ -101,11 +101,14 @@ def _stage1_run(
             self.n_atoms = n_atoms
 
         def forward(self, batch):
-            v_ca, latent = self.inner(batch)  # v_ca: [B, L, 3]
+            s1 = self.inner(batch)            # dict: v_ca, trunk_latent, pcb_dir, conf
+            v_ca = s1["v_ca"]                 # [B, L, 3]
             shim = v_ca.new_zeros(v_ca.shape[0], v_ca.shape[1], self.n_atoms, 3)
             shim[..., CA_ATOM_ID, :] = v_ca
-            # cache the latent for the caller to retrieve later
-            self.last_latent = latent
+            # cache scaffold side-outputs for the caller to retrieve later
+            self.last_latent = s1["trunk_latent"]
+            self.last_pcb = s1["pcb_dir"]
+            self.last_conf = s1["conf"]
             return shim
 
     n_atoms = example.atom_mask.shape[1]
@@ -127,7 +130,6 @@ def _stage1_run(
 
     trajs = [traj]
     scheds = [sched]
-    last_latent = shim.last_latent[0]  # [L, d_res]
 
     # Optional re-noise / re-denoise recycles (B1 variant)
     n_sub = max(1, int(round(n_steps * (_T_END - recycle_t_start) / _T_END)))
@@ -144,10 +146,15 @@ def _stage1_run(
         )
         trajs.append(traj_r)
         scheds.append(sched_r)
-        last_latent = shim.last_latent[0]
+
+    # Scaffold side-outputs from the final Stage 1 pass.
+    last_latent = shim.last_latent[0]  # [L, d_res]
+    last_pcb = shim.last_pcb[0]        # [L, 3]
+    last_conf = shim.last_conf[0]      # [L]
 
     x_ca_final = x_clean[..., CA_ATOM_ID, :]
-    return x_ca_final, last_latent, np.concatenate(trajs, axis=0), np.concatenate(scheds, axis=0)
+    return (x_ca_final, last_latent, last_pcb, last_conf,
+            np.concatenate(trajs, axis=0), np.concatenate(scheds, axis=0))
 
 
 # ── Stage 2 sub-sampler — Euler on atoms with CA residual refinement ─────
@@ -170,6 +177,8 @@ def _stage2_step(model_two_stage, batch_fn, state, ti, dt, device):
             batch,
             s1_ca=state["s1_ca"],
             s1_latent=state["s1_latent"],
+            s1_pcb=state.get("s1_pcb"),
+            s1_conf=state.get("s1_conf"),
         ).squeeze(0)                                # [L, A, 3]
     x_new = x + dt * v_atom
     x_new[..., CA_ATOM_ID, :] = state["s1_ca"][0]   # re-pin CA to the anchor
@@ -185,6 +194,8 @@ def _stage2_run(
     *,
     s1_ca: Tensor,
     s1_latent: Tensor,
+    s1_pcb: Tensor,
+    s1_conf: Tensor,
     n_steps: int,
     n_recycle: int,
     recycle_t_start: float,
@@ -204,7 +215,8 @@ def _stage2_run(
     sched = torch.linspace(0.0, _T_END, n_steps + 1, device=device)
     state = {
         "x": x, "x_prev": x.clone(), "mask_f": atom_mask_f,
-        "s1_ca": s1_ca, "s1_latent": s1_latent.unsqueeze(0),  # [1, L, d_res]
+        "s1_ca": s1_ca, "s1_latent": s1_latent.unsqueeze(0),
+        "s1_pcb": s1_pcb, "s1_conf": s1_conf,  # [1, L, d_res]
     }
 
     traj_pieces = []
@@ -239,6 +251,7 @@ def _stage2_run(
         state = {
             "x": x_t, "x_prev": x_t.clone(), "mask_f": atom_mask_f,
             "s1_ca": s1_ca, "s1_latent": s1_latent.unsqueeze(0),
+        "s1_pcb": s1_pcb, "s1_conf": s1_conf,
         }
         traj_pieces_r = []
         for i in range(n_sub):
@@ -303,7 +316,7 @@ def sample(
     two_stage.eval()
     batch_fn_s1 = batch_fn_factory  # caller-built; passes the full atom tensor
 
-    x_ca, s1_latent, traj_ca_s1, sched_s1 = _stage1_run(
+    x_ca, s1_latent, s1_pcb, s1_conf, traj_ca_s1, sched_s1 = _stage1_run(
         two_stage.stage1, example, batch_fn_s1,
         n_steps=n_steps_s1, n_recycle=n_recycle_s1,
         recycle_t_start=recycle_t_start, seed=seed, device=device,
@@ -313,6 +326,7 @@ def sample(
     x_atom, traj_ca_s2, sched_s2 = _stage2_run(
         two_stage, example, batch_fn_factory,
         s1_ca=x_ca.unsqueeze(0), s1_latent=s1_latent,
+        s1_pcb=s1_pcb.unsqueeze(0), s1_conf=s1_conf.unsqueeze(0),
         n_steps=n_steps_s2, n_recycle=n_recycle_s2,
         recycle_t_start=recycle_t_start, seed=seed, device=device,
     )

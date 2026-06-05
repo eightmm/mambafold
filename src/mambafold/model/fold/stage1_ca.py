@@ -13,11 +13,14 @@ See `docs/architecture.md` §3 for the design rationale.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 
-from mambafold.data.constants import AA_TO_ID, CA_ATOM_ID
+from mambafold.data.constants import AA_TO_ID, CA_ATOM_ID, COORD_SCALE
 from mambafold.data.types import ProteinBatch
 from mambafold.model.bimamba3 import MambaStack
 from mambafold.model.embeddings import (
@@ -80,6 +83,9 @@ class MambaFoldStage1(nn.Module):
         headdim: int = 64,
         bidirectional: bool = True,
         relpos_max: int = 32,
+        n_cycles: int = 1,
+        n_recycle_bins: int = 32,
+        recycle_max_dist: float = 22.0,
     ):
         super().__init__()
         self.d_res = d_res
@@ -88,6 +94,10 @@ class MambaFoldStage1(nn.Module):
         self.d_plm = d_plm
         self.relpos_max = relpos_max
         self.n_relpos_bins = 2 * relpos_max + 2  # in-chain bins + OUT_OF_CHAIN
+        # Recycling: previous-cycle Cα distance map fed back into the pair init.
+        self.n_cycles = n_cycles
+        self.n_recycle_bins = n_recycle_bins
+        self.recycle_max_dist = recycle_max_dist
 
         # ── Residue-side embedders ──────────────────────────────────────
         self.res_type_embed = nn.Embedding(NUM_RES_TYPES, d_res_type)
@@ -122,6 +132,9 @@ class MambaFoldStage1(nn.Module):
         else:
             self.pair_init_esm = None
         self.relpos_embed = nn.Embedding(self.n_relpos_bins, d_pair)
+        # Recycled Cα distance → pair feature (zero-init so cycle 1 is unchanged).
+        self.recycle_dist_embed = nn.Embedding(n_recycle_bins, d_pair)
+        nn.init.zeros_(self.recycle_dist_embed.weight)
 
         self.pair_blocks = nn.ModuleList([
             PairBlock(
@@ -144,13 +157,35 @@ class MambaFoldStage1(nn.Module):
             nn.Linear(d_res // 2, 3),
         )
 
-        # ── Distogram aux head (Stage 1 only) ───────────────────────────
-        # Symmetrises pair tensor internally; trains the pair stack directly
-        # on Cα-Cα distance prediction, which is the strongest early signal.
+        # ── pseudo-Cβ direction head (side-chain orientation cue for Stage 2)
+        self.pcb_head = nn.Sequential(
+            nn.LayerNorm(d_res),
+            nn.Linear(d_res, d_res // 2),
+            nn.GELU(),
+            nn.Linear(d_res // 2, 3),
+        )
+
+        # ── per-residue confidence head (predicted Cα-lDDT in [0, 1]) ────
+        self.conf_head = nn.Sequential(
+            nn.LayerNorm(d_res),
+            nn.Linear(d_res, d_res // 2),
+            nn.GELU(),
+            nn.Linear(d_res // 2, 1),
+        )
+
+        # ── Distogram + contact aux heads (Stage 1 only) ─────────────────
+        # Symmetrise the pair tensor internally; train the pair stack directly
+        # on Cα-Cα distance / contact prediction — the strongest early signal
+        # and the main way the (Mamba) trunk is pushed to encode long-range
+        # tertiary contacts it cannot see by sequence scan alone.
         self.n_distogram_bins = 64
         self.distogram_head = nn.Sequential(
             nn.LayerNorm(d_pair),
             nn.Linear(d_pair, self.n_distogram_bins),
+        )
+        self.contact_head = nn.Sequential(
+            nn.LayerNorm(d_pair),
+            nn.Linear(d_pair, 1),
         )
 
     # ── helpers ─────────────────────────────────────────────────────────
@@ -198,70 +233,100 @@ class MambaFoldStage1(nn.Module):
         trunk_in = self.trunk_input_norm(trunk_in)
         return self.trunk_proj(trunk_in)
 
-    # ── forward ─────────────────────────────────────────────────────────
+    def _recycle_dist_bin(self, ca: Tensor) -> Tensor:
+        """Bin a Cα distance map (Å) for the recycle pair embedding. [B, L, L]."""
+        d = torch.linalg.norm(ca.unsqueeze(2) - ca.unsqueeze(1), dim=-1) * COORD_SCALE
+        bin_w = self.recycle_max_dist / self.n_recycle_bins
+        return (d / bin_w).clamp(0, self.n_recycle_bins - 1).long()
 
-    def forward(
-        self, batch: ProteinBatch, return_aux: bool = False,
-    ) -> tuple[Tensor, Tensor] | dict:
-        """
-        Args:
-            return_aux: If True, returns a dict including distogram logits
-                for auxiliary supervision during training. Otherwise returns
-                the lean (v_ca, trunk_latent) tuple used at inference time.
+    def _embed_plm(self, batch: ProteinBatch, dtype: torch.dtype) -> Tensor | None:
+        """Project ESM3 features (loud failure if expected but missing)."""
+        if not self.use_plm:
+            return None
+        if batch.esm is None:
+            raise RuntimeError(
+                "MambaFoldStage1 built with use_plm=True but batch.esm is None. "
+                "Pre-compute ESM3 features (scripts/precompute_esm.py)."
+            )
+        if batch.esm.shape[-1] != self.d_plm:
+            raise RuntimeError(f"Expected ESM dim {self.d_plm}, got {batch.esm.shape[-1]}.")
+        return self.plm_proj(self.plm_norm(batch.esm.to(dtype=dtype)))       # [B, L, d_plm_proj]
 
-        Returns (default):
-            v_ca:         [B, L, 3]
-            trunk_latent: [B, L, d_res]
-        Returns (return_aux=True):
-            dict with keys: v_ca, trunk_latent, distogram_logits ([B,L,L,n_bins])
-        """
-        # 1. Slice x_t^CA from the full batch
-        x_t_ca = batch.x_t[..., CA_ATOM_ID, :]                              # [B, L, 3]
+    def _pair_and_heads(
+        self, batch: ProteinBatch, res0: Tensor, plm: Tensor | None,
+        recycle_ca: Tensor | None, return_aux: bool,
+    ) -> dict:
+        """One cycle: build pair from the (cached) trunk latent + optional
+        recycled Cα distance, run the pair stack, then all output heads."""
+        mask_f = batch.res_mask.unsqueeze(-1).to(res0.dtype)
 
-        # 2. PLM features (loud failure if expected but missing)
-        plm = None
-        if self.use_plm:
-            if batch.esm is None:
-                raise RuntimeError(
-                    "MambaFoldStage1 built with use_plm=True but batch.esm is None. "
-                    "Pre-compute ESM3 features (scripts/precompute_esm.py)."
-                )
-            if batch.esm.shape[-1] != self.d_plm:
-                raise RuntimeError(
-                    f"Expected ESM dim {self.d_plm}, got {batch.esm.shape[-1]}.",
-                )
-            esm = batch.esm.to(dtype=x_t_ca.dtype)
-            plm = self.plm_proj(self.plm_norm(esm))                          # [B, L, d_plm_proj]
-
-        # 3. Residue trunk
-        res = self._compose_residue_input(batch, x_t_ca, plm)                # [B, L, d_res]
-        res = self.residue_trunk(res, batch.res_mask)                        # [B, L, d_res]
-
-        # 4. Pair construction (initial seed from residue trunk + ESM + relpos)
-        s_p = self.pair_init_single(res)
+        s_p = self.pair_init_single(res0)
         pair = s_p.unsqueeze(2) + s_p.unsqueeze(1)                           # [B, L, L, d_pair]
         if self.pair_init_esm is not None and plm is not None:
             e_p = self.pair_init_esm(plm)
             pair = pair + e_p.unsqueeze(2) + e_p.unsqueeze(1)
         pair = pair + self.relpos_embed(self._relpos_bin(batch))
+        if recycle_ca is not None:
+            pair = pair + self.recycle_dist_embed(self._recycle_dist_bin(recycle_ca))
 
-        # 5. Pair stack
         pair_mask = batch.res_mask.unsqueeze(2) & batch.res_mask.unsqueeze(1)  # [B, L, L]
         for blk in self.pair_blocks:
             pair = blk(pair, pair_mask)
 
-        # 6. Pair → single bias, then CA head
-        res = res + pair_to_single(pair, batch.res_mask, self.pair_to_single_proj)
-        v_ca = self.ca_head(res) * batch.res_mask.unsqueeze(-1).to(res.dtype)
-
-        if not return_aux:
-            return v_ca, res
-
-        # Distogram aux logits — symmetrise pair tensor first.
-        pair_sym = (pair + pair.transpose(1, 2)) / 2
-        dist_logits = self.distogram_head(pair_sym)                             # [B,L,L,n_bins]
-        return {
-            "v_ca": v_ca,
+        res = res0 + pair_to_single(pair, batch.res_mask, self.pair_to_single_proj)
+        out = {
+            "v_ca":         self.ca_head(res) * mask_f,
             "trunk_latent": res,
-            "distogram_logits": dist_logits,
+            "pcb_dir":      F.normalize(self.pcb_head(res), dim=-1) * mask_f,
+            "conf":         torch.sigmoid(self.conf_head(res)).squeeze(-1) * batch.res_mask.to(res.dtype),
         }
+        if return_aux:
+            pair_sym = (pair + pair.transpose(1, 2)) / 2
+            out["distogram_logits"] = self.distogram_head(pair_sym)         # [B,L,L,n_bins]
+            out["contact_logits"] = self.contact_head(pair_sym).squeeze(-1)  # [B,L,L]
+        return out
+
+    # ── forward ─────────────────────────────────────────────────────────
+
+    def forward(
+        self, batch: ProteinBatch, return_aux: bool = False,
+        n_cycles: int | None = None,
+    ) -> dict:
+        """
+        Always returns a dict so the scaffold interface (Cα + orientation +
+        confidence) is uniform across train and inference.
+
+        Args:
+            return_aux: also emit `distogram_logits`/`contact_logits` (final cycle).
+            n_cycles: recycling iterations (defaults to `self.n_cycles`). Earlier
+                cycles run under no_grad and only feed their predicted Cα distance
+                map back into the pair init; the final cycle carries gradient.
+
+        Returns keys:
+            v_ca         [B, L, 3]
+            trunk_latent [B, L, d_res]
+            pcb_dir      [B, L, 3]  — unit pseudo-Cβ direction
+            conf         [B, L]     — predicted Cα-lDDT in [0, 1]
+            distogram_logits/contact_logits — only if return_aux
+        """
+        n_cycles = n_cycles if n_cycles is not None else self.n_cycles
+        x_t_ca = batch.x_t[..., CA_ATOM_ID, :]                              # [B, L, 3]
+        plm = self._embed_plm(batch, x_t_ca.dtype)
+
+        # Residue trunk is recycle-independent → compute once and reuse.
+        res0 = self._compose_residue_input(batch, x_t_ca, plm)
+        res0 = self.residue_trunk(res0, batch.res_mask)
+
+        one_minus_t = (1.0 - batch.t.squeeze(-1).squeeze(-1).squeeze(-1)).view(-1, 1, 1)
+        recycle_ca = None
+        for cycle in range(n_cycles):
+            is_last = cycle == n_cycles - 1
+            ctx = nullcontext() if is_last else torch.no_grad()
+            with ctx:
+                out = self._pair_and_heads(
+                    batch, res0, plm, recycle_ca, return_aux and is_last,
+                )
+            if not is_last:
+                # One-step Cα recon → recycle feature (stop-grad into next cycle).
+                recycle_ca = (x_t_ca + one_minus_t * out["v_ca"]).detach()
+        return out

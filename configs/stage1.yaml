@@ -99,8 +99,19 @@ pair_mult_c: 128
 # ── Loss composition (Stage 1) ─────────────────────────────────────────
 w_lddt_ca:       1.0          # soft Cα-lDDT on x_hat
 w_bond_caca:     0.1          # adjacent in-chain CA-CA bond
-w_distogram:     0.5          # AF2-style aux from pair stack
+w_distogram:     0.5          # AF2-style distogram aux from pair stack
+w_drmsd:         0.5          # distance-matrix RMSD (global topology)
+w_contact:       0.3          # long-range-weighted Cα contact BCE
+w_pcb:           0.2          # pseudo-Cβ direction (side-chain orientation cue)
+w_conf:          0.05         # per-residue confidence calibration (→ Cα-lDDT)
+w_ca_angle:      0.1          # virtual bond-angle floor (kill degenerate kinks)
+w_ca_self_clash: 0.1          # Cα self-avoidance
 alpha_mode: ramp              # α = 1 + 8·ReLU(t-0.5).mean
+
+# ── Stage 1 recycling (training-time) ─────────────────────────────────────
+# 2-cycle: cycle-1 Cα distance map is fed back into the pair init for cycle-2.
+# Earlier cycle runs under no_grad (cheap; only final cycle stores activations).
+n_cycles_train: 2
 
 # ── PLM (ESM3) ────────────────────────────────────────────────────────────
 use_plm: true

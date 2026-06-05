@@ -112,6 +112,12 @@ class MambaFoldStage2(nn.Module):
         self.ca_anchor_proj = nn.Linear(d_ca_anchor, d_atom)
         self.s1_latent_broadcast = Stage1LatentBroadcast(d_res=d_s1_res, d_atom=d_atom)
         self.t_embed = nn.Linear(1, d_atom)
+        # Stage 1 scaffold cues: pseudo-Cβ direction + per-residue confidence,
+        # broadcast over the atom axis. Zero-init so they start as no-ops.
+        self.pcb_proj = nn.Linear(3, d_atom)
+        self.conf_proj = nn.Linear(1, d_atom)
+        nn.init.zeros_(self.pcb_proj.weight); nn.init.zeros_(self.pcb_proj.bias)
+        nn.init.zeros_(self.conf_proj.weight); nn.init.zeros_(self.conf_proj.bias)
 
         # ── Atom encoder (per-residue BiMamba over the A atom slots) ────
         self.atom_encoder = MambaStack(
@@ -162,6 +168,8 @@ class MambaFoldStage2(nn.Module):
         batch: ProteinBatch,
         s1_ca: Tensor,
         s1_latent: Tensor,
+        s1_pcb: Tensor | None = None,
+        s1_conf: Tensor | None = None,
     ) -> Tensor:
         """
         Args:
@@ -169,6 +177,8 @@ class MambaFoldStage2(nn.Module):
                        caller), pair_type, atom_mask, res_type, t, etc.
             s1_ca:     [B, L, 3]      Stage 1's final CA estimate
             s1_latent: [B, L, d_s1_res] Stage 1's trunk latent
+            s1_pcb:    [B, L, 3]      Stage 1 pseudo-Cβ direction (optional)
+            s1_conf:   [B, L]         Stage 1 per-residue confidence (optional)
         Returns:
             v_atom:    [B, L, A, 3]   FM velocity for atoms
         """
@@ -186,6 +196,12 @@ class MambaFoldStage2(nn.Module):
         atom = atom + self.ca_anchor_proj(anchor)
 
         atom = atom + self.s1_latent_broadcast(s1_latent)                  # broadcast over A
+
+        # Stage 1 scaffold cues (broadcast over the atom axis).
+        if s1_pcb is not None:
+            atom = atom + self.pcb_proj(s1_pcb).unsqueeze(2)               # [B,L,1,d_atom]
+        if s1_conf is not None:
+            atom = atom + self.conf_proj(s1_conf.unsqueeze(-1)).unsqueeze(2)
 
         # batch.t shape [B, 1, 1, 1]. Reduce to [B, 1] for the Linear, then
         # add two singleton axes so the result broadcasts to [B, L, A, d_atom].

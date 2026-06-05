@@ -18,15 +18,23 @@
 
 ## Architecture
 
-- Stage 1: C-alpha flow-matching Bi-Mamba.
+- Stage 1: topology-preserving C-alpha scaffold generator (flow-matching Bi-Mamba).
   - Input: sequence/residue features, residue index, optional ESM3, FM time/noise.
-  - Output: C-alpha velocity and Stage 1 residue latent.
-  - Losses: C-alpha FM, soft C-alpha lDDT, C-alpha bond geometry, distogram auxiliary.
-  - Purpose: global topology, long-range fold, domain/backbone arrangement.
+  - Output: C-alpha velocity, Stage 1 residue latent, pseudo-Cβ unit direction
+    (side-chain orientation cue), per-residue confidence (predicted Cα-lDDT).
+  - Losses: C-alpha FM, soft C-alpha lDDT, dRMSD (distance-map), C-alpha bond +
+    virtual-angle floor + self-clash geometry, distogram + long-range contact aux,
+    pseudo-Cβ cosine, confidence calibration.
+  - Recycling: training-time 2-cycle — cycle-1 Cα distance map fed back into the pair
+    init for cycle-2 (earlier cycle under no_grad; `n_cycles_train`).
+  - Purpose: global topology, long-range fold, domain/backbone arrangement; emit a
+    scaffold (Cα + orientation + calibrated confidence) Stage 2 can refine.
 - Stage 2: conditional all-atom refiner.
-  - Input: sequence/residue/atom features, Stage 1 C-alpha scaffold, Stage 1 latent, FM time/noise.
+  - Input: sequence/residue/atom features, Stage 1 C-alpha scaffold, pseudo-Cβ direction,
+    confidence, Stage 1 latent, FM time/noise.
   - Output: atom-slot velocity for atom14-style coordinates.
-  - Losses: non-CA atom FM, all-atom/CA lDDT, bond geometry, clash, C-alpha anchor.
+  - Losses: non-CA atom FM, all-atom/CA lDDT, bond geometry, clash, confidence-weighted
+    C-alpha anchor (high-confidence cores anchored hard, uncertain loops free to move).
   - Purpose: backbone atoms, side-chain placement, local stereochemistry, clash reduction.
 - C-alpha policy: Stage 2 may move C-alpha locally, but is anchored to Stage 1 by `w_ca_anchor`. This avoids fixed-CA error lock-in while limiting fold drift.
 - Robust conditioning: Stage 2 training can inject small noise into the Stage 1 C-alpha condition (`ca_condition_noise_std`, `ca_condition_noise_prob`) so it learns to handle predicted/noisy scaffolds, not only perfect anchors.

@@ -103,6 +103,18 @@ def parse_args(argv=None):
     # Stage 1 aux loss weights.
     parser.add_argument("--w_lddt_ca", type=float, default=1.0)
     parser.add_argument("--w_bond_caca", type=float, default=0.1)
+    # Stage 1 scaffold-quality aux: distance-map, long-range contact, pseudo-Cβ
+    # orientation, confidence calibration, local Cα geometry.
+    parser.add_argument("--w_drmsd", type=float, default=0.5)
+    parser.add_argument("--w_contact", type=float, default=0.3)
+    parser.add_argument("--w_pcb", type=float, default=0.2)
+    parser.add_argument("--w_conf", type=float, default=0.05)
+    parser.add_argument("--w_ca_angle", type=float, default=0.1)
+    parser.add_argument("--w_ca_self_clash", type=float, default=0.1)
+    parser.add_argument("--n_cycles_train", type=int, default=1,
+                        help="Stage 1 recycling iterations (1 = no recycling). "
+                             "Earlier cycles run under no_grad and feed their "
+                             "predicted Cα distance map back into the pair init.")
     # Stage 2: Stage 1 ckpt path and aux weights.
     parser.add_argument("--stage1_ckpt", default=None,
                         help="Path to a Phase-1 ckpt whose weights initialise Stage 1.")

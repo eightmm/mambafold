@@ -79,7 +79,16 @@ pair_mult_c: 128
 w_lddt_ca:       1.0
 w_bond_caca:     0.1
 w_distogram:     0.5
+w_drmsd:         0.5
+w_contact:       0.3
+w_pcb:           0.2
+w_conf:          0.05
+w_ca_angle:      0.1
+w_ca_self_clash: 0.1
 alpha_mode: ramp
+
+# Stage 1 recycling (identical to PT — required for resume).
+n_cycles_train: 2
 
 # ── PLM ───────────────────────────────────────────────────────────────────
 use_plm: true

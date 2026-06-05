@@ -87,7 +87,9 @@ def main():
     # ── Test 1: Stage 2 forward + backward in isolation ─────────────────
     s1_ca = torch.randn(B, L, 3, device=device, requires_grad=False)
     s1_latent = torch.randn(B, L, 128, device=device, requires_grad=False)
-    v_atom = s2(batch, s1_ca=s1_ca, s1_latent=s1_latent)
+    s1_pcb = torch.randn(B, L, 3, device=device, requires_grad=False)
+    s1_conf = torch.rand(B, L, device=device, requires_grad=False)
+    v_atom = s2(batch, s1_ca=s1_ca, s1_latent=s1_latent, s1_pcb=s1_pcb, s1_conf=s1_conf)
     assert v_atom.shape == (B, L, A, 3), v_atom.shape
     v_atom.pow(2).sum().backward()
     s2_no_grad = [n for n, p in s2.named_parameters() if p.grad is None]

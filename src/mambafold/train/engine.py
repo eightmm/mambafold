@@ -29,7 +29,13 @@ from mambafold.data.constants import CA_ATOM_ID
 from mambafold.data.types import ProteinBatch
 from mambafold.losses.ca_only import (
     ca_ca_bond_loss,
+    ca_self_clash,
+    ca_virtual_angle_floor,
+    confidence_loss,
+    contact_loss_ca,
     distogram_loss_ca_only,
+    drmsd_ca,
+    pseudo_cb_loss,
     soft_lddt_ca_only,
 )
 from mambafold.losses.geometry import (
@@ -91,17 +97,23 @@ def _inject_ca(x_t: Tensor, ca: Tensor) -> Tensor:
     return out
 
 
-def _ca_anchor_loss(x_hat: Tensor, s1_ca: Tensor, ca_mask: Tensor) -> Tensor:
+def _ca_anchor_loss(
+    x_hat: Tensor, s1_ca: Tensor, ca_mask: Tensor, conf: Tensor | None = None,
+) -> Tensor:
     """Pull the Stage-2 refined CA toward the Stage-1 scaffold.
 
     The anchor is a fixed *target*, so it is detached: gradients refine the
     Stage-2 CA only and never drag Stage 1 toward Stage 2 (matters in joint,
-    where Stage 1 still has grad).
+    where Stage 1 still has grad). When `conf` is given, the anchor is weighted
+    per-residue by Stage-1 confidence — high-confidence cores are anchored hard,
+    uncertain loops/termini are free to move.
     """
     pred_ca = x_hat[..., CA_ATOM_ID, :]
     diff_sq = (pred_ca - s1_ca.detach()).pow(2).sum(dim=-1)
-    m = ca_mask.to(diff_sq.dtype)
-    return (diff_sq * m).sum() / m.sum().clamp(min=1)
+    w = ca_mask.to(diff_sq.dtype)
+    if conf is not None:
+        w = w * conf.detach().to(diff_sq.dtype)
+    return (diff_sq * w).sum() / w.sum().clamp(min=1)
 
 
 # ── reusable loss surfaces (shared by forward + joint) ─────────────────────
@@ -115,15 +127,25 @@ def _stage1_loss_surface(
     w_lddt_ca: float,
     w_bond_caca: float,
     w_distogram: float,
+    w_drmsd: float,
+    w_contact: float,
+    w_pcb: float,
+    w_conf: float,
+    w_ca_angle: float,
+    w_ca_self_clash: float,
 ) -> tuple[Tensor, dict]:
     """Stage 1 composite loss + per-component metrics from a model output dict.
 
-    `out` must carry `v_ca` and `distogram_logits` (model called with
-    return_aux=True). The FM main loss is on raw velocity; `x_hat_ca` is the
-    one-step recon used by the lDDT-style auxiliaries.
+    `out` must carry `v_ca`, `pcb_dir`, `conf`, `distogram_logits`,
+    `contact_logits` (model called with return_aux=True). The FM main loss is on
+    raw velocity; `x_hat_ca` is the one-step recon used by the geometry/topology
+    auxiliaries (lDDT, dRMSD, confidence target, local geometry).
     """
     v_ca = out["v_ca"].float()
     dist_logits = out["distogram_logits"].float()
+    contact_logits = out["contact_logits"].float()
+    pcb_dir = out["pcb_dir"].float()
+    conf = out["conf"].float()
 
     x_clean_ca = batch.x_clean[..., CA_ATOM_ID, :].float()    # [B, L, 3]
     eps_ca = batch.eps[..., CA_ATOM_ID, :].float()
@@ -134,6 +156,12 @@ def _stage1_loss_surface(
     loss_lddt = soft_lddt_ca_only(x_hat_ca, x_clean_ca, batch.ca_mask)
     loss_bond = ca_ca_bond_loss(x_hat_ca, batch.ca_mask, batch.chain_id)
     loss_dist = distogram_loss_ca_only(dist_logits, x_clean_ca, batch.ca_mask)
+    loss_drmsd = drmsd_ca(x_hat_ca, x_clean_ca, batch.ca_mask)
+    loss_contact = contact_loss_ca(contact_logits, x_clean_ca, batch.ca_mask)
+    loss_pcb = pseudo_cb_loss(pcb_dir, batch.x_clean.float(), batch.atom_mask, batch.res_mask)
+    loss_conf = confidence_loss(conf, x_hat_ca, x_clean_ca, batch.ca_mask)
+    loss_angle = ca_virtual_angle_floor(x_hat_ca, batch.ca_mask, batch.chain_id)
+    loss_selfclash = ca_self_clash(x_hat_ca, batch.ca_mask, batch.chain_id)
 
     alpha = _alpha(batch.t, alpha_mode)
     total = (
@@ -141,13 +169,25 @@ def _stage1_loss_surface(
         + alpha * w_lddt_ca * loss_lddt
         + w_bond_caca * loss_bond
         + w_distogram * loss_dist
+        + w_drmsd * loss_drmsd
+        + w_contact * loss_contact
+        + w_pcb * loss_pcb
+        + w_conf * loss_conf
+        + w_ca_angle * loss_angle
+        + w_ca_self_clash * loss_selfclash
     )
     metrics = {
-        "fm":        loss_fm.item(),
-        "lddt":      loss_lddt.item(),
-        "bond_caca": loss_bond.item(),
-        "distogram": loss_dist.item(),
-        "alpha":     alpha,
+        "fm":            loss_fm.item(),
+        "lddt":          loss_lddt.item(),
+        "bond_caca":     loss_bond.item(),
+        "distogram":     loss_dist.item(),
+        "drmsd":         loss_drmsd.item(),
+        "contact":       loss_contact.item(),
+        "pcb":           loss_pcb.item(),
+        "conf":          loss_conf.item(),
+        "ca_angle":      loss_angle.item(),
+        "ca_self_clash": loss_selfclash.item(),
+        "alpha":         alpha,
     }
     return total, metrics
 
@@ -172,6 +212,7 @@ def _stage2_loss_surface(
     v_atom = out["v_atom"].float()
     s1_ca = out["s1_ca"].float()
     s1_ca_cond = out.get("s1_ca_cond", out["s1_ca"]).float()
+    s1_conf = out["conf"].float() if "conf" in out else None
 
     non_ca_mask = _non_ca_atom_mask(batch.atom_mask)               # [B, L, A]
     loss_fm = _fm_loss_atom(
@@ -186,7 +227,7 @@ def _stage2_loss_surface(
                                   batch.ca_mask, cutoff=lddt_cutoff)
     loss_bond = bond_length_loss(x_hat, batch.res_type, batch.atom_mask, batch.res_mask)
     loss_clash = ca_clash_loss(x_hat, batch.res_mask, chain_id=batch.chain_id)
-    loss_anchor = _ca_anchor_loss(x_hat, s1_ca, batch.ca_mask)
+    loss_anchor = _ca_anchor_loss(x_hat, s1_ca, batch.ca_mask, conf=s1_conf)
 
     alpha = _alpha(batch.t, alpha_mode)
     total = (
@@ -204,6 +245,8 @@ def _stage2_loss_surface(
         "ca_anchor": loss_anchor.item(),
         "alpha":     alpha,
     }
+    if s1_conf is not None:
+        metrics["s1_conf_mean"] = (s1_conf * batch.ca_mask).sum().item() / batch.ca_mask.sum().clamp(min=1).item()
     return total, metrics
 
 
@@ -219,11 +262,17 @@ def stage1_forward_and_loss(
     w_lddt_ca: float = 1.0,
     w_bond_caca: float = 0.1,
     w_distogram: float = 0.5,
+    w_drmsd: float = 0.5,
+    w_contact: float = 0.3,
+    w_pcb: float = 0.2,
+    w_conf: float = 0.05,
+    w_ca_angle: float = 0.1,
+    w_ca_self_clash: float = 0.1,
 ):
     """Stage 1 forward + composite loss + per-component metrics.
 
-    Distogram aux is always computed (return_aux=True) so the pair stack gets
-    gradient on the binning signal from step 1.
+    Aux heads (distogram/contact) are always computed (return_aux=True) so the
+    pair stack gets gradient on the topology signal from step 1.
     """
     model.train()
     amp_enabled = use_amp and batch.device.type == "cuda"
@@ -233,6 +282,8 @@ def stage1_forward_and_loss(
     loss, metrics = _stage1_loss_surface(
         out, batch, alpha_mode=alpha_mode,
         w_lddt_ca=w_lddt_ca, w_bond_caca=w_bond_caca, w_distogram=w_distogram,
+        w_drmsd=w_drmsd, w_contact=w_contact, w_pcb=w_pcb, w_conf=w_conf,
+        w_ca_angle=w_ca_angle, w_ca_self_clash=w_ca_self_clash,
     )
     metrics["loss"] = loss.item()
     metrics["t_mean"] = batch.t.mean().item()
@@ -245,7 +296,8 @@ def stage1_eval_step(model, batch: ProteinBatch, use_amp: bool = True) -> dict:
     model.eval()
     amp_enabled = use_amp and batch.device.type == "cuda"
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
-        v_ca, _ = model(batch)
+        out = model(batch)
+        v_ca = out["v_ca"]
         n_valid = batch.ca_mask.sum().clamp(min=1)
         v_rms = (v_ca.pow(2).sum() / n_valid / 3).sqrt()
 
@@ -336,6 +388,12 @@ def joint_forward_and_loss(
     w_lddt_ca: float = 1.0,
     w_bond_caca: float = 0.1,
     w_distogram: float = 0.5,
+    w_drmsd: float = 0.5,
+    w_contact: float = 0.3,
+    w_pcb: float = 0.2,
+    w_conf: float = 0.05,
+    w_ca_angle: float = 0.1,
+    w_ca_self_clash: float = 0.1,
     # Stage 2 weights
     w_lddt_full: float = 1.0,
     w_bond: float = 0.05,
@@ -360,6 +418,8 @@ def joint_forward_and_loss(
     loss_s1, m_s1 = _stage1_loss_surface(
         out, batch, alpha_mode=alpha_mode,
         w_lddt_ca=w_lddt_ca, w_bond_caca=w_bond_caca, w_distogram=w_distogram,
+        w_drmsd=w_drmsd, w_contact=w_contact, w_pcb=w_pcb, w_conf=w_conf,
+        w_ca_angle=w_ca_angle, w_ca_self_clash=w_ca_self_clash,
     )
     loss_s2, m_s2 = _stage2_loss_surface(
         out, batch, alpha_mode=alpha_mode,

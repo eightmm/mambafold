@@ -185,6 +185,12 @@ def main():
                                 w_lddt_ca=getattr(args, "w_lddt_ca", 1.0),
                                 w_bond_caca=getattr(args, "w_bond_caca", 0.1),
                                 w_distogram=getattr(args, "w_distogram", 0.5),
+                                w_drmsd=getattr(args, "w_drmsd", 0.5),
+                                w_contact=getattr(args, "w_contact", 0.3),
+                                w_pcb=getattr(args, "w_pcb", 0.2),
+                                w_conf=getattr(args, "w_conf", 0.05),
+                                w_ca_angle=getattr(args, "w_ca_angle", 0.1),
+                                w_ca_self_clash=getattr(args, "w_ca_self_clash", 0.1),
                             )
                         elif stage == 2:
                             loss, m = stage2_forward_and_loss(
@@ -204,6 +210,12 @@ def main():
                                 w_lddt_ca=getattr(args, "w_lddt_ca", 1.0),
                                 w_bond_caca=getattr(args, "w_bond_caca", 0.1),
                                 w_distogram=getattr(args, "w_distogram", 0.5),
+                                w_drmsd=getattr(args, "w_drmsd", 0.5),
+                                w_contact=getattr(args, "w_contact", 0.3),
+                                w_pcb=getattr(args, "w_pcb", 0.2),
+                                w_conf=getattr(args, "w_conf", 0.05),
+                                w_ca_angle=getattr(args, "w_ca_angle", 0.1),
+                                w_ca_self_clash=getattr(args, "w_ca_self_clash", 0.1),
                                 w_lddt_full=getattr(args, "w_lddt_full", 1.0),
                                 w_bond=getattr(args, "w_bond", 0.05),
                                 w_clash=getattr(args, "w_clash", 0.01),

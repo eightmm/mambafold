@@ -17,6 +17,8 @@ Phase-3 forward: same but no torch.no_grad and no detach.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -87,30 +89,25 @@ class TwoStageMambaFold(nn.Module):
             v_atom             [B, L, A, 3]
             s1_ca              [B, L, 3]    — Stage 1 C-alpha anchor
             s1_ca_cond         [B, L, 3]    — possibly noised Stage 2 condition
+            s1_pcb             [B, L, 3]    — Stage 1 pseudo-Cβ direction
+            s1_conf            [B, L]       — Stage 1 per-residue confidence
             s1_latent          [B, L, d_res]
             distogram_logits   [B, L, L, n_bins] — only if return_aux=True
         """
-        if self.freeze_stage1:
-            with torch.no_grad():
-                s1_out = self.stage1(batch, return_aux=return_aux)
-            if isinstance(s1_out, dict):
-                v_ca = s1_out["v_ca"].detach()
-                s1_latent = s1_out["trunk_latent"].detach()
-                dist_logits = s1_out["distogram_logits"].detach() if return_aux else None
-            else:
-                v_ca, s1_latent = s1_out
-                v_ca = v_ca.detach()
-                s1_latent = s1_latent.detach()
-                dist_logits = None
-        else:
-            s1_out = self.stage1(batch, return_aux=return_aux)
-            if isinstance(s1_out, dict):
-                v_ca = s1_out["v_ca"]
-                s1_latent = s1_out["trunk_latent"]
-                dist_logits = s1_out["distogram_logits"] if return_aux else None
-            else:
-                v_ca, s1_latent = s1_out
-                dist_logits = None
+        # Stage 1 runs under no_grad when frozen (Phase 2); its outputs are then
+        # detached so Stage 2 gradients cannot reach Stage 1.
+        with torch.no_grad() if self.freeze_stage1 else nullcontext():
+            s1 = self.stage1(batch, return_aux=return_aux)
+
+        def _maybe_detach(x):
+            return x.detach() if self.freeze_stage1 else x
+
+        v_ca = _maybe_detach(s1["v_ca"])
+        s1_latent = _maybe_detach(s1["trunk_latent"])
+        s1_pcb = _maybe_detach(s1["pcb_dir"])
+        s1_conf = _maybe_detach(s1["conf"])
+        dist_logits = _maybe_detach(s1["distogram_logits"]) if return_aux else None
+        contact_logits = _maybe_detach(s1["contact_logits"]) if return_aux else None
 
         s1_ca = self._x_hat_ca(batch.x_t, batch.t, v_ca)                   # [B, L, 3]
         s1_ca_cond = s1_ca
@@ -122,15 +119,23 @@ class TwoStageMambaFold(nn.Module):
         x_t_s2 = MambaFoldStage2.inject_ca_slot(batch.x_t, s1_ca_cond)
         batch2 = batch.with_coords(x_t_s2)
 
-        v_atom = self.stage2(batch2, s1_ca=s1_ca_cond, s1_latent=s1_latent)
+        v_atom = self.stage2(
+            batch2, s1_ca=s1_ca_cond, s1_latent=s1_latent,
+            s1_pcb=s1_pcb, s1_conf=s1_conf,
+        )
 
+        # Canonical Stage-1 keys (pcb_dir/conf/distogram_logits/contact_logits)
+        # so the shared engine loss surfaces read the same names in every stage.
         out = {
             "v_ca": v_ca,
             "v_atom": v_atom,
             "s1_ca": s1_ca,
             "s1_ca_cond": s1_ca_cond,
+            "pcb_dir": s1_pcb,
+            "conf": s1_conf,
             "s1_latent": s1_latent,
         }
-        if dist_logits is not None:
+        if return_aux:
             out["distogram_logits"] = dist_logits
+            out["contact_logits"] = contact_logits
         return out

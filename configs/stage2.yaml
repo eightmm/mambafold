@@ -68,6 +68,7 @@ d_state: 64
 mimo_rank: 4
 expand: 2
 headdim: 64
+n_cycles_train: 2             # frozen Stage 1 runs the same 2-cycle as Phase 1
 
 # ── Stage 2 model dims ────────────────────────────────────────────────────
 d_atom: 384
