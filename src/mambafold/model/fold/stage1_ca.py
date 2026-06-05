@@ -86,6 +86,8 @@ class MambaFoldStage1(nn.Module):
         n_cycles: int = 1,
         n_recycle_bins: int = 32,
         recycle_max_dist: float = 22.0,
+        pair_use_mult_update: bool = True,
+        pair_use_tri_attn: bool = True,
     ):
         super().__init__()
         self.d_res = d_res
@@ -142,6 +144,8 @@ class MambaFoldStage1(nn.Module):
                 n_heads=n_pair_heads,
                 d_head=d_pair_head,
                 mult_c=pair_mult_c,
+                use_mult_update=pair_use_mult_update,
+                use_tri_attn=pair_use_tri_attn,
             )
             for _ in range(n_pair_blocks)
         ])

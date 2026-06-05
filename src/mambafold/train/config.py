@@ -95,6 +95,10 @@ def parse_args(argv=None):
     # Stage 1 pair-side knobs.
     parser.add_argument("--d_pair", type=int, default=192)
     parser.add_argument("--n_pair_blocks", type=int, default=4)
+    # Pair-block composition toggles (one code path, multiple designs):
+    #   full=mult+attn (default), pairmixer=mult only (arXiv:2510.18870), attn-only.
+    parser.add_argument("--pair_use_mult_update", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--pair_use_tri_attn", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--n_pair_heads", type=int, default=4)
     parser.add_argument("--d_pair_head", type=int, default=48)
     parser.add_argument("--pair_mult_c", type=int, default=128)

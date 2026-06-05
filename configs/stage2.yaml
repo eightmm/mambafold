@@ -64,6 +64,8 @@ n_pair_blocks: 4
 n_pair_heads: 4
 d_pair_head: 48
 pair_mult_c: 128
+pair_use_mult_update: true
+pair_use_tri_attn: false      # Pairmixer (must match Phase-1 ckpt)
 d_state: 64
 mimo_rank: 4
 expand: 2

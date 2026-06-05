@@ -74,6 +74,8 @@ n_pair_blocks: 4
 n_pair_heads: 4
 d_pair_head: 48
 pair_mult_c: 128
+pair_use_mult_update: true
+pair_use_tri_attn: false      # Pairmixer (must match PT ckpt)
 
 # ── Loss composition (identical to PT) ────────────────────────────────────
 w_lddt_ca:       1.0

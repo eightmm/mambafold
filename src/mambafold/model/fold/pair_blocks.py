@@ -39,10 +39,16 @@ class PairTransition(nn.Module):
 
 
 class PairBlock(nn.Module):
-    """One pair stack block: 2 mult updates + 2 linear-tri attentions + transition.
+    """One pair-stack block: optional triangle mult updates + optional linear-tri
+    attentions + transition. Each sub-module is pre-normed and added as a residual;
+    the block is masked at exit so padded rows stay zero.
 
-    Each sub-module is wrapped in `LayerNorm` (pre-norm) and added as a
-    residual. The whole block is masked at exit so padded rows stay zero.
+    Toggles let one code path cover several pair-stack designs:
+        full       use_mult_update=True,  use_tri_attn=True   (mult×2 + linTri×2 + FFN)
+        pairmixer  use_mult_update=True,  use_tri_attn=False  (mult×2 + FFN)
+                   — arXiv:2510.18870: triangle multiplication is the load-bearing
+                     op; triangle attention is redundant. Cheaper (no L attn ops).
+        attn-only  use_mult_update=False, use_tri_attn=True   (linTri×2 + FFN)
     """
 
     def __init__(
@@ -53,27 +59,34 @@ class PairBlock(nn.Module):
         mult_c: int = 128,
         transition_hidden_mult: int = 2,
         tri_attn_variant: str = "gated",
+        use_mult_update: bool = True,
+        use_tri_attn: bool = True,
     ):
         super().__init__()
+        assert use_mult_update or use_tri_attn, "PairBlock needs at least one mixing op"
         self.d_pair = d_pair
+        self.use_mult_update = use_mult_update
+        self.use_tri_attn = use_tri_attn
 
-        # Mult updates
-        self.norm_mu_out = nn.LayerNorm(d_pair)
-        self.mu_out = TriangleMultiplicativeUpdate(d_pair, "outgoing", c=mult_c)
-        self.norm_mu_in = nn.LayerNorm(d_pair)
-        self.mu_in = TriangleMultiplicativeUpdate(d_pair, "incoming", c=mult_c)
+        # Triangle multiplicative updates (AF2; outgoing + incoming)
+        if use_mult_update:
+            self.norm_mu_out = nn.LayerNorm(d_pair)
+            self.mu_out = TriangleMultiplicativeUpdate(d_pair, "outgoing", c=mult_c)
+            self.norm_mu_in = nn.LayerNorm(d_pair)
+            self.mu_in = TriangleMultiplicativeUpdate(d_pair, "incoming", c=mult_c)
 
-        # Linear triangular attentions
-        self.norm_tri_start = nn.LayerNorm(d_pair)
-        self.tri_start = LinearTriangleAttention(
-            d_pair, n_heads, d_head, axis="start", variant=tri_attn_variant,
-        )
-        self.norm_tri_end = nn.LayerNorm(d_pair)
-        self.tri_end = LinearTriangleAttention(
-            d_pair, n_heads, d_head, axis="end", variant=tri_attn_variant,
-        )
+        # Linear triangular attentions (SeedFold; start + end)
+        if use_tri_attn:
+            self.norm_tri_start = nn.LayerNorm(d_pair)
+            self.tri_start = LinearTriangleAttention(
+                d_pair, n_heads, d_head, axis="start", variant=tri_attn_variant,
+            )
+            self.norm_tri_end = nn.LayerNorm(d_pair)
+            self.tri_end = LinearTriangleAttention(
+                d_pair, n_heads, d_head, axis="end", variant=tri_attn_variant,
+            )
 
-        # Transition
+        # Transition (always)
         self.norm_trans = nn.LayerNorm(d_pair)
         self.transition = PairTransition(d_pair, hidden_mult=transition_hidden_mult)
 
@@ -85,10 +98,12 @@ class PairBlock(nn.Module):
         Returns:
             [B, L, L, d_pair] with padding zeroed.
         """
-        pair = pair + self.mu_out(self.norm_mu_out(pair), mask)
-        pair = pair + self.mu_in(self.norm_mu_in(pair), mask)
-        pair = pair + self.tri_start(self.norm_tri_start(pair), mask)
-        pair = pair + self.tri_end(self.norm_tri_end(pair), mask)
+        if self.use_mult_update:
+            pair = pair + self.mu_out(self.norm_mu_out(pair), mask)
+            pair = pair + self.mu_in(self.norm_mu_in(pair), mask)
+        if self.use_tri_attn:
+            pair = pair + self.tri_start(self.norm_tri_start(pair), mask)
+            pair = pair + self.tri_end(self.norm_tri_end(pair), mask)
         pair = pair + self.transition(self.norm_trans(pair))
         return pair * mask.unsqueeze(-1).to(pair.dtype)
 
