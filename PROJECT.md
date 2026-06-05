@@ -127,6 +127,10 @@ Papers whose ideas are used, and where in the code.
 - **NVIDIA Nemotron-H** (hybrid Mamba-Transformer) — interleave a few self-attention
   layers among Mamba layers. → `MambaStack` `attn_layers` / `AttnBlock`
   (`trunk_attn_layers: [10,11]`).
+- **Attention Residuals** (Kimi Team, arXiv:2603.15031) — replace unit-weight residual
+  accumulation with depth-wise softmax aggregation over preceding layer outputs
+  (learned per-layer pseudo-query + RMSNorm keys), mitigating PreNorm dilution.
+  → `MambaStack` `use_attn_residual` (`trunk_attn_residual: true`).
 - **GAU** (Hua et al. 2022, "Transformer Quality in Linear Time") / **Qwen Gated Attention**
   (2025) — sigmoid gate on the attention output. → `GatedSelfAttention`.
 - **LayerScale** (Touvron et al. 2021) / **Flamingo** tanh-gating (Alayrac et al. 2022) —
