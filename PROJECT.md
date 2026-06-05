@@ -98,6 +98,47 @@
 - Benchmarks: `benchmarks/run_inference.py`, `benchmarks/run_stage1_ca_eval.py`, `benchmarks/score.py`
 - Outputs/checkpoints: `outputs/train/<run>/`
 
+## References (borrowed concepts)
+
+Papers whose ideas are used, and where in the code.
+
+- **Seed3D 2.0** (ByteDance Seed, tech report) — coarse-to-fine 2-stage decomposition
+  (global shape → high-frequency detail). → our Stage 1 (Cα scaffold) → Stage 2 (all-atom).
+- **SimpleFold** (arXiv:2509.18480) — flow-matching folding with general blocks (no
+  triangle/pair required); logit-normal time sampling. → FM objective + sampler
+  (`data/transforms.py` `_sample_t`, `sampling/samplers.py`). We replace its Transformer
+  with Bi-Mamba.
+- **Flow Matching** (Lipman et al. 2023, arXiv:2210.02747) — `x_t=t·x_clean+(1-t)·ε`,
+  velocity target, Euler ODE. → `losses`/`engine`/`samplers`.
+- **Mamba-3** (arXiv:2603.15569, ICLR 2026) — SSM sequence model; used bidirectionally.
+  → `model/bimamba3.py` (Bi-Mamba trunk, atom enc/dec).
+- **AlphaFold2** (Jumper et al. 2021, Nature) — triangle multiplicative update, distogram
+  aux, gated (output) self-attention, atom14 layout, FAPE/lDDT-style supervision.
+  → `model/fold/multiplicative_update.py`, `pair_blocks.py`, `losses/`, `data/constants.py`.
+- **AlphaFold3** (Abramson et al. 2024, Nature) — Pairformer lineage, relpos / chain-entity-sym
+  encodings, confidence head framing. → `model/embeddings.py` `SequenceFourierEmbedder`,
+  Stage 1 `conf_head`.
+- **SeedFold** (arXiv:2512.24354v1) — Linear Triangle Attention (ReLU feature map +
+  associative reorder, gated; O(L³)→O(L²)). → `model/fold/linear_tri_attn.py`
+  (toggle `pair_use_tri_attn`; currently OFF under the Pairmixer preset).
+- **"Triangle Multiplication is All You Need" / Pairmixer** (arXiv:2510.18870) — drop
+  triangle attention, keep triangle multiplication (+FFN). → active pair-stack preset
+  (`pair_use_tri_attn: false` in all configs).
+- **NVIDIA Nemotron-H** (hybrid Mamba-Transformer) — interleave a few self-attention
+  layers among Mamba layers. → `MambaStack` `attn_layers` / `AttnBlock`
+  (`trunk_attn_layers: [10,11]`).
+- **GAU** (Hua et al. 2022, "Transformer Quality in Linear Time") / **Qwen Gated Attention**
+  (2025) — sigmoid gate on the attention output. → `GatedSelfAttention`.
+- **LayerScale** (Touvron et al. 2021) / **Flamingo** tanh-gating (Alayrac et al. 2022) —
+  zero-init per-channel residual gate so a new sublayer starts as identity. → `AttnBlock`
+  `attn_scale` ("AttnResidual").
+- **T5** (Raffel et al. 2020) — bucketed relative-position bias. → `RelativePositionBias`.
+- **lDDT** (Mariani et al. 2013) — soft differentiable lDDT loss. → `losses/lddt.py`,
+  `losses/ca_only.py`.
+- **Engh & Huber 2001** — ideal covalent bond lengths. → `losses/geometry.py`.
+- **ESM3** (Hayes et al. 2024) — PLM embeddings as conditioning. → `data/esm.py`, Stage 1 PLM proj.
+- **Boltz-1** (Wohlwend et al. 2024) — Boltz-style processed RCSB `.npz` records. → `data/dataset.py` `RCSBDataset`.
+
 ## Do Not Touch Without Explicit Confirmation
 
 - `data/rcsb/`
