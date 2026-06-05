@@ -27,7 +27,7 @@ from mambafold.model.embeddings import (
     CoordinateFourierEmbedder,
     SequenceFourierEmbedder,
 )
-from mambafold.model.fold.pair_blocks import PairBlock, pair_to_single
+from mambafold.model.fold.pair_blocks import PairBlock, PairToSingleAttention
 
 NUM_RES_TYPES = len(AA_TO_ID)  # 21 (20 AAs + UNK)
 
@@ -146,8 +146,9 @@ class MambaFoldStage1(nn.Module):
             for _ in range(n_pair_blocks)
         ])
 
-        # pair → single bias (masked row mean projected back to d_res)
-        self.pair_to_single_proj = nn.Linear(d_pair, d_res)
+        # pair → single bias: attention pooling over each row (keeps which j
+        # matters) projected back to d_res.
+        self.pair_to_single = PairToSingleAttention(d_pair, d_res, n_heads=n_pair_heads)
 
         # ── CA output head ──────────────────────────────────────────────
         self.ca_head = nn.Sequential(
@@ -273,7 +274,7 @@ class MambaFoldStage1(nn.Module):
         for blk in self.pair_blocks:
             pair = blk(pair, pair_mask)
 
-        res = res0 + pair_to_single(pair, batch.res_mask, self.pair_to_single_proj)
+        res = res0 + self.pair_to_single(pair, batch.res_mask)
         out = {
             "v_ca":         self.ca_head(res) * mask_f,
             "trunk_latent": res,

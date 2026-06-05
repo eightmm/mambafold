@@ -17,6 +17,7 @@ Plus two helpers:
 
 from __future__ import annotations
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
@@ -95,6 +96,10 @@ class PairBlock(nn.Module):
 def pair_to_single(pair: Tensor, res_mask: Tensor, proj: nn.Linear) -> Tensor:
     """Reduce [B, L, L, d_pair] to per-residue bias [B, L, d_res] via masked row-mean.
 
+    Legacy mean-pool reduction (kept for reference / ablation). The active path
+    uses `PairToSingleAttention`, which learns *which* j matters per row instead
+    of averaging all of them.
+
     Args:
         pair:     [B, L, L, d_pair]
         res_mask: [B, L] bool
@@ -104,3 +109,44 @@ def pair_to_single(pair: Tensor, res_mask: Tensor, proj: nn.Linear) -> Tensor:
     denom = mask_j.sum(dim=2).clamp(min=1)                        # [B, 1, 1]
     pair_row = (pair * mask_j).sum(dim=2) / denom                 # [B, L, d_pair]
     return proj(pair_row) * res_mask.unsqueeze(-1).to(pair.dtype)
+
+
+class PairToSingleAttention(nn.Module):
+    """Attention pooling of each pair row into a per-residue bias [B, L, d_res].
+
+    For residue i, attends over columns j with logits derived from `pair[i, j]`
+    (multi-head, softmax over j), then takes a weighted sum of per-edge values —
+    so the reduction keeps *which* j matters instead of mean-pooling it away.
+
+    Values stay in `d_pair` width (the big [B,L,L,*] intermediate is no larger
+    than the pair tensor itself); only the pooled [B, L, d_pair] is projected up
+    to `d_res`.
+    """
+
+    def __init__(self, d_pair: int, d_res: int, n_heads: int = 4):
+        super().__init__()
+        assert d_pair % n_heads == 0, (d_pair, n_heads)
+        self.n_heads = n_heads
+        self.d_head = d_pair // n_heads
+        self.to_score = nn.Linear(d_pair, n_heads)
+        self.to_value = nn.Linear(d_pair, d_pair)
+        self.out = nn.Linear(d_pair, d_res)
+
+    def forward(self, pair: Tensor, res_mask: Tensor) -> Tensor:
+        """
+        Args:
+            pair:     [B, L, L, d_pair]
+            res_mask: [B, L] bool
+        Returns:
+            [B, L, d_res] with padding rows zeroed.
+        """
+        B, L, _, _ = pair.shape
+        scores = self.to_score(pair)                                  # [B, L, L, h]
+        col_valid = res_mask.unsqueeze(1).unsqueeze(-1)               # [B, 1, L, 1] over j
+        scores = scores.masked_fill(~col_valid, float("-inf"))
+        attn = torch.softmax(scores, dim=2)                           # over j
+        attn = torch.nan_to_num(attn)                                 # fully-masked rows → 0
+        v = self.to_value(pair).view(B, L, L, self.n_heads, self.d_head)
+        pooled = torch.einsum("bljh,bljhd->blhd", attn, v)            # [B, L, h, d_head]
+        pooled = pooled.reshape(B, L, self.n_heads * self.d_head)     # [B, L, d_pair]
+        return self.out(pooled) * res_mask.unsqueeze(-1).to(pooled.dtype)
