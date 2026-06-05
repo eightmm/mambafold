@@ -357,7 +357,8 @@ class MambaStack(nn.Module):
                  bidirectional: bool = True,
                  attn_layers: list[int] | None = None,
                  attn_every: int | None = None,
-                 n_attn_heads: int = 16, attn_relpos_max: int = 32):
+                 n_attn_heads: int = 16, attn_relpos_max: int = 32,
+                 use_attn_residual: bool = False):
         """
         Args:
             d_model, n_layers, d_state, mimo_rank, expand, headdim, bidirectional:
@@ -367,8 +368,14 @@ class MambaStack(nn.Module):
             attn_every: if set (and attn_layers is None), every k-th layer is
                 attention (indices k-1, 2k-1, ...).
             n_attn_heads, attn_relpos_max: hybrid attention layer config.
+            use_attn_residual: replace the standard unit-weight residual
+                accumulation with depth-wise softmax Attention Residuals
+                (arXiv:2603.15031): each block input is a learned softmax-weighted
+                aggregate of the embedding + all preceding block deltas.
         """
         super().__init__()
+        self.n_layers = n_layers
+        self.use_attn_residual = use_attn_residual
         block_cls = BiMamba3Block if bidirectional else Mamba3Block
 
         attn_idx = set(attn_layers) if attn_layers is not None else set()
@@ -387,8 +394,36 @@ class MambaStack(nn.Module):
                                         headdim=headdim))
         self.layers = nn.ModuleList(layers)
 
+        if use_attn_residual:
+            # One learned pseudo-query per aggregation (n_layers block inputs +
+            # final), and a shared RMSNorm applied to keys (paper Eq 2-3).
+            self.attn_res_q = nn.Parameter(torch.randn(n_layers + 1, d_model) * 0.02)
+            self.attn_res_norm = RMSNorm(d_model)
+
+    def _attn_res_aggregate(self, v_list: list[Tensor], q: Tensor) -> Tensor:
+        """h = Σ_i softmax_i(qᵀ·RMSNorm(v_i)) · v_i  (depth-wise attention)."""
+        V = torch.stack(v_list, dim=0)                       # [k+1, B, S, d]
+        K = self.attn_res_norm(V)
+        logits = torch.einsum("d,kbsd->kbs", q.to(K.dtype), K)
+        alpha = torch.softmax(logits, dim=0)
+        return torch.einsum("kbs,kbsd->bsd", alpha.to(V.dtype), V)
+
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
-        """Pass through all blocks sequentially. [B, S, d_model] → same."""
-        for layer in self.layers:
-            x = layer(x, mask)
-        return x
+        """Pass through all blocks. [B, S, d_model] → same.
+
+        Standard mode: sequential unit-weight residual (each block adds its delta).
+        AttnRes mode: each block input is a softmax aggregate over the embedding +
+        all preceding block deltas; the stack output is a final aggregate.
+        """
+        if not self.use_attn_residual:
+            for layer in self.layers:
+                x = layer(x, mask)
+            return x
+
+        mask_f = mask.unsqueeze(-1).to(x.dtype)
+        v_list = [x * mask_f]                                # v_0 = embedding
+        for l, layer in enumerate(self.layers):
+            h_in = self._attn_res_aggregate(v_list, self.attn_res_q[l])
+            out = layer(h_in, mask)                          # = h_in + delta
+            v_list.append(out - h_in)                        # delta = f_l(h_in)
+        return self._attn_res_aggregate(v_list, self.attn_res_q[self.n_layers])

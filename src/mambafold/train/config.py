@@ -105,6 +105,9 @@ def parse_args(argv=None):
     parser.add_argument("--trunk_attn_layers", type=int, nargs="*", default=None)
     parser.add_argument("--trunk_attn_every", type=int, default=None)
     parser.add_argument("--n_attn_heads", type=int, default=16)
+    # Attention Residuals (arXiv:2603.15031): depth-wise softmax residual
+    # aggregation replacing unit-weight accumulation in the trunk.
+    parser.add_argument("--trunk_attn_residual", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--n_pair_heads", type=int, default=4)
     parser.add_argument("--d_pair_head", type=int, default=48)
     parser.add_argument("--pair_mult_c", type=int, default=128)

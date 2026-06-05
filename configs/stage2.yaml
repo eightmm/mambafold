@@ -73,6 +73,7 @@ headdim: 64
 n_cycles_train: 2             # frozen Stage 1 runs the same 2-cycle as Phase 1
 trunk_attn_layers: [10, 11]   # must match Phase-1 ckpt
 n_attn_heads: 16
+trunk_attn_residual: true     # must match Phase-1 ckpt
 
 # ── Stage 2 model dims ────────────────────────────────────────────────────
 d_atom: 384

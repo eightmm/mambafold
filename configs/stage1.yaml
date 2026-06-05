@@ -93,6 +93,8 @@ headdim: 64
 # (zero-init AttnResidual). Gives all-to-all residue mixing Mamba scan lacks.
 trunk_attn_layers: [10, 11]
 n_attn_heads: 16
+# Attention Residuals (arXiv:2603.15031): depth-wise softmax residual aggregation.
+trunk_attn_residual: true
 
 # ── Pair stack (Pairmixer preset: arXiv:2510.18870) ───────────────────────
 # Triangle multiplication is the load-bearing op; triangle attention is dropped

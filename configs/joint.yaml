@@ -73,6 +73,7 @@ headdim: 64
 n_cycles_train: 2
 trunk_attn_layers: [10, 11]   # must match Phase-1/2 ckpt
 n_attn_heads: 16
+trunk_attn_residual: true     # must match Phase-1/2 ckpt
 
 # ── Stage 2 model dims (must match Phase-2 ckpt) ──────────────────────────
 d_atom: 384
