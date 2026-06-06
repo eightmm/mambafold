@@ -84,6 +84,34 @@ def ca_lddt(pred: np.ndarray, true: np.ndarray, cutoff: float = 15.0) -> float:
     return float(np.mean([((diff < thr) & pair).sum() / pair.sum() for thr in (0.5, 1.0, 2.0, 4.0)]))
 
 
+def ca_drmsd(pred: np.ndarray, true: np.ndarray) -> float:
+    """Distance-matrix RMSD (Å) over all non-self Cα pairs — alignment-free topology."""
+    if len(pred) < 2:
+        return float("nan")
+    dp = np.linalg.norm(pred[:, None] - pred[None], axis=-1)
+    dt = np.linalg.norm(true[:, None] - true[None], axis=-1)
+    iu = np.triu_indices(len(pred), k=1)
+    return float(np.sqrt(np.mean((dp[iu] - dt[iu]) ** 2)))
+
+
+def lr_contact_precision(pred: np.ndarray, true: np.ndarray,
+                         sep: int = 24, thr: float = 8.0) -> float:
+    """Long-range Cα contact precision: among |i-j|>sep pairs, fraction of
+    predicted contacts (pred_d<thr Å) that are true contacts (true_d<thr Å)."""
+    n = len(pred)
+    if n < sep + 2:
+        return float("nan")
+    dp = np.linalg.norm(pred[:, None] - pred[None], axis=-1)
+    dt = np.linalg.norm(true[:, None] - true[None], axis=-1)
+    i, j = np.triu_indices(n, k=sep + 1)            # |i-j| > sep
+    pred_c = dp[i, j] < thr
+    true_c = dt[i, j] < thr
+    n_pred = int(pred_c.sum())
+    if n_pred == 0:
+        return float("nan")
+    return float((pred_c & true_c).sum() / n_pred)
+
+
 def mean(xs: list[float]) -> float:
     arr = np.asarray(xs, dtype=np.float64)
     return float(np.nanmean(arr)) if len(arr) else float("nan")
@@ -156,7 +184,8 @@ def main():
 
         try:
             with torch.no_grad():
-                pred_ca_norm, _, _, _ = _stage1_run(
+                # _stage1_run returns (x_ca, latent, pcb, conf, traj, sched).
+                pred_ca_norm = _stage1_run(
                     model, ex,
                     lambda x, ti: make_batch(x, ex_c, ti, device),
                     n_steps=args.n_steps,
@@ -164,7 +193,7 @@ def main():
                     recycle_t_start=0.5,
                     seed=args.seed,
                     device=device,
-                )
+                )[0]
         except torch.cuda.OutOfMemoryError:
             print(f"[oom] {pid}: L={ex.seq_len}")
             torch.cuda.empty_cache()
@@ -180,11 +209,14 @@ def main():
             "n_residues": int(len(true_ca)),
             "ca_lddt": ca_lddt(pred_ca, true_ca),
             "ca_rmsd": ca_rmsd(pred_ca, true_ca),
+            "ca_drmsd": ca_drmsd(pred_ca, true_ca),
+            "lr_contact_prec": lr_contact_precision(pred_ca, true_ca),
         }
         rows.append(row)
         print(
             f"[{len(rows):>3}] {pid:<6} L={len(true_ca):>5} "
             f"lDDT={row['ca_lddt']:.3f} RMSD={row['ca_rmsd']:.2f} "
+            f"dRMSD={row['ca_drmsd']:.2f} LRcontact={row['lr_contact_prec']:.3f} "
             f"elapsed={time.time() - t0:.1f}s",
             flush=True,
         )
@@ -199,11 +231,15 @@ def main():
         "n": len(rows),
         "ca_lddt": mean([r["ca_lddt"] for r in rows]),
         "ca_rmsd": mean([r["ca_rmsd"] for r in rows]),
+        "ca_drmsd": mean([r["ca_drmsd"] for r in rows]),
+        "lr_contact_prec": mean([r["lr_contact_prec"] for r in rows]),
         "rows": rows,
     }
     (out_dir / "stage1_ca_scores.json").write_text(json.dumps(summary, indent=2))
     print("\n=== SUMMARY ===")
-    print(f"  single N={len(rows):>3} | lDDT={summary['ca_lddt']:.3f} RMSD={summary['ca_rmsd']:.2f}")
+    print(f"  single N={len(rows):>3} | lDDT={summary['ca_lddt']:.3f} "
+          f"RMSD={summary['ca_rmsd']:.2f} dRMSD={summary['ca_drmsd']:.2f} "
+          f"LRcontact={summary['lr_contact_prec']:.3f}")
     print(f"[done] {out_dir / 'stage1_ca_scores.json'}")
 
 

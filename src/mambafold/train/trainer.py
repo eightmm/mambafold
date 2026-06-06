@@ -252,7 +252,14 @@ def load_from_checkpoint(ckpt_path: str | Path, device: str = "cpu",
     """
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     a = ckpt["args"]
-    cfg = a if isinstance(a, dict) else vars(a)
+    cfg = dict(a if isinstance(a, dict) else vars(a))
+    # Backward-compat: ckpts predating a toggle reconstruct with the OLD behavior
+    # (not the current training default), so their architecture matches how they
+    # were trained — otherwise newly-defaulted-on modules get random fresh init.
+    cfg.setdefault("trunk_attn_residual", False)   # AttnRes added later
+    cfg.setdefault("trunk_attn_layers", None)      # hybrid attn added later
+    cfg.setdefault("pair_use_tri_attn", True)      # pre-Pairmixer = full pair stack
+    cfg.setdefault("pair_use_mult_update", True)
     # Wrapped checkpoints (stage=2 or joint) are reconstructed first, then
     # overwritten by the saved full state_dict below.
     stage = cfg.get("stage")
