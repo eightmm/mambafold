@@ -126,6 +126,17 @@ def log_metrics(step, total_steps, avgs, lr, world_size, batch_size, copies):
         if torch.cuda.is_available():
             log_d["gpu/vram_alloc_gb"] = alloc
             log_d["gpu/vram_reserved_gb"] = reserv
+        # Forward every remaining scalar metric (contact, drmsd, pcb, conf,
+        # ca_angle, ca_self_clash, s1_conf_mean, joint s1_/s2_ keys, ...) so
+        # auxiliary losses aren't silently dropped from W&B.
+        _curated = {"loss", "t_mean", "grad_norm", "alpha", "target_L",
+                    "main", "fm", "fm_atom", "s1_fm", "s2_fm_atom",
+                    "lddt", "lddt_full", "s1_lddt", "s2_lddt_full",
+                    "bond", "bond_caca", "s1_bond_caca", "s2_bond",
+                    "clash", "s2_clash", "distogram", "s1_distogram"}
+        for k, v in avgs.items():
+            if k not in _curated and isinstance(v, (int, float)):
+                log_d[f"train/{k}"] = v
         wandb.log(log_d)   # step_metric="train/step" drives the x-axis
 
 
