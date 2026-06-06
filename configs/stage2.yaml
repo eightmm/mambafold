@@ -73,7 +73,7 @@ headdim: 64
 n_cycles_train: 2             # frozen Stage 1 runs the same 2-cycle as Phase 1
 trunk_attn_layers: [10, 11]   # must match Phase-1 ckpt
 n_attn_heads: 16
-trunk_attn_residual: true    # AttnRes = project-default residual (arXiv:2603.15031); --no-trunk_attn_residual to ablate
+trunk_attn_residual: false   # ablation: net-negative at 12-layer trunk; toggle on for deeper stacks
 
 # ── Stage 2 model dims ────────────────────────────────────────────────────
 d_atom: 384

@@ -44,7 +44,7 @@ def _build_stage1_module(cfg: dict, device: str = "cpu"):
         trunk_attn_layers=cfg.get("trunk_attn_layers", None),
         trunk_attn_every=cfg.get("trunk_attn_every", None),
         n_attn_heads=cfg.get("n_attn_heads", 16),
-        trunk_attn_residual=cfg.get("trunk_attn_residual", True),
+        trunk_attn_residual=cfg.get("trunk_attn_residual", False),
     ).to(torch.device(device))
 
 

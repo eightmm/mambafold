@@ -72,7 +72,7 @@ headdim: 64
 # Nemotron-style hybrid trunk (must match PT ckpt)
 trunk_attn_layers: [10, 11]
 n_attn_heads: 16
-trunk_attn_residual: true    # AttnRes = project-default residual (arXiv:2603.15031); --no-trunk_attn_residual to ablate
+trunk_attn_residual: false   # ablation: net-negative at 12-layer trunk; toggle on for deeper stacks
 
 d_pair: 192
 n_pair_blocks: 4

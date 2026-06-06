@@ -91,7 +91,7 @@ class MambaFoldStage1(nn.Module):
         trunk_attn_layers: list[int] | None = None,
         trunk_attn_every: int | None = None,
         n_attn_heads: int = 16,
-        trunk_attn_residual: bool = True,
+        trunk_attn_residual: bool = False,
     ):
         super().__init__()
         self.d_res = d_res
