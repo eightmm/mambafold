@@ -93,6 +93,7 @@ class MambaFoldStage1(nn.Module):
         n_attn_heads: int = 16,
         trunk_attn_residual: bool = False,
         trunk_attn_pos: str = "bias",
+        bimamba_share: bool = False,
     ):
         super().__init__()
         self.d_res = d_res
@@ -133,6 +134,7 @@ class MambaFoldStage1(nn.Module):
             attn_layers=trunk_attn_layers, attn_every=trunk_attn_every,
             n_attn_heads=n_attn_heads, attn_relpos_max=relpos_max,
             use_attn_residual=trunk_attn_residual, attn_pos=trunk_attn_pos,
+            bimamba_share=bimamba_share,
         )
 
         # ── Pair representation ─────────────────────────────────────────

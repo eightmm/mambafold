@@ -231,7 +231,7 @@ class BiMamba3Block(nn.Module):
     """Bidirectional Mamba-3: forward + backward SSM summed."""
 
     def __init__(self, d_model: int, d_state: int = 64, mimo_rank: int = 4,
-                 expand: int = 2, headdim: int = 64):
+                 expand: int = 2, headdim: int = 64, share_dir: bool = False):
         """
         Args:
             d_model (int): Token feature dimension. Input/output shape [B, S, d_model].
@@ -240,30 +240,28 @@ class BiMamba3Block(nn.Module):
             mimo_rank (int): MIMO rank forwarded to both Mamba3Layers. Default: 4.
             expand (int): Inner dimension multiplier inside each SSM. Default: 2.
             headdim (int): Dimension per head inside each SSM. Default: 64.
+            share_dir (bool): weight-tie the two directions — run a single SSM on
+                both the forward and reversed sequence. Halves the per-layer SSM
+                params/compute. Default: False (separate fwd/bwd SSMs).
         """
         super().__init__()
+        self.share_dir = share_dir
         self.norm1 = RMSNorm(d_model)
         self.mamba_f = Mamba3Layer(d_model=d_model, d_state=d_state, expand=expand,
                                    headdim=headdim, mimo_rank=mimo_rank)
-        self.mamba_b = Mamba3Layer(d_model=d_model, d_state=d_state, expand=expand,
-                                   headdim=headdim, mimo_rank=mimo_rank)
+        self.mamba_b = None if share_dir else Mamba3Layer(
+            d_model=d_model, d_state=d_state, expand=expand,
+            headdim=headdim, mimo_rank=mimo_rank)
         self.norm2 = RMSNorm(d_model)
         self.ffn = SwiGLU(d_model)
 
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
-        """
-        Args:
-            x (Tensor): Input token sequence of shape [B, S, d_model].
-            mask (Tensor): Boolean or float padding mask of shape [B, S].
-
-        Returns:
-            Tensor: Output tensor of shape [B, S, d_model].
-                Residual stream: x + mamba_f(h) + flip(mamba_b(flip(h))) + FFN(RMSNorm(x)),
-                then padding positions zeroed. h = RMSNorm(x).
-        """
+        """Residual: x + mamba_f(h) + flip(mamba_b(flip(h))) + FFN(RMSNorm(x)),
+        padding zeroed. With share_dir, mamba_b is the (weight-tied) mamba_f."""
         h = self.norm1(x)
+        mamba_b = self.mamba_f if self.share_dir else self.mamba_b
         y_f = self.mamba_f(h, mask)
-        y_b = _flip_by_mask(self.mamba_b(_flip_by_mask(h, mask), mask), mask)
+        y_b = _flip_by_mask(mamba_b(_flip_by_mask(h, mask), mask), mask)
         x = x + y_f + y_b
         x = x + self.ffn(self.norm2(x))
         return x * mask.unsqueeze(-1).to(x.dtype)
@@ -399,7 +397,8 @@ class MambaStack(nn.Module):
                  attn_layers: list[int] | None = None,
                  attn_every: int | None = None,
                  n_attn_heads: int = 16, attn_relpos_max: int = 32,
-                 use_attn_residual: bool = False, attn_pos: str = "bias"):
+                 use_attn_residual: bool = False, attn_pos: str = "bias",
+                 bimamba_share: bool = False):
         """
         Args:
             d_model, n_layers, d_state, mimo_rank, expand, headdim, bidirectional:
@@ -429,10 +428,14 @@ class MambaStack(nn.Module):
             if i in attn_idx:
                 layers.append(AttnBlock(d_model, n_heads=n_attn_heads,
                                         relpos_max=attn_relpos_max, pos=attn_pos))
+            elif bidirectional:
+                layers.append(BiMamba3Block(d_model=d_model, d_state=d_state,
+                                            mimo_rank=mimo_rank, expand=expand,
+                                            headdim=headdim, share_dir=bimamba_share))
             else:
-                layers.append(block_cls(d_model=d_model, d_state=d_state,
-                                        mimo_rank=mimo_rank, expand=expand,
-                                        headdim=headdim))
+                layers.append(Mamba3Block(d_model=d_model, d_state=d_state,
+                                          mimo_rank=mimo_rank, expand=expand,
+                                          headdim=headdim))
         self.layers = nn.ModuleList(layers)
 
         if use_attn_residual:

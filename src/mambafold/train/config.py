@@ -108,6 +108,8 @@ def parse_args(argv=None):
     # Hybrid-attn positional scheme: 'rope' (flash-friendly, recommended for new
     # runs) or 'bias' (legacy T5 relpos bias; default for ckpt backward-compat).
     parser.add_argument("--trunk_attn_pos", default="bias", choices=["rope", "bias"])
+    # Weight-tie BiMamba fwd/bwd (one shared SSM both directions) — halves trunk SSM params.
+    parser.add_argument("--bimamba_share", action=argparse.BooleanOptionalAction, default=False)
     # Attention Residuals (arXiv:2603.15031): depth-wise softmax residual
     # aggregation replacing unit-weight accumulation in the trunk. Default ON
     # (project-standard residual); pass --no-trunk_attn_residual to ablate.
