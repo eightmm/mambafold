@@ -45,6 +45,7 @@ def _build_stage1_module(cfg: dict, device: str = "cpu"):
         trunk_attn_every=cfg.get("trunk_attn_every", None),
         n_attn_heads=cfg.get("n_attn_heads", 16),
         trunk_attn_residual=cfg.get("trunk_attn_residual", False),
+        trunk_attn_pos=cfg.get("trunk_attn_pos", "bias"),
     ).to(torch.device(device))
 
 
@@ -258,6 +259,7 @@ def load_from_checkpoint(ckpt_path: str | Path, device: str = "cpu",
     # were trained — otherwise newly-defaulted-on modules get random fresh init.
     cfg.setdefault("trunk_attn_residual", False)   # AttnRes added later
     cfg.setdefault("trunk_attn_layers", None)      # hybrid attn added later
+    cfg.setdefault("trunk_attn_pos", "bias")       # RoPE/flash attn added later
     cfg.setdefault("pair_use_tri_attn", True)      # pre-Pairmixer = full pair stack
     cfg.setdefault("pair_use_mult_update", True)
     # Wrapped checkpoints (stage=2 or joint) are reconstructed first, then

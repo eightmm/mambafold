@@ -105,6 +105,9 @@ def parse_args(argv=None):
     parser.add_argument("--trunk_attn_layers", type=int, nargs="*", default=None)
     parser.add_argument("--trunk_attn_every", type=int, default=None)
     parser.add_argument("--n_attn_heads", type=int, default=16)
+    # Hybrid-attn positional scheme: 'rope' (flash-friendly, recommended for new
+    # runs) or 'bias' (legacy T5 relpos bias; default for ckpt backward-compat).
+    parser.add_argument("--trunk_attn_pos", default="bias", choices=["rope", "bias"])
     # Attention Residuals (arXiv:2603.15031): depth-wise softmax residual
     # aggregation replacing unit-weight accumulation in the trunk. Default ON
     # (project-standard residual); pass --no-trunk_attn_residual to ablate.
