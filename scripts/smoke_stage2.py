@@ -73,7 +73,7 @@ def main():
     s1 = MambaFoldStage1(
         d_res=128, n_trunk=2, d_res_type=16, d_res_pos=16,
         d_plm=d_plm, d_plm_proj=16, d_ca_emb=32,
-        d_pair=32, n_pair_blocks=2, n_pair_heads=2, d_pair_head=16, pair_mult_c=32,
+        d_pair=32, n_pair_blocks=2, n_pair_heads=2, pair_mult_c=32,
         mimo_rank=2,
     ).to(device)
     s2 = MambaFoldStage2(

@@ -32,20 +32,16 @@ def _build_stage1_module(cfg: dict, device: str = "cpu"):
         d_pair=cfg.get("d_pair", 192),
         n_pair_blocks=cfg.get("n_pair_blocks", 4),
         n_pair_heads=cfg.get("n_pair_heads", 4),
-        d_pair_head=cfg.get("d_pair_head", 48),
         pair_mult_c=cfg.get("pair_mult_c", 128),
         mimo_rank=cfg.get("mimo_rank", 4),
         d_state=cfg.get("d_state", 64),
         expand=cfg.get("expand", 2),
         headdim=cfg.get("headdim", 64),
         n_cycles=cfg.get("n_cycles_train", 1),
-        pair_use_mult_update=cfg.get("pair_use_mult_update", True),
-        pair_use_tri_attn=cfg.get("pair_use_tri_attn", True),
+        pair_use_cueq=cfg.get("pair_use_cueq", False),
         trunk_attn_layers=cfg.get("trunk_attn_layers", None),
         trunk_attn_every=cfg.get("trunk_attn_every", None),
         n_attn_heads=cfg.get("n_attn_heads", 16),
-        trunk_attn_residual=cfg.get("trunk_attn_residual", False),
-        trunk_attn_pos=cfg.get("trunk_attn_pos", "bias"),
         bimamba_share=cfg.get("bimamba_share", False),
     ).to(torch.device(device))
 
@@ -258,12 +254,9 @@ def load_from_checkpoint(ckpt_path: str | Path, device: str = "cpu",
     # Backward-compat: ckpts predating a toggle reconstruct with the OLD behavior
     # (not the current training default), so their architecture matches how they
     # were trained — otherwise newly-defaulted-on modules get random fresh init.
-    cfg.setdefault("trunk_attn_residual", False)   # AttnRes added later
     cfg.setdefault("trunk_attn_layers", None)      # hybrid attn added later
-    cfg.setdefault("trunk_attn_pos", "bias")       # RoPE/flash attn added later
     cfg.setdefault("bimamba_share", False)         # weight-tied bidir added later
-    cfg.setdefault("pair_use_tri_attn", True)      # pre-Pairmixer = full pair stack
-    cfg.setdefault("pair_use_mult_update", True)
+    cfg.setdefault("pair_use_cueq", False)         # cuEq fused trimul added later
     # Wrapped checkpoints (stage=2 or joint) are reconstructed first, then
     # overwritten by the saved full state_dict below.
     stage = cfg.get("stage")

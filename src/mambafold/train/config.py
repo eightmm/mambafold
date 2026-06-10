@@ -95,27 +95,19 @@ def parse_args(argv=None):
     # Stage 1 pair-side knobs.
     parser.add_argument("--d_pair", type=int, default=192)
     parser.add_argument("--n_pair_blocks", type=int, default=4)
-    # Pair-block composition toggles (one code path, multiple designs):
-    #   full=mult+attn (default), pairmixer=mult only (arXiv:2510.18870), attn-only.
-    parser.add_argument("--pair_use_mult_update", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--pair_use_tri_attn", action=argparse.BooleanOptionalAction, default=True)
-    # Nemotron-style hybrid: make some trunk layers self-attention (gated +
-    # zero-init AttnResidual). `trunk_attn_layers` = explicit 0-based indices
-    # (e.g. [10,11] = last two of 12); `trunk_attn_every` = every k-th layer.
+    # cuEquivariance fused triangle-mult kernel (Triton). ~1.3× @L512, ~3× @L1024
+    # vs native einsum. Forces mult intermediate c=d_pair (ignores pair_mult_c)
+    # and needs d_pair % 32 == 0. Requires cuequivariance-ops-torch-cuXX.
+    parser.add_argument("--pair_use_cueq", action=argparse.BooleanOptionalAction, default=False)
+    # Nemotron-style hybrid: make some trunk layers RoPE self-attention.
+    # `trunk_attn_layers` = explicit 0-based indices (e.g. [10,11] = last two of
+    # 12); `trunk_attn_every` = every k-th layer.
     parser.add_argument("--trunk_attn_layers", type=int, nargs="*", default=None)
     parser.add_argument("--trunk_attn_every", type=int, default=None)
     parser.add_argument("--n_attn_heads", type=int, default=16)
-    # Hybrid-attn positional scheme: 'rope' (flash-friendly, recommended for new
-    # runs) or 'bias' (legacy T5 relpos bias; default for ckpt backward-compat).
-    parser.add_argument("--trunk_attn_pos", default="bias", choices=["rope", "bias"])
     # Weight-tie BiMamba fwd/bwd (one shared SSM both directions) — halves trunk SSM params.
     parser.add_argument("--bimamba_share", action=argparse.BooleanOptionalAction, default=False)
-    # Attention Residuals (arXiv:2603.15031): depth-wise softmax residual
-    # aggregation replacing unit-weight accumulation in the trunk. Default ON
-    # (project-standard residual); pass --no-trunk_attn_residual to ablate.
-    parser.add_argument("--trunk_attn_residual", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--n_pair_heads", type=int, default=4)
-    parser.add_argument("--d_pair_head", type=int, default=48)
     parser.add_argument("--pair_mult_c", type=int, default=128)
     parser.add_argument("--d_plm_proj", type=int, default=256)
     parser.add_argument("--d_ca_emb", type=int, default=128)
@@ -130,6 +122,11 @@ def parse_args(argv=None):
     parser.add_argument("--w_conf", type=float, default=0.05)
     parser.add_argument("--w_ca_angle", type=float, default=0.1)
     parser.add_argument("--w_ca_self_clash", type=float, default=0.1)
+    # Chirality (handedness) loss: penalizes mirror-image predictions — the
+    # dominant holdout failure (~35% are internally-correct mirror images that
+    # every reflection-invariant aux misses). Key term; tune if it fights local
+    # geometry early.
+    parser.add_argument("--w_chirality", type=float, default=0.5)
     parser.add_argument("--n_cycles_train", type=int, default=1,
                         help="Stage 1 recycling iterations (1 = no recycling). "
                              "Earlier cycles run under no_grad and feed their "
@@ -154,6 +151,21 @@ def parse_args(argv=None):
     # by upweighting longer proteins. dataset audit identified this as the main
     # cause of mono lDDT degradation at L=512-1024 (0.80 → 0.72).
     parser.add_argument("--length_balanced_sampling", action="store_true", default=False)
+    # Padding-waste controls. length_bin>0: collator pads each batch to the next
+    # multiple of length_bin above batch_max (dynamic padding, bounded shapes).
+    # length_bucketing: group near-equal-length proteins per batch (needs
+    # batch_size>1) so batch_max ≈ each sequence length. Together they cut the
+    # O(L²) pair-stack padding waste (~67% at fixed 512, median L≈208) to ~10%.
+    parser.add_argument("--length_bin", type=int, default=0)
+    parser.add_argument("--length_bucketing", action="store_true", default=False)
+    # Workers for the one-time per-file length cache (built on first bucketing run,
+    # then reused). Pre-build with scripts/precompute_lengths.py to avoid the
+    # startup scan.
+    parser.add_argument("--length_cache_workers", type=int, default=8)
+    # Monomer extraction: index every protein chain of every entry as its own
+    # single-chain example (supersedes single_chain_only). Turns multimers into
+    # extra monomer training data. Builds a cached chain index on first run.
+    parser.add_argument("--extract_monomer_chains", action="store_true", default=False)
     parser.add_argument("--metadata_path", default="data/splits/metadata.tsv")
     parser.add_argument("--length_balance_mode", default="power",
                         choices=["power", "linear_clip"])

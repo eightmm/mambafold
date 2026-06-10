@@ -78,7 +78,6 @@ def test_stage1_runs_with_mamba_blocks():
         d_pair=32,
         n_pair_blocks=1,
         n_pair_heads=2,
-        d_pair_head=16,
         pair_mult_c=32,
         use_plm=True,
         d_state=16,

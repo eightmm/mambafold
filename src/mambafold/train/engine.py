@@ -29,6 +29,7 @@ from mambafold.data.constants import CA_ATOM_ID
 from mambafold.data.types import ProteinBatch
 from mambafold.losses.ca_only import (
     ca_ca_bond_loss,
+    ca_chirality_loss,
     ca_self_clash,
     ca_virtual_angle_floor,
     confidence_loss,
@@ -133,6 +134,7 @@ def _stage1_loss_surface(
     w_conf: float,
     w_ca_angle: float,
     w_ca_self_clash: float,
+    w_chirality: float,
 ) -> tuple[Tensor, dict]:
     """Stage 1 composite loss + per-component metrics from a model output dict.
 
@@ -162,6 +164,7 @@ def _stage1_loss_surface(
     loss_conf = confidence_loss(conf, x_hat_ca, x_clean_ca, batch.ca_mask)
     loss_angle = ca_virtual_angle_floor(x_hat_ca, batch.ca_mask, batch.chain_id)
     loss_selfclash = ca_self_clash(x_hat_ca, batch.ca_mask, batch.chain_id)
+    loss_chir = ca_chirality_loss(x_hat_ca, x_clean_ca, batch.ca_mask, batch.chain_id)
 
     alpha = _alpha(batch.t, alpha_mode)
     total = (
@@ -175,6 +178,7 @@ def _stage1_loss_surface(
         + w_conf * loss_conf
         + w_ca_angle * loss_angle
         + w_ca_self_clash * loss_selfclash
+        + w_chirality * loss_chir
     )
     metrics = {
         "fm":            loss_fm.item(),
@@ -187,6 +191,7 @@ def _stage1_loss_surface(
         "conf":          loss_conf.item(),
         "ca_angle":      loss_angle.item(),
         "ca_self_clash": loss_selfclash.item(),
+        "chirality":     loss_chir.item(),
         "alpha":         alpha,
     }
     return total, metrics
@@ -268,6 +273,7 @@ def stage1_forward_and_loss(
     w_conf: float = 0.05,
     w_ca_angle: float = 0.1,
     w_ca_self_clash: float = 0.1,
+    w_chirality: float = 0.5,
 ):
     """Stage 1 forward + composite loss + per-component metrics.
 
@@ -283,7 +289,7 @@ def stage1_forward_and_loss(
         out, batch, alpha_mode=alpha_mode,
         w_lddt_ca=w_lddt_ca, w_bond_caca=w_bond_caca, w_distogram=w_distogram,
         w_drmsd=w_drmsd, w_contact=w_contact, w_pcb=w_pcb, w_conf=w_conf,
-        w_ca_angle=w_ca_angle, w_ca_self_clash=w_ca_self_clash,
+        w_ca_angle=w_ca_angle, w_ca_self_clash=w_ca_self_clash, w_chirality=w_chirality,
     )
     metrics["loss"] = loss.item()
     metrics["t_mean"] = batch.t.mean().item()
@@ -394,6 +400,7 @@ def joint_forward_and_loss(
     w_conf: float = 0.05,
     w_ca_angle: float = 0.1,
     w_ca_self_clash: float = 0.1,
+    w_chirality: float = 0.5,
     # Stage 2 weights
     w_lddt_full: float = 1.0,
     w_bond: float = 0.05,
@@ -419,7 +426,7 @@ def joint_forward_and_loss(
         out, batch, alpha_mode=alpha_mode,
         w_lddt_ca=w_lddt_ca, w_bond_caca=w_bond_caca, w_distogram=w_distogram,
         w_drmsd=w_drmsd, w_contact=w_contact, w_pcb=w_pcb, w_conf=w_conf,
-        w_ca_angle=w_ca_angle, w_ca_self_clash=w_ca_self_clash,
+        w_ca_angle=w_ca_angle, w_ca_self_clash=w_ca_self_clash, w_chirality=w_chirality,
     )
     loss_s2, m_s2 = _stage2_loss_surface(
         out, batch, alpha_mode=alpha_mode,

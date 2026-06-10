@@ -1,5 +1,6 @@
 """Collation and batching for protein data (flow-matching corruption)."""
 
+import math
 from typing import Optional
 
 import torch
@@ -22,11 +23,19 @@ class ProteinCollator:
         copies_per_protein: int = 1,
         t_schedule: str = "uniform",
         max_length: Optional[int] = None,
+        length_bin: int = 0,
     ):
         self.augment = augment
         self.copies_per_protein = copies_per_protein
         self.t_schedule = t_schedule
         self.max_length = max_length
+        # length_bin > 0: pad to the next multiple of `length_bin` above the
+        # batch's longest sequence (dynamic padding), instead of always to
+        # max_length. Bounds the set of distinct shapes (e.g. 128 → 128/256/
+        # 384/512) so kernels don't re-JIT per batch, while cutting padding
+        # waste from ~67% (fixed 512, median L≈208) to ~12%. Pairs with the
+        # length-bucketed batch sampler so batch_max ≈ each sequence length.
+        self.length_bin = length_bin
 
     def __call__(self, examples: list[ProteinExample]) -> ProteinBatch | None:
         examples = [e for e in examples if e is not None]
@@ -42,7 +51,14 @@ class ProteinCollator:
                 processed.append(ex)
 
         B = len(processed)
-        max_L = self.max_length if self.max_length is not None else max(ex.seq_len for ex in processed)
+        batch_max = max(ex.seq_len for ex in processed)
+        if self.length_bin and self.length_bin > 0:
+            # Dynamic padding rounded up to a `length_bin` multiple.
+            max_L = math.ceil(batch_max / self.length_bin) * self.length_bin
+            if self.max_length is not None:
+                max_L = min(max_L, self.max_length)
+        else:
+            max_L = self.max_length if self.max_length is not None else batch_max
         A = MAX_ATOMS_PER_RES
 
         res_type = torch.zeros(B, max_L, dtype=torch.long)

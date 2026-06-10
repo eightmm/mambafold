@@ -8,7 +8,11 @@ from torch.utils.data.distributed import DistributedSampler
 
 from mambafold.data.collate import ProteinCollator
 from mambafold.data.dataset import AFDBDataset, RCSBDataset
-from mambafold.data.length_sampler import LengthBalancedDistributedSampler
+from mambafold.data.length_cache import index_lengths_for_dataset
+from mambafold.data.length_sampler import (
+    LengthBalancedDistributedSampler,
+    LengthBucketedDistributedBatchSampler,
+)
 
 
 def inf_loader(loader, sampler=None):
@@ -53,7 +57,9 @@ def build_dataloaders(args, is_dist: bool):
     if _has_files(data_path, "*.npz"):
         dataset = RCSBDataset(data_dir=args.data_dir, max_length=args.max_length,
                               file_list=getattr(args, "file_list", None), esm_dir=esm_dir,
-                              single_chain_only=single_chain_only)
+                              single_chain_only=single_chain_only,
+                              extract_monomer_chains=bool(getattr(args, "extract_monomer_chains", False)),
+                              chain_index_workers=getattr(args, "length_cache_workers", 8))
     else:
         dataset = AFDBDataset(data_dir=args.data_dir, max_length=args.max_length)
 
@@ -62,6 +68,7 @@ def build_dataloaders(args, is_dist: bool):
         copies_per_protein=getattr(args, "copies_per_protein", 1),
         t_schedule=getattr(args, "t_schedule", "uniform"),
         max_length=args.max_length,
+        length_bin=getattr(args, "length_bin", 0),
     )
     # Length-balanced sampler — upweights longer proteins to fight the
     # short-tail bias in PDB. Only applies to train; val stays uniform.
@@ -71,39 +78,76 @@ def build_dataloaders(args, is_dist: bool):
               "falling back to DistributedSampler")
         use_length_balance = False
 
-    if use_length_balance:
-        meta_path = getattr(args, "metadata_path",
-                            "data/splits/metadata.tsv")
-        rank = dist.get_rank() if is_dist else 0
-        world_size = dist.get_world_size() if is_dist else 1
+    # Length bucketing groups near-equal-length proteins per batch so the
+    # collator pads to ~batch_max instead of the global max — the main lever
+    # against the O(L²) pair-stack padding waste. Needs RCSBDataset metadata
+    # and only helps when batch_size > 1.
+    use_bucketing = (
+        bool(getattr(args, "length_bucketing", False))
+        and isinstance(dataset, RCSBDataset)
+        and args.batch_size > 1
+    )
+
+    rank = dist.get_rank() if is_dist else 0
+    world_size = dist.get_world_size() if is_dist else 1
+    meta_path = getattr(args, "metadata_path", "data/splits/metadata.tsv")
+    lb_kw = dict(
+        mode=getattr(args, "length_balance_mode", "power"),
+        exponent=getattr(args, "length_balance_exponent", 0.5),
+        clip_min=getattr(args, "length_balance_clip_min", 1.0),
+        clip_max=getattr(args, "length_balance_clip_max", 5.0),
+        seed=getattr(args, "seed", 0),
+    )
+
+    sampler = None          # per-item sampler (None when batch_sampler is used)
+    batch_sampler = None
+    if use_bucketing:
+        # True per-example lengths → bucket by actual length, not metadata sum.
+        if dataset.extract_monomer_chains:
+            # Chain-level dataset: lengths come straight from the chain index.
+            idx_len = {i: dataset.chain_index[i][2] for i in range(len(dataset))}
+        else:
+            idx_len = index_lengths_for_dataset(
+                dataset, num_workers=getattr(args, "length_cache_workers", 8),
+            )
+        batch_sampler = LengthBucketedDistributedBatchSampler(
+            index_lengths=idx_len, batch_size=args.batch_size,
+            rank=rank, world_size=world_size, **lb_kw,
+        )
+        if rank == 0:
+            print(f"[loader] {batch_sampler}")
+    elif use_length_balance:
         sampler = LengthBalancedDistributedSampler(
-            dataset_files=dataset.files,
-            metadata_path=meta_path,
-            rank=rank, world_size=world_size,
-            mode=getattr(args, "length_balance_mode", "power"),
-            exponent=getattr(args, "length_balance_exponent", 0.5),
-            clip_min=getattr(args, "length_balance_clip_min", 1.0),
-            clip_max=getattr(args, "length_balance_clip_max", 5.0),
-            seed=getattr(args, "seed", 0),
+            dataset_files=dataset.files, metadata_path=meta_path,
+            rank=rank, world_size=world_size, **lb_kw,
         )
         if rank == 0:
             print(f"[loader] {sampler}")
     elif is_dist:
         sampler = DistributedSampler(dataset, shuffle=True)
-    else:
-        sampler = None
 
-    loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        sampler=sampler,
-        shuffle=(sampler is None),
-        collate_fn=collator,
-        num_workers=getattr(args, "num_workers", 0),
-        pin_memory=True,
-        persistent_workers=(getattr(args, "num_workers", 0) > 0),
-        drop_last=True,
-    )
+    if batch_sampler is not None:
+        # batch_sampler is mutually exclusive with batch_size/shuffle/sampler/drop_last.
+        loader = DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            collate_fn=collator,
+            num_workers=getattr(args, "num_workers", 0),
+            pin_memory=True,
+            persistent_workers=(getattr(args, "num_workers", 0) > 0),
+        )
+    else:
+        loader = DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            sampler=sampler,
+            shuffle=(sampler is None),
+            collate_fn=collator,
+            num_workers=getattr(args, "num_workers", 0),
+            pin_memory=True,
+            persistent_workers=(getattr(args, "num_workers", 0) > 0),
+            drop_last=True,
+        )
 
     val_loader = None
     val_dir = getattr(args, "val_data_dir", None) or args.data_dir
@@ -121,4 +165,6 @@ def build_dataloaders(args, is_dist: bool):
             num_workers=2, drop_last=False,
         )
 
-    return loader, sampler, val_loader, dataset
+    # Return whichever object carries set_epoch (inf_loader calls it each epoch).
+    epoch_sampler = batch_sampler if batch_sampler is not None else sampler
+    return loader, epoch_sampler, val_loader, dataset

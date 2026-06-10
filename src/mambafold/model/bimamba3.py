@@ -267,25 +267,6 @@ class BiMamba3Block(nn.Module):
         return x * mask.unsqueeze(-1).to(x.dtype)
 
 
-class RelativePositionBias(nn.Module):
-    """T5-style learned relative-position bias for self-attention logits.
-
-    One scalar per (clamped signed distance, head). Adds a long-range inductive
-    bias that plain Mamba scan / absolute position features lack.
-    """
-
-    def __init__(self, n_heads: int, max_dist: int = 32):
-        super().__init__()
-        self.max_dist = max_dist
-        self.bias = nn.Embedding(2 * max_dist + 1, n_heads)
-        nn.init.zeros_(self.bias.weight)
-
-    def forward(self, seq_len: int, device) -> Tensor:
-        idx = torch.arange(seq_len, device=device)
-        rel = (idx.unsqueeze(0) - idx.unsqueeze(1)).clamp(-self.max_dist, self.max_dist)
-        return self.bias(rel + self.max_dist).permute(2, 0, 1)        # [h, S, S]
-
-
 def _apply_rope(q: Tensor, k: Tensor, base: float = 10000.0) -> tuple[Tensor, Tensor]:
     """Rotary position embedding on q,k ([B, h, S, d_head], d_head even).
 
@@ -313,26 +294,20 @@ class GatedSelfAttention(nn.Module):
     """Multi-head self-attention with a GAU-style output gate.
 
     Gives the residue trunk the all-to-all token mixing that Mamba's sequence
-    scan cannot do directly. Two positional schemes (`pos`):
-        "rope" — rotary on q,k (flash-friendly, no bias tensor, param-free).
-        "bias" — legacy T5 relative-position bias (materializes a float
-                 [B,h,S,S] mask → disables the flash kernel; kept for ckpt
-                 backward-compat).
-    Expects a pre-normed input; padding keys are masked out.
+    scan cannot do directly. Position is encoded by RoPE (rotary on q,k):
+    relative, param-free, and flash-friendly (no float bias tensor, so SDPA
+    keeps the flash/efficient kernel). Expects a pre-normed input; padding keys
+    are masked out.
     """
 
-    def __init__(self, d_model: int, n_heads: int = 16, relpos_max: int = 32,
-                 pos: str = "bias"):
+    def __init__(self, d_model: int, n_heads: int = 16):
         super().__init__()
         assert d_model % n_heads == 0, (d_model, n_heads)
-        assert pos in ("rope", "bias"), pos
         self.n_heads = n_heads
         self.d_head = d_model // n_heads
-        self.pos = pos
         self.to_qkv = nn.Linear(d_model, 3 * d_model, bias=False)
         self.to_gate = nn.Linear(d_model, d_model)         # GAU output gate
         self.out = nn.Linear(d_model, d_model)
-        self.relpos = RelativePositionBias(n_heads, relpos_max) if pos == "bias" else None
 
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
         B, S, D = x.shape
@@ -340,24 +315,15 @@ class GatedSelfAttention(nn.Module):
         q, k, v = (t.view(B, S, self.n_heads, self.d_head).transpose(1, 2)
                    for t in (q, k, v))                     # [B, h, S, d_head]
 
-        if self.pos == "rope":
-            q, k = _apply_rope(q, k)
-            # Bool key-padding mask (True = attend) keeps the flash/efficient
-            # kernel; None when nothing is padded → pure flash.
-            attn_mask = None
-            if mask is not None and not bool(mask.all()):
-                attn_mask = mask.bool().unsqueeze(1).unsqueeze(2)   # [B,1,1,S]
-            with sdpa_kernel([SDPBackend.FLASH_ATTENTION,
-                              SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
-                ctx = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
-        else:  # legacy float relpos bias (non-flash)
-            attn_bias = q.new_zeros(B, self.n_heads, S, S)
-            attn_bias = attn_bias + self.relpos(S, x.device).unsqueeze(0).to(q.dtype)
-            if mask is not None:
-                key_pad = ~mask.bool()
-                attn_bias = attn_bias.masked_fill(
-                    key_pad.unsqueeze(1).unsqueeze(2), float("-inf"))
-            ctx = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)
+        q, k = _apply_rope(q, k)
+        # Bool key-padding mask (True = attend) keeps the flash/efficient
+        # kernel; None when nothing is padded → pure flash.
+        attn_mask = None
+        if mask is not None and not bool(mask.all()):
+            attn_mask = mask.bool().unsqueeze(1).unsqueeze(2)   # [B,1,1,S]
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION,
+                          SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
+            ctx = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
 
         ctx = ctx.transpose(1, 2).reshape(B, S, D)          # [B, S, D]
         gate = torch.sigmoid(self.to_gate(x))               # GAU gate
@@ -372,12 +338,11 @@ class AttnBlock(nn.Module):
     and the stack behaves like pure Mamba until attention is learned to help.
     """
 
-    def __init__(self, d_model: int, n_heads: int = 16, relpos_max: int = 32,
-                 pos: str = "bias"):
+    def __init__(self, d_model: int, n_heads: int = 16):
         super().__init__()
         self.norm1 = RMSNorm(d_model)
-        self.attn = GatedSelfAttention(d_model, n_heads, relpos_max, pos=pos)
-        self.attn_scale = nn.Parameter(torch.zeros(d_model))   # AttnResidual gate
+        self.attn = GatedSelfAttention(d_model, n_heads)
+        self.attn_scale = nn.Parameter(torch.zeros(d_model))   # LayerScale gate
         self.norm2 = RMSNorm(d_model)
         self.ffn = SwiGLU(d_model)
 
@@ -396,27 +361,21 @@ class MambaStack(nn.Module):
                  bidirectional: bool = True,
                  attn_layers: list[int] | None = None,
                  attn_every: int | None = None,
-                 n_attn_heads: int = 16, attn_relpos_max: int = 32,
-                 use_attn_residual: bool = False, attn_pos: str = "bias",
+                 n_attn_heads: int = 16,
                  bimamba_share: bool = False):
         """
         Args:
             d_model, n_layers, d_state, mimo_rank, expand, headdim, bidirectional:
-                as before — Mamba block hyperparameters.
+                Mamba block hyperparameters.
             attn_layers: explicit layer indices (0-based) to make self-attention
                 instead of Mamba. e.g. [10, 11] puts attention in the last two of 12.
             attn_every: if set (and attn_layers is None), every k-th layer is
                 attention (indices k-1, 2k-1, ...).
-            n_attn_heads, attn_relpos_max: hybrid attention layer config.
-            use_attn_residual: replace the standard unit-weight residual
-                accumulation with depth-wise softmax Attention Residuals
-                (arXiv:2603.15031): each block input is a learned softmax-weighted
-                aggregate of the embedding + all preceding block deltas.
+            n_attn_heads: hybrid attention layer head count (RoPE positions).
+            bimamba_share: weight-tie the two BiMamba directions (halves SSM params).
         """
         super().__init__()
         self.n_layers = n_layers
-        self.use_attn_residual = use_attn_residual
-        block_cls = BiMamba3Block if bidirectional else Mamba3Block
 
         attn_idx = set(attn_layers) if attn_layers is not None else set()
         if attn_layers is None and attn_every:
@@ -426,8 +385,7 @@ class MambaStack(nn.Module):
         layers = []
         for i in range(n_layers):
             if i in attn_idx:
-                layers.append(AttnBlock(d_model, n_heads=n_attn_heads,
-                                        relpos_max=attn_relpos_max, pos=attn_pos))
+                layers.append(AttnBlock(d_model, n_heads=n_attn_heads))
             elif bidirectional:
                 layers.append(BiMamba3Block(d_model=d_model, d_state=d_state,
                                             mimo_rank=mimo_rank, expand=expand,
@@ -438,36 +396,9 @@ class MambaStack(nn.Module):
                                           headdim=headdim))
         self.layers = nn.ModuleList(layers)
 
-        if use_attn_residual:
-            # One learned pseudo-query per aggregation (n_layers block inputs +
-            # final), and a shared RMSNorm applied to keys (paper Eq 2-3).
-            self.attn_res_q = nn.Parameter(torch.randn(n_layers + 1, d_model) * 0.02)
-            self.attn_res_norm = RMSNorm(d_model)
-
-    def _attn_res_aggregate(self, v_list: list[Tensor], q: Tensor) -> Tensor:
-        """h = Σ_i softmax_i(qᵀ·RMSNorm(v_i)) · v_i  (depth-wise attention)."""
-        V = torch.stack(v_list, dim=0)                       # [k+1, B, S, d]
-        K = self.attn_res_norm(V)
-        logits = torch.einsum("d,kbsd->kbs", q.to(K.dtype), K)
-        alpha = torch.softmax(logits, dim=0)
-        return torch.einsum("kbs,kbsd->bsd", alpha.to(V.dtype), V)
-
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
-        """Pass through all blocks. [B, S, d_model] → same.
-
-        Standard mode: sequential unit-weight residual (each block adds its delta).
-        AttnRes mode: each block input is a softmax aggregate over the embedding +
-        all preceding block deltas; the stack output is a final aggregate.
-        """
-        if not self.use_attn_residual:
-            for layer in self.layers:
-                x = layer(x, mask)
-            return x
-
-        mask_f = mask.unsqueeze(-1).to(x.dtype)
-        v_list = [x * mask_f]                                # v_0 = embedding
-        for l, layer in enumerate(self.layers):
-            h_in = self._attn_res_aggregate(v_list, self.attn_res_q[l])
-            out = layer(h_in, mask)                          # = h_in + delta
-            v_list.append(out - h_in)                        # delta = f_l(h_in)
-        return self._attn_res_aggregate(v_list, self.attn_res_q[self.n_layers])
+        """Pass through all blocks (sequential unit-weight residual).
+        [B, S, d_model] → same."""
+        for layer in self.layers:
+            x = layer(x, mask)
+        return x

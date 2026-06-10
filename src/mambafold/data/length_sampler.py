@@ -155,3 +155,121 @@ class LengthBalancedDistributedSampler(Sampler[int]):
             f"w_min={float(w.min()):.2f}, w_max={float(w.max()):.2f}, "
             f"w_mean={float(w.mean()):.2f})"
         )
+
+
+class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
+    """Per-rank *batch* sampler that groups near-equal-length proteins together.
+
+    Same length-balance draw as `LengthBalancedDistributedSampler`, but yields
+    whole batches whose members have similar length — so the collator pads each
+    batch to ~its own longest sequence instead of the global max, cutting the
+    padding waste that dominates the O(L²) pair stack.
+
+    Operates on a precomputed `index_lengths` map (valid dataset index → true
+    example length, from `length_cache`). Only those indices are emitted, so
+    `RCSBDataset.__getitem__` returns `files[idx]` directly (no skip-to-next),
+    keeping each batch's real content aligned with the length it was bucketed by.
+
+    Per epoch (per rank, independent draw with a rank-offset seed):
+      1. draw `num_samples_per_rank` valid indices ~ length-balance weights (replacement).
+      2. split the draw into megabatches of `batch_size · megabatch_mult`,
+         sort each megabatch by true length, chunk into `batch_size` batches.
+      3. shuffle the batch order (so length-sorted batches aren't fed monotonically).
+
+    Megabatches (not a single global sort) keep epoch-to-epoch stochasticity
+    while still grouping similar lengths. `drop_last` happens inside each
+    megabatch (a partial trailing batch is dropped).
+    """
+
+    def __init__(
+        self,
+        index_lengths: dict[int, int],
+        batch_size: int,
+        rank: int = 0,
+        world_size: int = 1,
+        num_samples_per_rank: int | None = None,
+        mode: str = "power",
+        exponent: float = 0.5,
+        clip_min: float = 1.0,
+        clip_max: float = 1.5,
+        seed: int = 0,
+        megabatch_mult: int = 50,
+    ):
+        if world_size < 1:
+            raise ValueError(f"world_size must be >= 1, got {world_size}")
+        if not (0 <= rank < world_size):
+            raise ValueError(f"rank={rank} out of range for world_size={world_size}")
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        if not index_lengths:
+            raise ValueError("index_lengths is empty (no valid files for bucketing)")
+
+        # `self.valid[pos]` is the dataset index; weights/lengths are aligned to pos.
+        self.valid = torch.tensor(sorted(index_lengths.keys()), dtype=torch.long)
+        lens = [index_lengths[int(i)] for i in self.valid]
+        self.lengths = torch.tensor(lens, dtype=torch.long)
+        self.weights = torch.tensor(
+            [_weight_from_length(L, mode, exponent, clip_min, clip_max) for L in lens],
+            dtype=torch.double,
+        )
+
+        self.batch_size = batch_size
+        self.rank = rank
+        self.world_size = world_size
+        self.num_samples = (
+            num_samples_per_rank if num_samples_per_rank is not None
+            else math.ceil(len(self.valid) / world_size)
+        )
+        self.seed = seed
+        self.epoch = 0
+        self.megabatch_mult = max(1, megabatch_mult)
+
+        # Exact batch count = full batches summed over megabatches (drop_last).
+        mb = self.batch_size * self.megabatch_mult
+        full_mb, rem = divmod(self.num_samples, mb)
+        self._n_batches = full_mb * self.megabatch_mult + rem // self.batch_size
+
+        self._n_valid = len(self.valid)
+        self._mode = mode
+        self._exponent = exponent
+        self._clip = (clip_min, clip_max)
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __iter__(self) -> Iterator[list[int]]:
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch * self.world_size + self.rank)
+        pos = torch.multinomial(                       # positions into self.valid
+            self.weights, self.num_samples, replacement=True, generator=g,
+        )
+        lens = self.lengths[pos]
+        mb = self.batch_size * self.megabatch_mult
+
+        batches: list[list[int]] = []
+        for s in range(0, len(pos), mb):
+            chunk = pos[s:s + mb]
+            order = torch.argsort(lens[s:s + mb])          # sort this megabatch by length
+            chunk = chunk[order]
+            n_full = len(chunk) // self.batch_size
+            for b in range(n_full):
+                sel = chunk[b * self.batch_size:(b + 1) * self.batch_size]
+                batches.append(self.valid[sel].tolist())   # map positions → dataset indices
+
+        # Shuffle batch order so the model doesn't see length-monotonic batches.
+        perm = torch.randperm(len(batches), generator=g).tolist()
+        return iter([batches[i] for i in perm])
+
+    def __len__(self) -> int:
+        return self._n_batches
+
+    def __repr__(self) -> str:
+        w = self.weights
+        return (
+            f"LengthBucketedDistributedBatchSampler("
+            f"valid={self._n_valid}, rank={self.rank}/{self.world_size}, bs={self.batch_size}, "
+            f"batches/epoch={self._n_batches}, megabatch_mult={self.megabatch_mult}, "
+            f"mode={self._mode}, exp={self._exponent}, clip={self._clip}, "
+            f"len_min={int(self.lengths.min())}, len_max={int(self.lengths.max())}, "
+            f"w_mean={float(w.mean()):.2f})"
+        )

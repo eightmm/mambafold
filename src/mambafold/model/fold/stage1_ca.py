@@ -49,9 +49,9 @@ class MambaFoldStage1(nn.Module):
         # Pair stack
         d_pair: Pair tensor dim. Default 192.
         n_pair_blocks: Number of PairBlocks. Default 4 (after I1 memory profile).
-        n_pair_heads: Heads inside LinearTriangleAttention. Default 4.
-        d_pair_head: Per-head dim in LinearTriangleAttention. Default 48.
-        pair_mult_c: Hidden width inside TriangleMultiplicativeUpdate. Default 128.
+        n_pair_heads: Heads inside PairToSingleAttention pooling. Default 4.
+        pair_mult_c: Hidden width inside TriangleMultiplicativeUpdate. Default 128
+            (ignored when pair_use_cueq — cuEq fixes the intermediate to d_pair).
         # SSM
         mimo_rank: Mamba MIMO rank. Default 4.
         d_state: Mamba state dim. Default 64.
@@ -75,7 +75,6 @@ class MambaFoldStage1(nn.Module):
         d_pair: int = 192,
         n_pair_blocks: int = 4,
         n_pair_heads: int = 4,
-        d_pair_head: int = 48,
         pair_mult_c: int = 128,
         mimo_rank: int = 4,
         d_state: int = 64,
@@ -86,13 +85,10 @@ class MambaFoldStage1(nn.Module):
         n_cycles: int = 1,
         n_recycle_bins: int = 32,
         recycle_max_dist: float = 22.0,
-        pair_use_mult_update: bool = True,
-        pair_use_tri_attn: bool = True,
+        pair_use_cueq: bool = False,
         trunk_attn_layers: list[int] | None = None,
         trunk_attn_every: int | None = None,
         n_attn_heads: int = 16,
-        trunk_attn_residual: bool = False,
-        trunk_attn_pos: str = "bias",
         bimamba_share: bool = False,
     ):
         super().__init__()
@@ -132,8 +128,7 @@ class MambaFoldStage1(nn.Module):
             d_state=d_state, mimo_rank=mimo_rank, expand=expand, headdim=headdim,
             bidirectional=bidirectional,
             attn_layers=trunk_attn_layers, attn_every=trunk_attn_every,
-            n_attn_heads=n_attn_heads, attn_relpos_max=relpos_max,
-            use_attn_residual=trunk_attn_residual, attn_pos=trunk_attn_pos,
+            n_attn_heads=n_attn_heads,
             bimamba_share=bimamba_share,
         )
 
@@ -151,11 +146,8 @@ class MambaFoldStage1(nn.Module):
         self.pair_blocks = nn.ModuleList([
             PairBlock(
                 d_pair=d_pair,
-                n_heads=n_pair_heads,
-                d_head=d_pair_head,
                 mult_c=pair_mult_c,
-                use_mult_update=pair_use_mult_update,
-                use_tri_attn=pair_use_tri_attn,
+                use_cueq_mult=pair_use_cueq,
             )
             for _ in range(n_pair_blocks)
         ])

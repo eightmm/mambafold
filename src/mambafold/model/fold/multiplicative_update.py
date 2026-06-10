@@ -21,6 +21,13 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+try:
+    from cuequivariance_torch import triangle_multiplicative_update as _cueq_tmu
+    _HAS_CUEQ = True
+except ImportError:  # backend (cuequivariance-ops-torch-cuXX) not installed
+    _cueq_tmu = None
+    _HAS_CUEQ = False
+
 
 class TriangleMultiplicativeUpdate(nn.Module):
     """Outgoing or incoming triangular multiplicative update.
@@ -70,3 +77,57 @@ class TriangleMultiplicativeUpdate(nn.Module):
         g = torch.sigmoid(self.lin_g(pair))              # [B, L, L, d_pair]
         out = g * self.lin_z(self.norm_o(o))
         return out * m
+
+
+class CuEqTriangleMultiplication(nn.Module):
+    """Fused triangular multiplicative update via cuEquivariance (Triton kernel).
+
+    Drop-in replacement for `LayerNorm + TriangleMultiplicativeUpdate`: the input
+    LayerNorm is *internal* to the kernel, so the caller passes the raw pair and
+    adds the returned update as a residual (no external pre-norm).
+
+    Speedup vs the native einsum (fwd+bwd, bf16): ~1.3× at L=512, ~3× at L=1024
+    (measured); the gain grows with L because the fused kernel avoids
+    materialising the [B,L,L,c] intermediates. Cost: the intermediate width is
+    fixed to `d_pair` (kernel constraint c==D), so `pair_mult_c` does not apply,
+    and `d_pair` must be a multiple of 32.
+
+    See cuequivariance_torch.triangle_multiplicative_update for the weight layout.
+    """
+
+    def __init__(self, d_pair: int = 192, mode: str = "outgoing", eps: float = 1e-5):
+        super().__init__()
+        assert _HAS_CUEQ, (
+            "CuEqTriangleMultiplication requires cuequivariance-torch + "
+            "cuequivariance-ops-torch-cuXX (the Triton backend)."
+        )
+        assert mode in ("outgoing", "incoming"), mode
+        assert d_pair % 32 == 0, f"cuEq tmu needs d_pair % 32 == 0, got {d_pair}"
+        self.direction = mode
+        self.eps = eps
+        # cuEq weight layout: input norm/gate/proj (D→2D), output norm/gate/proj (D→D).
+        self.norm_in = nn.LayerNorm(d_pair)
+        self.p_in = nn.Linear(d_pair, 2 * d_pair)
+        self.g_in = nn.Linear(d_pair, 2 * d_pair)
+        self.norm_out = nn.LayerNorm(d_pair)
+        self.p_out = nn.Linear(d_pair, d_pair)
+        self.g_out = nn.Linear(d_pair, d_pair)
+
+    def forward(self, pair: Tensor, mask: Tensor) -> Tensor:
+        """
+        Args:
+            pair: [B, L, L, d_pair]  (raw — internal LayerNorm is applied)
+            mask: [B, L, L] bool
+        Returns:
+            [B, L, L, d_pair] — the *update* to add (residual handled by caller).
+        """
+        return _cueq_tmu(
+            pair, direction=self.direction, mask=mask,
+            norm_in_weight=self.norm_in.weight, norm_in_bias=self.norm_in.bias,
+            p_in_weight=self.p_in.weight, p_in_bias=self.p_in.bias,
+            g_in_weight=self.g_in.weight, g_in_bias=self.g_in.bias,
+            norm_out_weight=self.norm_out.weight, norm_out_bias=self.norm_out.bias,
+            p_out_weight=self.p_out.weight, p_out_bias=self.p_out.bias,
+            g_out_weight=self.g_out.weight, g_out_bias=self.g_out.bias,
+            eps=self.eps,
+        )

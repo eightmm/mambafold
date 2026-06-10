@@ -62,10 +62,8 @@ d_ca_emb: 128
 d_pair: 192
 n_pair_blocks: 4
 n_pair_heads: 4
-d_pair_head: 48
 pair_mult_c: 128
-pair_use_mult_update: true
-pair_use_tri_attn: false      # Pairmixer (must match Phase-1 ckpt)
+pair_use_cueq: true           # cuEq fused trimul (must match Phase-1 ckpt)
 d_state: 64
 mimo_rank: 4
 expand: 2
@@ -73,8 +71,6 @@ headdim: 64
 n_cycles_train: 2             # frozen Stage 1 runs the same 2-cycle as Phase 1
 trunk_attn_layers: [10, 11]   # must match Phase-1 ckpt
 n_attn_heads: 16
-trunk_attn_pos: rope          # flash-friendly rotary (no float bias)
-trunk_attn_residual: false   # ablation: net-negative at 12-layer trunk; toggle on for deeper stacks
 
 # ── Stage 2 model dims ────────────────────────────────────────────────────
 d_atom: 384
