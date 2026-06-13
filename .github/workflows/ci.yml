@@ -45,8 +45,10 @@ jobs:
         run: ruff check src/ tests/ || true
 
       - name: Test (CPU-safe subset)
-        # test_mamba3.py requires mamba-ssm (CUDA build) — skipped in CI.
+        # test_mamba3.py and test_pair_blocks.py import mamba-ssm/CUDA paths.
+        # Keep CPU CI focused on geometry/loss smoke tests until GPU CI exists.
         run: |
           pytest tests/ \
             --ignore=tests/test_mamba3.py \
+            --ignore=tests/test_pair_blocks.py \
             -v --tb=short
