@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: uv-${{ runner.os }}-
+
+      # Install CPU-only torch + light runtime deps needed by CPU-safe tests.
+      # mamba-ssm requires CUDA to build and is excluded; tests that depend on
+      # it (test_mamba3.py) are skipped with --ignore below.
+      - name: Install dependencies (CPU-safe subset)
+        run: |
+          uv pip install --system \
+            "torch>=2.4" --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --system \
+            "einops>=0.8" "numpy>=1.26" "scipy>=1.13" "biopython>=1.84" \
+            "pyyaml>=6.0" \
+            "pytest>=8.0" "ruff>=0.6"
+          uv pip install --system -e . --no-deps
+
+      - name: Lint (ruff)
+        run: ruff check src/ tests/
+
+      - name: Test (CPU-safe subset)
+        # test_mamba3.py requires mamba-ssm (CUDA build) — skipped in CI.
+        run: |
+          pytest tests/ \
+            --ignore=tests/test_mamba3.py \
+            -v --tb=short
