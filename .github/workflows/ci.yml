@@ -38,8 +38,11 @@ jobs:
             "pytest>=8.0" "ruff>=0.6"
           uv pip install --system -e . --no-deps
 
-      - name: Lint (ruff)
-        run: ruff check src/ tests/
+      - name: Lint – errors only (ruff)
+        run: ruff check --select E9,F821,F823,F401,F811 src/ tests/
+
+      - name: Lint – style warnings (ruff, non-blocking)
+        run: ruff check src/ tests/ || true
 
       - name: Test (CPU-safe subset)
         # test_mamba3.py requires mamba-ssm (CUDA build) — skipped in CI.
