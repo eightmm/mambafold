@@ -1,16 +1,12 @@
-# train/ — Training Runtime
+# train/
 
-Active config: `configs/stage1.yaml` or later stage configs.
+Active config: `configs/direct_allatom_360m.yaml`.
 
-## Key Functions
+Key functions:
 
-| Function | Role |
-|---|---|
-| `config.parse_args` | YAML + CLI config parsing |
-| `trainer.build_model` | instantiate `MambaFold` |
-| `engine.forward_and_loss` | FM forward, aux losses, metrics |
-| `engine.eval_step` | validation metrics |
-| `trainer.save_checkpoint` | model/EMA/optimizer/scheduler checkpoint |
-| `distributed.setup_dist` | NCCL DDP init |
-
-The main loss metric is named `main` and corresponds to flow-matching MSE.
+- `config.parse_args`
+- `trainer.build_model`
+- `engine.allatom_forward_and_loss`
+- `engine.allatom_eval_step`
+- `trainer.save_checkpoint`
+- `distributed.setup_dist`

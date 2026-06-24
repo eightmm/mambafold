@@ -25,5 +25,5 @@ class EMA:
     def state_dict(self):
         return self.shadow.state_dict()
 
-    def load_state_dict(self, state_dict):
-        self.shadow.load_state_dict(state_dict)
+    def load_state_dict(self, state_dict, strict: bool = True):
+        return self.shadow.load_state_dict(state_dict, strict=strict)

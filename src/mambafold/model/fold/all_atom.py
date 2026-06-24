@@ -1,39 +1,68 @@
-"""Stage 1 — CA-only flow matching model with Linear Triangle pair stack.
+"""Direct all-atom flow matching model with a Linear Triangle pair stack.
 
-Inputs (residue-level only, sliced from full ProteinBatch):
+Inputs:
     res_type, ESM3, chain_id/entity_id/sym_id, res_seq_nums,
-    is_nterm/is_cterm, x_t^CA (= batch.x_t[..., CA_ATOM_ID, :]), t
+    is_nterm/is_cterm, noised atom-slot coordinates, t
 
 Outputs:
-    v_ca          [B, L, 3]      — FM velocity for CA
-    trunk_latent  [B, L, d_res]  — passed to Stage 2 as conditioning
+    v_atom        [B, L, A, 3]   — all-atom FM velocity
+    v_ca          [B, L, 3]      — CA velocity view from v_atom
+    trunk_latent  [B, L, d_res]  — residue representation for aux heads
 
-See `docs/architecture.md` §3 for the design rationale.
+The model is intentionally single-path: no separate coarse path and no
+recycling loop. It reasons at three SSM levels — atom → token → atom:
+an atom-level BiMamba encoder pools each residue's atoms into a token, the
+Mamba + triangle-mult pair trunk does global (inter-residue) reasoning, and an
+atom-level BiMamba decoder reads the residue latent back out into per-atom
+velocities (see `atom_mamba.py`).
 """
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+import math
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from mambafold.data.constants import AA_TO_ID, CA_ATOM_ID, COORD_SCALE
+from mambafold.data.constants import AA_TO_ID, CA_ATOM_ID, MAX_ATOMS_PER_RES
 from mambafold.data.types import ProteinBatch
 from mambafold.model.bimamba3 import MambaStack
 from mambafold.model.embeddings import (
     CoordinateFourierEmbedder,
     SequenceFourierEmbedder,
 )
+from mambafold.model.fold.atom_mamba import AtomDecoder, AtomEncoder, FiLM
 from mambafold.model.fold.pair_blocks import PairBlock, PairToSingleAttention
 
 NUM_RES_TYPES = len(AA_TO_ID)  # 21 (20 AAs + UNK)
 
 
-class MambaFoldStage1(nn.Module):
-    """Coarse-stage CA-only flow matching model.
+class TimeEmbedding(nn.Module):
+    """Sinusoidal embedding of the FM time t ∈ [0, 1] → MLP → [B, d_out].
+
+    Replaces the previous single-scalar `t` feature so the noise level is a rich
+    vector the trunk and atom blocks can be modulated by (see FiLM).
+    """
+
+    def __init__(self, d_out: int, n_freqs: int = 64):
+        super().__init__()
+        self.register_buffer(
+            "freqs", torch.exp(torch.linspace(0.0, math.log(1000.0), n_freqs)),
+            persistent=False,
+        )
+        self.mlp = nn.Sequential(
+            nn.Linear(2 * n_freqs, d_out), nn.SiLU(), nn.Linear(d_out, d_out),
+        )
+
+    def forward(self, t: Tensor) -> Tensor:
+        t = t.reshape(t.shape[0], 1).to(self.freqs.dtype)       # [B, 1]
+        ang = t * self.freqs                                    # [B, n_freqs]
+        emb = torch.cat([torch.sin(ang), torch.cos(ang)], dim=-1)
+        return self.mlp(emb)                                    # [B, d_out]
+class MambaFoldAllAtom(nn.Module):
+    """Direct all-atom flow matching model.
 
     Param target: ~225M (most of it in the Mamba trunk; pair stack ~3-5M).
 
@@ -44,7 +73,7 @@ class MambaFoldStage1(nn.Module):
         d_res_pos: Sequence position (chain/entity/sym + Fourier) embed dim.
         d_plm: PLM (ESM3) embedding dim. Default 1536.
         d_plm_proj: Internal PLM projection width. Default 256.
-        d_ca_emb: Fourier embed dim of x_t^CA scalar coords. Default 128.
+        d_ca_emb: Fourier embed dim of per-atom x_t scalar coords. Default 128.
         use_plm: If True, ESM3 features are required (loud error otherwise).
         # Pair stack
         d_pair: Pair tensor dim. Default 192.
@@ -82,14 +111,13 @@ class MambaFoldStage1(nn.Module):
         headdim: int = 64,
         bidirectional: bool = True,
         relpos_max: int = 32,
-        n_cycles: int = 1,
-        n_recycle_bins: int = 32,
-        recycle_max_dist: float = 22.0,
         pair_use_cueq: bool = False,
         trunk_attn_layers: list[int] | None = None,
         trunk_attn_every: int | None = None,
         n_attn_heads: int = 16,
         bimamba_share: bool = False,
+        d_atom: int = 128,
+        n_atom_layers: int = 4,
     ):
         super().__init__()
         self.d_res = d_res
@@ -98,15 +126,29 @@ class MambaFoldStage1(nn.Module):
         self.d_plm = d_plm
         self.relpos_max = relpos_max
         self.n_relpos_bins = 2 * relpos_max + 2  # in-chain bins + OUT_OF_CHAIN
-        # Recycling: previous-cycle Cα distance map fed back into the pair init.
-        self.n_cycles = n_cycles
-        self.n_recycle_bins = n_recycle_bins
-        self.recycle_max_dist = recycle_max_dist
 
         # ── Residue-side embedders ──────────────────────────────────────
         self.res_type_embed = nn.Embedding(NUM_RES_TYPES, d_res_type)
         self.seq_pos_embed = SequenceFourierEmbedder(d_out=d_res_pos) if d_res_pos > 0 else None
         self.ca_coord_embed = CoordinateFourierEmbedder(d_out=d_ca_emb)
+
+        # FM time/noise-level conditioning. A sinusoidal+MLP embedding of t is
+        # broadcast into the trunk (FiLM on the trunk input) and the atom
+        # encoder/decoder (FiLM inside), so every level knows the noise level —
+        # the atom blocks previously saw no time signal at all.
+        d_temb = 128
+        self.time_embed = TimeEmbedding(d_temb)
+        self.film_trunk = FiLM(d_res, d_temb)
+
+        # Atom-level encoder: BiMamba over each residue's atom slots, then pool to
+        # a residue token. Replaces a flat atom-coordinate projection so the trunk
+        # token already carries intra-residue (side-chain) structure. Reuses the
+        # trunk's SSM hyperparameters.
+        self.atom_encoder = AtomEncoder(
+            d_atom, d_ca_emb, n_layers=n_atom_layers, d_temb=d_temb,
+            d_state=d_state, mimo_rank=mimo_rank, expand=expand, headdim=headdim,
+            bimamba_share=bimamba_share,
+        )
 
         if use_plm:
             self.plm_norm = nn.LayerNorm(d_plm)
@@ -116,9 +158,10 @@ class MambaFoldStage1(nn.Module):
             self.plm_proj = None
             d_plm_proj = 0  # contributes 0 to trunk input width
 
-        # Trunk input = ca_emb + t(1) + termini(2) + chain_break(1)
+        # Trunk input = atom_token + termini(2) + chain_break(1)
         #             + res_type_emb + seq_pos_emb + plm_proj
-        trunk_in_dim = d_ca_emb + 1 + 2 + 1 + d_res_type + d_res_pos + d_plm_proj
+        # (time enters via FiLM on the trunk input, not as a concat feature)
+        trunk_in_dim = d_atom + 2 + 1 + d_res_type + d_res_pos + d_plm_proj
         self.trunk_input_norm = nn.LayerNorm(trunk_in_dim)
         self.trunk_proj = nn.Linear(trunk_in_dim, d_res)
 
@@ -139,9 +182,6 @@ class MambaFoldStage1(nn.Module):
         else:
             self.pair_init_esm = None
         self.relpos_embed = nn.Embedding(self.n_relpos_bins, d_pair)
-        # Recycled Cα distance → pair feature (zero-init so cycle 1 is unchanged).
-        self.recycle_dist_embed = nn.Embedding(n_recycle_bins, d_pair)
-        nn.init.zeros_(self.recycle_dist_embed.weight)
 
         self.pair_blocks = nn.ModuleList([
             PairBlock(
@@ -156,15 +196,16 @@ class MambaFoldStage1(nn.Module):
         # matters) projected back to d_res.
         self.pair_to_single = PairToSingleAttention(d_pair, d_res, n_heads=n_pair_heads)
 
-        # ── CA output head ──────────────────────────────────────────────
-        self.ca_head = nn.Sequential(
-            nn.LayerNorm(d_res),
-            nn.Linear(d_res, d_res // 2),
-            nn.GELU(),
-            nn.Linear(d_res // 2, 3),
+        # ── all-atom output decoder ─────────────────────────────────────
+        # BiMamba over atom slots, conditioned on the trunk residue latent and
+        # skipping in the encoder's per-atom representation, → per-atom velocity.
+        self.atom_decoder = AtomDecoder(
+            d_res, d_atom, n_layers=n_atom_layers, d_temb=d_temb,
+            d_state=d_state, mimo_rank=mimo_rank, expand=expand, headdim=headdim,
+            bimamba_share=bimamba_share,
         )
 
-        # ── pseudo-Cβ direction head (side-chain orientation cue for Stage 2)
+        # ── pseudo-Cβ direction head (side-chain orientation aux)
         self.pcb_head = nn.Sequential(
             nn.LayerNorm(d_res),
             nn.Linear(d_res, d_res // 2),
@@ -172,7 +213,7 @@ class MambaFoldStage1(nn.Module):
             nn.Linear(d_res // 2, 3),
         )
 
-        # ── per-residue confidence head (predicted Cα-lDDT in [0, 1]) ────
+        # ── per-residue confidence head (predicted all-atom lDDT / pLDDT) ─
         self.conf_head = nn.Sequential(
             nn.LayerNorm(d_res),
             nn.Linear(d_res, d_res // 2),
@@ -180,7 +221,7 @@ class MambaFoldStage1(nn.Module):
             nn.Linear(d_res // 2, 1),
         )
 
-        # ── Distogram + contact aux heads (Stage 1 only) ─────────────────
+        # ── Distogram + contact aux heads ────────────────────────────────
         # Symmetrise the pair tensor internally; train the pair stack directly
         # on Cα-Cα distance / contact prediction — the strongest early signal
         # and the main way the (Mamba) trunk is pushed to encode long-range
@@ -215,19 +256,17 @@ class MambaFoldStage1(nn.Module):
         )
 
     def _compose_residue_input(
-        self, batch: ProteinBatch, x_t_ca: Tensor, plm: Tensor | None,
+        self, batch: ProteinBatch, coord_feat: Tensor, plm: Tensor | None,
     ) -> Tensor:
         B, L = batch.res_type.shape
-        dtype = x_t_ca.dtype
+        dtype = coord_feat.dtype
 
-        ca_feat = self.ca_coord_embed(x_t_ca)                              # [B, L, d_ca_emb]
-        t_feat = batch.t.squeeze(-1).squeeze(-1).expand(-1, L).unsqueeze(-1).to(dtype)
         terminus_feat = torch.stack(
             [batch.is_nterm.to(dtype), batch.is_cterm.to(dtype)], dim=-1,
         )                                                                  # [B, L, 2]
         chain_break_feat = self._chain_break(batch.chain_id, batch.res_mask).to(dtype)
         rt_feat = self.res_type_embed(batch.res_type)                      # [B, L, d_res_type]
-        parts = [ca_feat, t_feat, terminus_feat, chain_break_feat, rt_feat]
+        parts = [coord_feat, terminus_feat, chain_break_feat, rt_feat]
         if self.seq_pos_embed is not None:
             pos_feat = self.seq_pos_embed(
                 batch.res_seq_nums, batch.res_mask,
@@ -240,11 +279,19 @@ class MambaFoldStage1(nn.Module):
         trunk_in = self.trunk_input_norm(trunk_in)
         return self.trunk_proj(trunk_in)
 
-    def _recycle_dist_bin(self, ca: Tensor) -> Tensor:
-        """Bin a Cα distance map (Å) for the recycle pair embedding. [B, L, L]."""
-        d = torch.linalg.norm(ca.unsqueeze(2) - ca.unsqueeze(1), dim=-1) * COORD_SCALE
-        bin_w = self.recycle_max_dist / self.n_recycle_bins
-        return (d / bin_w).clamp(0, self.n_recycle_bins - 1).long()
+    def _atom_coord_embed(self, batch: ProteinBatch) -> Tensor:
+        """Fourier-embed the noised per-atom coordinates: [B, L, A, d_ca_emb].
+
+        Fed to the atom encoder (the trunk token is its pooled output).
+        """
+        x_t = batch.x_t
+        if x_t.shape[-2] != MAX_ATOMS_PER_RES:
+            raise RuntimeError(
+                f"Direct all-atom model expects {MAX_ATOMS_PER_RES} atom slots, "
+                f"got {x_t.shape[-2]}."
+            )
+        atom_mask = batch.atom_mask.unsqueeze(-1).to(x_t.dtype)
+        return self.ca_coord_embed(x_t * atom_mask)
 
     def _embed_plm(self, batch: ProteinBatch, dtype: torch.dtype) -> Tensor | None:
         """Project ESM3 features (loud failure if expected but missing)."""
@@ -252,7 +299,7 @@ class MambaFoldStage1(nn.Module):
             return None
         if batch.esm is None:
             raise RuntimeError(
-                "MambaFoldStage1 built with use_plm=True but batch.esm is None. "
+                "MambaFoldAllAtom built with use_plm=True but batch.esm is None. "
                 "Pre-compute ESM3 features (scripts/precompute_esm.py)."
             )
         if batch.esm.shape[-1] != self.d_plm:
@@ -261,10 +308,9 @@ class MambaFoldStage1(nn.Module):
 
     def _pair_and_heads(
         self, batch: ProteinBatch, res0: Tensor, plm: Tensor | None,
-        recycle_ca: Tensor | None, return_aux: bool,
+        atom_repr: Tensor, temb: Tensor, return_aux: bool,
     ) -> dict:
-        """One cycle: build pair from the (cached) trunk latent + optional
-        recycled Cα distance, run the pair stack, then all output heads."""
+        """Build pair features, run the pair stack, then all output heads."""
         mask_f = batch.res_mask.unsqueeze(-1).to(res0.dtype)
 
         s_p = self.pair_init_single(res0)
@@ -273,16 +319,20 @@ class MambaFoldStage1(nn.Module):
             e_p = self.pair_init_esm(plm)
             pair = pair + e_p.unsqueeze(2) + e_p.unsqueeze(1)
         pair = pair + self.relpos_embed(self._relpos_bin(batch))
-        if recycle_ca is not None:
-            pair = pair + self.recycle_dist_embed(self._recycle_dist_bin(recycle_ca))
 
         pair_mask = batch.res_mask.unsqueeze(2) & batch.res_mask.unsqueeze(1)  # [B, L, L]
         for blk in self.pair_blocks:
             pair = blk(pair, pair_mask)
 
         res = res0 + self.pair_to_single(pair, batch.res_mask)
+        B, L = batch.res_type.shape
+        mask_atom = batch.atom_mask.to(res.dtype).unsqueeze(-1)
+        v_atom = self.atom_decoder(res, atom_repr, batch, temb) * mask_atom
+        v_ca = v_atom[:, :, CA_ATOM_ID, :] * mask_f
+
         out = {
-            "v_ca":         self.ca_head(res) * mask_f,
+            "v_ca":         v_ca,
+            "v_atom":       v_atom,
             "trunk_latent": res,
             "pcb_dir":      F.normalize(self.pcb_head(res), dim=-1) * mask_f,
             "conf":         torch.sigmoid(self.conf_head(res)).squeeze(-1) * batch.res_mask.to(res.dtype),
@@ -297,43 +347,27 @@ class MambaFoldStage1(nn.Module):
 
     def forward(
         self, batch: ProteinBatch, return_aux: bool = False,
-        n_cycles: int | None = None,
     ) -> dict:
         """
-        Always returns a dict so the scaffold interface (Cα + orientation +
-        confidence) is uniform across train and inference.
+        Always returns a dict so train/eval/inference share one interface.
 
         Args:
-            return_aux: also emit `distogram_logits`/`contact_logits` (final cycle).
-            n_cycles: recycling iterations (defaults to `self.n_cycles`). Earlier
-                cycles run under no_grad and only feed their predicted Cα distance
-                map back into the pair init; the final cycle carries gradient.
+            return_aux: also emit `distogram_logits`/`contact_logits`.
 
         Returns keys:
+            v_atom       [B, L, A, 3]
             v_ca         [B, L, 3]
             trunk_latent [B, L, d_res]
             pcb_dir      [B, L, 3]  — unit pseudo-Cβ direction
-            conf         [B, L]     — predicted Cα-lDDT in [0, 1]
+            conf         [B, L]     — predicted all-atom lDDT (pLDDT) in [0, 1]
             distogram_logits/contact_logits — only if return_aux
         """
-        n_cycles = n_cycles if n_cycles is not None else self.n_cycles
-        x_t_ca = batch.x_t[..., CA_ATOM_ID, :]                              # [B, L, 3]
-        plm = self._embed_plm(batch, x_t_ca.dtype)
+        temb = self.time_embed(batch.t)                         # [B, d_temb]
+        coord_emb = self._atom_coord_embed(batch)               # [B, L, A, d_ca_emb]
+        atom_token, atom_repr = self.atom_encoder(coord_emb, batch, temb)  # token [B,L,d_atom]
+        plm = self._embed_plm(batch, atom_token.dtype)
 
-        # Residue trunk is recycle-independent → compute once and reuse.
-        res0 = self._compose_residue_input(batch, x_t_ca, plm)
+        res0 = self._compose_residue_input(batch, atom_token, plm)
+        res0 = self.film_trunk(res0, temb)                      # inject noise level
         res0 = self.residue_trunk(res0, batch.res_mask)
-
-        one_minus_t = (1.0 - batch.t.squeeze(-1).squeeze(-1).squeeze(-1)).view(-1, 1, 1)
-        recycle_ca = None
-        for cycle in range(n_cycles):
-            is_last = cycle == n_cycles - 1
-            ctx = nullcontext() if is_last else torch.no_grad()
-            with ctx:
-                out = self._pair_and_heads(
-                    batch, res0, plm, recycle_ca, return_aux and is_last,
-                )
-            if not is_last:
-                # One-step Cα recon → recycle feature (stop-grad into next cycle).
-                recycle_ca = (x_t_ca + one_minus_t * out["v_ca"]).detach()
-        return out
+        return self._pair_and_heads(batch, res0, plm, atom_repr, temb, return_aux)

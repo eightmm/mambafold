@@ -96,7 +96,9 @@ class ProteinCollator:
             is_cterm[i, :L] = ex.is_cterm
             x_clean[i, :L] = ex.coords
 
-            xt, ep, ti = flow_corrupt(ex.coords, ex.atom_mask, self.t_schedule)
+            xt, ep, ti = flow_corrupt(
+                ex.coords, ex.atom_mask & ex.observed_mask, self.t_schedule,
+            )
             x_t[i, :L] = xt
             eps[i, :L] = ep
             t[i, 0, 0, 0] = ti

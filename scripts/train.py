@@ -6,7 +6,7 @@ Preferred launcher (sets NETRC / NCCL / CUDA_VISIBLE_DEVICES for you):
 
 Direct torchrun (equivalent):
     PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py \
-        --config configs/stage1.yaml
+        --config configs/direct_allatom_360m.yaml
 
 Resume:
     RESUME=outputs/train/run1/ckpt_latest.pt \
@@ -39,12 +39,8 @@ from mambafold.train.distributed import (
 )
 from mambafold.train.ema import EMA
 from mambafold.train.engine import (
-    joint_eval_step,
-    joint_forward_and_loss,
-    stage1_eval_step,
-    stage1_forward_and_loss,
-    stage2_eval_step,
-    stage2_forward_and_loss,
+    allatom_eval_step,
+    allatom_forward_and_loss,
 )
 from mambafold.train.logging import init_wandb, log_metrics, log_val_metrics
 from mambafold.train.trainer import (
@@ -87,16 +83,21 @@ def main():
     model = build_model(vars(args), device)
 
     if is_dist:
-        model = DDP(model, device_ids=[int(device.split(":")[-1])],
-                    broadcast_buffers=False, find_unused_parameters=False)
+        model = DDP(
+            model,
+            device_ids=[int(device.split(":")[-1])],
+            broadcast_buffers=False,
+            find_unused_parameters=False,
+            gradient_as_bucket_view=True,
+            static_graph=True,
+        )
 
     ema = EMA(model.module if is_dist else model, decay=args.ema_decay)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     if is_main:
         print(f"Model: {n_params:.2f}M params")
 
-    # Only optimize trainable params. In Phase 2 the Stage 1 weights are frozen
-    # (requires_grad=False), so this skips ~273M params' worth of AdamW state.
+    # Only optimize trainable params.
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.AdamW(
         trainable_params, lr=args.lr, weight_decay=1e-2,
@@ -110,16 +111,24 @@ def main():
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         # Only resume the wandb run when continuing the same training curve.
-        # When --reset_optimizer (stage transition), start a fresh wandb run
-        # so the new step counter doesn't clash with the old one.
+        # When resetting optimizer/scheduler, start a fresh wandb run so the new
+        # step counter does not clash with the old one.
         if not args.reset_optimizer:
             resume_run_id = ckpt.get("wandb_run_id")
         raw_model = model.module if is_dist else model
-        raw_model.load_state_dict(ckpt["model"])
-        ema.load_state_dict(ckpt["ema"])
+        missing, unexpected = raw_model.load_state_dict(ckpt["model"], strict=False)
+        ema_missing, ema_unexpected = ema.load_state_dict(ckpt["ema"], strict=False)
+        if is_main and (missing or unexpected):
+            print(f"  [resume] model missing={len(missing)} unexpected={len(unexpected)}", flush=True)
+            if missing:
+                print(f"    missing: {missing[:5]}{'...' if len(missing) > 5 else ''}", flush=True)
+            if unexpected:
+                print(f"    unexpected: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}", flush=True)
+        if is_main and (ema_missing or ema_unexpected):
+            print(f"  [resume] ema missing={len(ema_missing)} unexpected={len(ema_unexpected)}", flush=True)
         if args.reset_optimizer:
-            # Stage transition (e.g. 256→512): keep weights+EMA, fresh
-            # optimizer/scheduler with current args (lr, warmup, total_steps).
+            # Keep weights+EMA, fresh optimizer/scheduler with current args
+            # (lr, warmup, total_steps).
             start_step = args.start_step
             if is_main:
                 print(f"Resumed weights from {args.resume} at ckpt step "
@@ -177,57 +186,27 @@ def main():
                             else nullcontext())
                 try:
                     with sync_ctx:
-                        stage = getattr(args, "stage", 1)
-                        if stage == 1:
-                            loss, m = stage1_forward_and_loss(
-                                model, batch,
-                                alpha_mode=args.alpha_mode, use_amp=True,
-                                w_lddt_ca=getattr(args, "w_lddt_ca", 1.0),
-                                w_bond_caca=getattr(args, "w_bond_caca", 0.1),
-                                w_distogram=getattr(args, "w_distogram", 0.5),
-                                w_drmsd=getattr(args, "w_drmsd", 0.5),
-                                w_contact=getattr(args, "w_contact", 0.3),
-                                w_pcb=getattr(args, "w_pcb", 0.2),
-                                w_conf=getattr(args, "w_conf", 0.05),
-                                w_ca_angle=getattr(args, "w_ca_angle", 0.1),
-                                w_ca_self_clash=getattr(args, "w_ca_self_clash", 0.1),
-                                w_chirality=getattr(args, "w_chirality", 0.5),
-                            )
-                        elif stage == 2:
-                            loss, m = stage2_forward_and_loss(
-                                model, batch,
-                                alpha_mode=args.alpha_mode, use_amp=True,
-                                w_lddt_full=getattr(args, "w_lddt_full", 1.0),
-                                w_bond=getattr(args, "w_bond", 0.05),
-                                w_clash=getattr(args, "w_clash", 0.01),
-                                w_ca_anchor=getattr(args, "w_ca_anchor", 2.0),
-                                ca_condition_noise_std=getattr(args, "ca_condition_noise_std", 0.0),
-                                ca_condition_noise_prob=getattr(args, "ca_condition_noise_prob", 0.0),
-                            )
-                        elif stage == "joint":
-                            loss, m = joint_forward_and_loss(
-                                model, batch,
-                                alpha_mode=args.alpha_mode, use_amp=True,
-                                w_lddt_ca=getattr(args, "w_lddt_ca", 1.0),
-                                w_bond_caca=getattr(args, "w_bond_caca", 0.1),
-                                w_distogram=getattr(args, "w_distogram", 0.5),
-                                w_drmsd=getattr(args, "w_drmsd", 0.5),
-                                w_contact=getattr(args, "w_contact", 0.3),
-                                w_pcb=getattr(args, "w_pcb", 0.2),
-                                w_conf=getattr(args, "w_conf", 0.05),
-                                w_ca_angle=getattr(args, "w_ca_angle", 0.1),
-                                w_ca_self_clash=getattr(args, "w_ca_self_clash", 0.1),
-                                w_chirality=getattr(args, "w_chirality", 0.5),
-                                w_lddt_full=getattr(args, "w_lddt_full", 1.0),
-                                w_bond=getattr(args, "w_bond", 0.05),
-                                w_clash=getattr(args, "w_clash", 0.01),
-                                w_ca_anchor=getattr(args, "w_ca_anchor", 2.0),
-                                ca_condition_noise_std=getattr(args, "ca_condition_noise_std", 0.0),
-                                ca_condition_noise_prob=getattr(args, "ca_condition_noise_prob", 0.0),
-                                w_stage1=getattr(args, "w_stage1", 1.0),
-                            )
-                        else:
-                            raise ValueError(f"unknown stage: {stage!r}")
+                        loss, m = allatom_forward_and_loss(
+                            model, batch,
+                            alpha_mode=args.alpha_mode, use_amp=True,
+                            w_fm=getattr(args, "w_fm", 1.0),
+                            w_lddt_atom=getattr(args, "w_lddt_atom", 1.0),
+                            w_lddt_ca=getattr(args, "w_lddt_ca", 0.5),
+                            w_bond=getattr(args, "w_bond", 0.05),
+                            w_clash=getattr(args, "w_clash", 0.02),
+                            w_ca_clash=getattr(args, "w_ca_clash", 0.01),
+                            w_distogram=getattr(args, "w_distogram", 0.5),
+                            w_drmsd=getattr(args, "w_drmsd", 0.75),
+                            w_contact=getattr(args, "w_contact", 0.5),
+                            w_pcb=getattr(args, "w_pcb", 0.2),
+                            w_conf=getattr(args, "w_conf", 0.05),
+                            w_ca_angle=getattr(args, "w_ca_angle", 0.1),
+                            w_ca_self_clash=getattr(args, "w_ca_self_clash", 0.1),
+                            w_chirality=getattr(args, "w_chirality", 1.0),
+                            w_chirality_atom=getattr(args, "w_chirality_atom", 0.5),
+                            max_lddt_atoms=getattr(args, "max_lddt_atoms", 2048),
+                            max_clash_atoms=getattr(args, "max_clash_atoms", 2048),
+                        )
                         if not torch.isfinite(loss):
                             oom = True
                             break
@@ -271,8 +250,9 @@ def main():
 
             # Metric accumulation
             if is_dist:
-                t = torch.tensor(accum["loss"], device=device)
-                accum["loss"] = all_reduce_mean(t)
+                for k, v in list(accum.items()):
+                    t = torch.tensor(v, device=device)
+                    accum[k] = all_reduce_mean(t)
             for k, v in accum.items():
                 metric_sums[k] = metric_sums.get(k, 0.0) + v
             metric_count += 1
@@ -283,7 +263,8 @@ def main():
                 log_metrics(step, args.total_steps, avgs,
                             scheduler.get_last_lr()[0],
                             world_size, args.batch_size,
-                            args.copies_per_protein)
+                            args.copies_per_protein,
+                            args.grad_accum_steps)
                 metric_sums, metric_count = {}, 0
 
             # Validation (rank 0 only; other ranks wait on barrier to avoid DDP desync)
@@ -296,21 +277,11 @@ def main():
                             if vbatch is None:
                                 continue
                             vbatch = vbatch.to(torch.device(device))
-                            stage = getattr(args, "stage", 1)
-                            if stage == 1:
-                                vm = stage1_eval_step(
-                                    ema.shadow, vbatch, use_amp=True,
-                                )
-                            elif stage == 2:
-                                vm = stage2_eval_step(
-                                    ema.shadow, vbatch, use_amp=True,
-                                )
-                            elif stage == "joint":
-                                vm = joint_eval_step(
-                                    ema.shadow, vbatch, use_amp=True,
-                                )
-                            else:
-                                raise ValueError(f"unknown stage: {stage!r}")
+                            vm = allatom_eval_step(
+                                ema.shadow, vbatch, use_amp=True,
+                                max_lddt_atoms=getattr(args, "max_lddt_atoms", 2048),
+                                max_clash_atoms=getattr(args, "max_clash_atoms", 2048),
+                            )
                             for k, v in vm.items():
                                 val_metrics.setdefault(k, []).append(v)
                     log_val_metrics(step,

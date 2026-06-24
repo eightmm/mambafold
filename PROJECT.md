@@ -4,49 +4,45 @@
 
 - State: confirmed
 - Last confirmed by: sjm0775@snu.ac.kr
-- Last updated: 2026-06-05
+- Last updated: 2026-06-24
 
 ## Project
 
 - Name: MambaFold
 - Type: ml
-- Goal: thesis/paper-grade single-chain all-atom protein structure generation with a Seed3D-style coarse-to-fine decomposition: residue-level C-alpha scaffold first, atom-level conditional refinement second.
-- Core claim: decouple global fold generation from atomistic detail recovery. Stage 1 learns C-alpha backbone topology with Bi-Mamba/Mamba-3 sequence modeling; Stage 2 uses the predicted scaffold to recover chemically plausible all-atom structure.
+- Goal: thesis/paper-grade single-chain all-atom protein structure generation with direct all-atom flow matching.
+- Core claim: a sufficiently scaled Bi-Mamba + pair reasoning model can learn global fold and atomistic detail in one path.
 - Users/workflow: solo local/HPC training on 4x NVIDIA B200; W&B for tracking; Boltz-style processed RCSB data for comparability.
 - Scope: single-chain proteins, standard amino acids, L <= 1024 active training. MSA-free / PLM-conditioned path using ESM3 cache.
 - Non-goals: multimer/interface prediction, ligands, nucleic acids, metals, cofactors, water, non-standard residues/PTMs, EqM.
 
 ## Architecture
 
-- Stage 1: topology-preserving C-alpha scaffold generator (flow-matching Bi-Mamba).
-  - Input: sequence/residue features, residue index, optional ESM3, FM time/noise.
-  - Output: C-alpha velocity, Stage 1 residue latent, pseudo-Cβ unit direction
-    (side-chain orientation cue), per-residue confidence (predicted Cα-lDDT).
-  - Losses: C-alpha FM, soft C-alpha lDDT, dRMSD (distance-map), C-alpha bond +
-    virtual-angle floor + self-clash geometry, distogram + long-range contact aux,
-    pseudo-Cβ cosine, confidence calibration.
-  - Recycling: training-time 2-cycle — cycle-1 Cα distance map fed back into the pair
-    init for cycle-2 (earlier cycle under no_grad; `n_cycles_train`).
-  - Purpose: global topology, long-range fold, domain/backbone arrangement; emit a
-    scaffold (Cα + orientation + calibrated confidence) Stage 2 can refine.
-- Stage 2: conditional all-atom refiner.
-  - Input: sequence/residue/atom features, Stage 1 C-alpha scaffold, pseudo-Cβ direction,
-    confidence, Stage 1 latent, FM time/noise.
-  - Output: atom-slot velocity for atom14-style coordinates.
-  - Losses: non-CA atom FM, all-atom/CA lDDT, bond geometry, clash, confidence-weighted
-    C-alpha anchor (high-confidence cores anchored hard, uncertain loops free to move).
-  - Purpose: backbone atoms, side-chain placement, local stereochemistry, clash reduction.
-- C-alpha policy: Stage 2 may move C-alpha locally, but is anchored to Stage 1 by `w_ca_anchor`. This avoids fixed-CA error lock-in while limiting fold drift.
-- Robust conditioning: Stage 2 training can inject small noise into the Stage 1 C-alpha condition (`ca_condition_noise_std`, `ca_condition_noise_prob`) so it learns to handle predicted/noisy scaffolds, not only perfect anchors.
+- Active path: direct all-atom flow matching, `configs/direct_allatom_360m.yaml`.
+  - Input: sequence/residue features, residue index, ESM3, FM time/noise, noised atom-slot coordinates.
+  - Output: atom-slot velocity for the atom14+OXT layout plus CA/topology aux heads.
+  - Losses: all-atom FM, sampled all-atom lDDT, soft C-alpha lDDT,
+    all-atom bond/clash geometry, CA clash, dRMSD, distogram,
+    long-range contact, pseudo-Cβ direction, all-atom-lDDT confidence
+    (pLDDT) calibration, C-alpha virtual-angle/self-clash, chirality
+    (CA global handedness + per-residue Cα N/C/CB stereochemistry).
+  - FM time/noise level enters via a sinusoidal TimeEmbedding + FiLM on the trunk
+    input and inside the atom encoder/decoder (not a single scalar feature).
+    Predicted pLDDT is written to inference PDB B-factors.
+  - No recycling/cycle loop and no frozen conditioning path.
+  - Three SSM levels, atom → token → atom (`model/fold/atom_mamba.py`): an
+    AtomEncoder (BiMamba over each residue's 15 atom slots → gated pool to a
+    residue token) feeds the Mamba + triangle-mult pair trunk (global,
+    inter-residue), and an AtomDecoder (residue latent + atom skip → BiMamba over
+    atom slots) reads out per-atom velocity. No attention in the atom path —
+    intra-residue (side-chain) geometry is SSM, inter-residue is the trunk.
+    `d_atom=128`, `n_atom_layers=4` (enc & dec).
 
 ## Rationale
 
-- Protein structure naturally factorizes as `p(all_atom | sequence) ~= p(CA | sequence) * p(all_atom | CA, sequence)`.
-- C-alpha prediction has much lower output dimension than all-atom prediction, giving cleaner global fold supervision.
-- Bi-Mamba is best used for sequence-scale/global context in Stage 1; Stage 2 gets a 3D scaffold before learning local atomistic detail.
-- This mirrors coarse-to-fine 3D generation: coarse shape first, high-frequency chemical detail second.
-- Main risks: Stage 1 error lock-in, C-alpha orientation ambiguity, Stage 2 distribution shift if trained only on perfect C-alpha.
-- Mitigations: distogram auxiliary in Stage 1, C-alpha residual refinement with anchor in Stage 2, noisy/predicted C-alpha conditioning.
+- Direct all-atom lets CA/backbone/side-chain errors co-adapt from step 1.
+- The topology auxiliaries are kept so the model still receives strong global fold
+  supervision while optimizing atom coordinates directly.
 
 ## Data
 
@@ -54,31 +50,29 @@
 - Active data: `data/rcsb/` (~212k Boltz-style `.npz`).
 - ESM cache: `data/rcsb_esm/` canonical ESM3 embeddings. `data/rcsb_esmc/` may remain for ablation but is not active.
 - Splits: `data/splits/{train,val,val_casp,holdout_ids}.txt` are frozen. Do not regenerate unless all reported metrics are invalidated and rerun.
-- Active filtering: `single_chain_only: true` in stage configs.
+- Active filtering: `single_chain_only: true` and `extract_monomer_chains: true`
+  in `configs/direct_allatom_360m.yaml`.
 
 ## Training Plan
 
-- Phase 1a: Stage 1 PT, L=512, `configs/stage1.yaml`.
-- Phase 1b: Stage 1 CT, L=1024, `configs/stage1_ct.yaml`.
-- Phase 2: Stage 2 all-atom refiner, frozen Stage 1, `configs/stage2.yaml`.
-- Phase 3: optional joint finetune, `configs/joint.yaml`.
-- Stage 2 should not be trained only on GT C-alpha. It should condition on Stage 1 predicted C-alpha plus optional injected noise.
+- Phase A: direct all-atom scratch, ~390M actual params
+  (d_state=128 for long-range), L=1024, `configs/direct_allatom_360m.yaml`.
+- Phase B: CASP14 eval at 50k/100k checkpoints with SimpleFold-style metrics.
 
 ## Commands
 
 - Setup: `uv sync`
-- Train default: `CUDA_VISIBLE_DEVICES=0,1,2,3 CONFIG=configs/stage1.yaml bash scripts/train.sh`
+- Train default: `CUDA_VISIBLE_DEVICES=0,1,2,3 CONFIG=configs/direct_allatom_360m.yaml bash scripts/train.sh`
 - Resume: `CUDA_VISIBLE_DEVICES=0,1,2,3 RESUME=outputs/train/<run>/ckpt_latest.pt bash scripts/train.sh`
-- Stage 2: `CUDA_VISIBLE_DEVICES=0,1,2,3 CONFIG=configs/stage2.yaml STAGE1_CKPT=outputs/train/<stage1>/ckpt_latest.pt bash scripts/train.sh`
 - Inference: `PYTHONPATH=src uv run python benchmarks/run_inference.py --ckpt <ckpt> --ids <ids.txt> --out <out_dir>`
-- Score: `tools/scoring_venv/bin/python benchmarks/score.py --in_dir <out_dir> --out <out_dir>/scores.json`
+- Score: `tools/scoring_venv/bin/python benchmarks/score_simplefold_metrics.py --in_dir <out_dir> --out <out_dir>/scores.json`
 - Syntax smoke: `PYTHONPATH=src uv run python -m py_compile ...`
 
 ## Verification
 
 - Required quick checks after code edits:
   - `py_compile` on touched Python files.
-  - config parse for stage1/stage1_ct/stage2/joint.
+  - config parse for `configs/direct_allatom_360m.yaml`.
   - single-chain dataset smoke: multichain example filtered, single-chain example kept.
 - Before long training:
   - focused tests or full `uv run pytest` when feasible.
@@ -86,24 +80,21 @@
   - config diff reviewed.
   - W&B run name/tags set.
 - Metrics:
-  - Stage 1: C-alpha lDDT, C-alpha RMSD, distogram/bond losses.
-  - Stage 2: C-alpha lDDT/TM/RMSD, all-atom RMSD, bond/clash metrics.
+  - Train: all-atom FM, sampled all-atom lDDT, C-alpha lDDT, distogram, bond/clash metrics.
   - Later drug-discovery-oriented metrics: pocket heavy-atom RMSD, side-chain chi accuracy, clashscore.
 
 ## Paths
 
 - Source: `src/mambafold/`
-- Active configs: `configs/stage1.yaml`, `configs/stage1_ct.yaml`, `configs/stage2.yaml`, `configs/joint.yaml`
+- Active configs: `configs/direct_allatom_360m.yaml`
 - Train scripts: `scripts/train.py`, `scripts/train.sh`
-- Benchmarks: `benchmarks/run_inference.py`, `benchmarks/run_stage1_ca_eval.py`, `benchmarks/score.py`
+- Benchmarks: `benchmarks/run_inference.py`, `benchmarks/score.py`, `benchmarks/score_simplefold_metrics.py`
 - Outputs/checkpoints: `outputs/train/<run>/`
 
 ## References (borrowed concepts)
 
 Papers whose ideas are used, and where in the code.
 
-- **Seed3D 2.0** (ByteDance Seed, tech report) — coarse-to-fine 2-stage decomposition
-  (global shape → high-frequency detail). → our Stage 1 (Cα scaffold) → Stage 2 (all-atom).
 - **SimpleFold** (arXiv:2509.18480) — flow-matching folding with general blocks (no
   triangle/pair required); logit-normal time sampling. → FM objective + sampler
   (`data/transforms.py` `_sample_t`, `sampling/samplers.py`). We replace its Transformer
@@ -116,8 +107,9 @@ Papers whose ideas are used, and where in the code.
   aux, gated (output) self-attention, atom14 layout, FAPE/lDDT-style supervision.
   → `model/fold/multiplicative_update.py`, `pair_blocks.py`, `losses/`, `data/constants.py`.
 - **AlphaFold3** (Abramson et al. 2024, Nature) — Pairformer lineage, relpos / chain-entity-sym
-  encodings, confidence head framing. → `model/embeddings.py` `SequenceFourierEmbedder`,
-  Stage 1 `conf_head`.
+  encodings, confidence head framing, atom-level local distance/geometry supervision.
+  → `model/embeddings.py`, `losses/lddt.py`, `losses/geometry.py`,
+  `losses/ca_only.py`.
 - **SeedFold** (arXiv:2512.24354v1) — Linear Triangle Attention (ReLU feature map +
   associative reorder, gated; O(L³)→O(L²)). → `model/fold/linear_tri_attn.py`
   (toggle `pair_use_tri_attn`; currently OFF under the Pairmixer preset).
@@ -140,7 +132,7 @@ Papers whose ideas are used, and where in the code.
 - **lDDT** (Mariani et al. 2013) — soft differentiable lDDT loss. → `losses/lddt.py`,
   `losses/ca_only.py`.
 - **Engh & Huber 2001** — ideal covalent bond lengths. → `losses/geometry.py`.
-- **ESM3** (Hayes et al. 2024) — PLM embeddings as conditioning. → `data/esm.py`, Stage 1 PLM proj.
+- **ESM3** (Hayes et al. 2024) — PLM embeddings as conditioning. → `data/esm.py`, model PLM proj.
 - **Boltz-1** (Wohlwend et al. 2024) — Boltz-style processed RCSB `.npz` records. → `data/dataset.py` `RCSBDataset`.
 
 ## Do Not Touch Without Explicit Confirmation
@@ -153,6 +145,30 @@ Papers whose ideas are used, and where in the code.
 
 ## Open Decisions
 
-- Whether Stage 1 should explicitly predict residue frames / pseudo-CB directions in addition to C-alpha.
-- Whether Stage 2 should add an explicit C-alpha kNN geometry block beyond current CA anchor Fourier conditioning.
-- Whether to run Phase 3 joint finetune after Stage 2 plateau.
+- Resolved (2026-06-24): per-atom path = AF3-style atom→token→atom but all SSM —
+  BiMamba AtomEncoder/Decoder over each residue's atom slots (intra-residue),
+  not attention, to keep the MambaFold identity at every level.
+  `model/fold/atom_mamba.py`. d_atom=128, n_atom_layers=4.
+  (Superseded the earlier interim lightweight MLP decoder.)
+- Resolved (2026-06-24): pair stack kept at current budget (~2.9M / 389.6M) for the
+  baseline; revisit after first run if global-fold signal is weak.
+- Resolved (2026-06-24): FM time sampling = logit_normal (oversample clean end).
+- Resolved (2026-06-24): added per-residue Cα N/C/CB chirality (`allatom_chirality_loss`,
+  `w_chirality_atom=0.5`), all-atom-lDDT confidence target (pLDDT) + B-factor
+  surfacing, and FM time conditioning via TimeEmbedding+FiLM.
+- Resolved (2026-06-24, multi-agent review): applied per-step CoM re-centering in
+  the Euler sampler (was only initial-noise centered) and added a `w_fm` lever
+  (default 1.0) for the core flow-matching loss. Confirmed not-bugs: GT losses use
+  `valid_mask` while geometry priors use `atom_mask` (intentional — gives
+  unobserved/modeled atoms ideal-geometry signal); SO(3) augmentation is
+  per-example; val split is MMseqs2 cluster-based (`scripts/make_val_split.py`,
+  homolog-leakage guarded).
+- Open (ablate, do not apply blind): the `(1-t)` reconstruction Jacobian makes aux
+  gradients vanish at t→1 while `alpha_mode: ramp` + `logit_normal` concentrate
+  weight/sampling there — consider aux ~1/(1-t) weighting or a mid-t window; log
+  per-term grad norms first.
+- Open: explicit residue-frame / side-chain torsion heads.
+- Open: self-conditioning (feed previous x_hat); sampler 2nd-order/churn.
+- Open: bf16 SSM at d_state=128 — confirm selective-scan state update runs fp32;
+  watch grad-clip hit-rate vs the non-smooth chirality hinges.
+- Open: sampled all-atom lDDT/clash budgets 1024 vs 2048 vs 4096 atoms.

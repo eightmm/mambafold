@@ -6,7 +6,7 @@
 #
 # Environment:
 #   CUDA_VISIBLE_DEVICES   GPU selection (default: all visible). e.g. "0,1,2,3"
-#   CONFIG                 YAML config (default: configs/stage1.yaml)
+#   CONFIG                 YAML config (default: configs/direct_allatom_360m.yaml)
 #   RESUME                 Checkpoint path to resume from (optional)
 #   OUT_DIR                Output dir (default: outputs/train/<timestamp>)
 #   MASTER_PORT            DDP rendezvous port (default: 29500)
@@ -44,7 +44,7 @@ export NCCL_TIMEOUT=${NCCL_TIMEOUT:-1800000}
 export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
 
 # ── Config / output ───────────────────────────────────────────────────────────
-CONFIG="${CONFIG:-configs/stage1.yaml}"
+CONFIG="${CONFIG:-configs/direct_allatom_360m.yaml}"
 OUT_DIR="${OUT_DIR:-outputs/train/$(date +%Y%m%d_%H%M%S)}"
 MASTER_PORT="${MASTER_PORT:-29500}"
 mkdir -p "$OUT_DIR"

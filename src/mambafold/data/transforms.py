@@ -16,9 +16,11 @@ def _with_coords(example: ProteinExample, coords: Tensor) -> ProteinExample:
 
 
 def center_and_scale(example: ProteinExample) -> ProteinExample:
-    """Center on the valid-atom centroid and scale to normalized units."""
+    """Center on the observed-atom centroid and scale to normalized units."""
     flat_coords = example.coords.reshape(-1, 3)   # [L*A, 3]
-    flat_mask = example.atom_mask.reshape(-1)     # [L*A]
+    flat_mask = (example.atom_mask & example.observed_mask).reshape(-1)     # [L*A]
+    if not flat_mask.any():
+        flat_mask = example.atom_mask.reshape(-1)
     centroid = masked_centroid(flat_coords, flat_mask)  # [1, 3]
     coords = (example.coords - centroid.unsqueeze(0)) / COORD_SCALE
     return _with_coords(example, coords)

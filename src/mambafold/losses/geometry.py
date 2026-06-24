@@ -45,11 +45,19 @@ def bond_length_loss(
     res_type: Tensor,         # [B, L]    residue type IDs
     atom_mask: Tensor,        # [B, L, A] valid-atom mask
     res_mask: Tensor,         # [B, L]    valid-residue mask
+    chain_id: Tensor | None = None,      # [B, L] optional chain IDs
+    res_seq_nums: Tensor | None = None,  # [B, L] optional chain-local residue indices
+    true_coords: Tensor | None = None,   # [B, L, A, 3] optional GT coordinates
 ) -> Tensor:
     """Huber-style bond length deviation in normalized units.
 
     Sums backbone bonds (N-CA, CA-C, C-O), the CA-CB bond for non-GLY,
-    and the peptide C(i)-N(i+1) bond for adjacent valid residues.
+    and the peptide C(i)-N(i+1) bond for adjacent valid residues. When
+    `chain_id`/`res_seq_nums` are provided, peptide bonds are only applied
+    within the same chain and across consecutive residue numbers. When
+    `true_coords` is provided, peptide bonds are also gated by the GT C-N
+    distance, which catches missing-residue gaps even if residue indices were
+    re-numbered during preprocessing.
     Normalization: total deviation divided by number of valid bonds.
     """
     B, L, A, _ = pred_coords.shape
@@ -84,7 +92,15 @@ def bond_length_loss(
         n_j  = pred_coords[:,  1:, _N,  :]
         mi   = atom_mask[:, :-1, _C]  & res_mask[:, :-1]
         mj   = atom_mask[:,  1:, _N]  & res_mask[:,  1:]
-        m    = (mi & mj).to(pred_coords.dtype)
+        peptide = mi & mj
+        if chain_id is not None:
+            peptide = peptide & (chain_id[:, :-1] == chain_id[:, 1:])
+        if res_seq_nums is not None:
+            peptide = peptide & ((res_seq_nums[:, 1:] - res_seq_nums[:, :-1]) == 1)
+        if true_coords is not None:
+            true_cn = torch.linalg.norm(true_coords[:, :-1, _C, :] - true_coords[:, 1:, _N, :], dim=-1)
+            peptide = peptide & (true_cn < (IDEAL["C_N"] + 0.06))
+        m    = peptide.to(pred_coords.dtype)
         d    = torch.linalg.norm(c_i - n_j, dim=-1)
         err  = (d - IDEAL["C_N"]).abs()
         losses.append((err * m).sum())
@@ -127,3 +143,54 @@ def ca_clash_loss(
     m = pair.to(d.dtype)
     violation = torch.relu(min_d - d).pow(2)
     return (violation * m).sum() / m.sum().clamp(min=1)
+
+
+def all_atom_clash_loss(
+    pred_coords: Tensor,
+    valid_mask: Tensor,
+    res_mask: Tensor,
+    chain_id: Tensor | None = None,
+    min_dist_A: float = 1.5,
+    max_atoms: int = 2048,
+) -> Tensor:
+    """Sampled non-bonded heavy-atom clash penalty.
+
+    This is a lightweight AF-style steric term: flatten valid atom slots,
+    exclude pairs from the same residue and adjacent residues in the same
+    chain, then penalize distances below `min_dist_A`.
+    """
+    min_d = min_dist_A / COORD_SCALE
+    losses = []
+    B, L, A, _ = pred_coords.shape
+    base_res = torch.arange(L, device=pred_coords.device).view(L, 1).expand(L, A).reshape(-1)
+    for b in range(B):
+        flat_mask = (valid_mask[b] & res_mask[b].unsqueeze(-1)).reshape(-1)
+        idx = flat_mask.nonzero(as_tuple=False).squeeze(-1)
+        if idx.numel() < 2:
+            continue
+        if idx.numel() > max_atoms:
+            take = torch.linspace(0, idx.numel() - 1, max_atoms, device=idx.device).long()
+            idx = idx[take]
+
+        xyz = pred_coords[b].reshape(-1, 3).index_select(0, idx)
+        res_i = base_res.index_select(0, idx)
+        d = torch.cdist(xyz, xyz)
+
+        pair = ~torch.eye(idx.numel(), dtype=torch.bool, device=idx.device)
+        same_res = res_i[:, None] == res_i[None, :]
+        pair = pair & ~same_res
+        if chain_id is not None:
+            ch_flat = chain_id[b].view(L, 1).expand(L, A).reshape(-1).index_select(0, idx)
+            same_chain = ch_flat[:, None] == ch_flat[None, :]
+            adjacent = (res_i[:, None] - res_i[None, :]).abs() <= 1
+            pair = pair & ~(same_chain & adjacent)
+
+        m = pair.to(d.dtype)
+        if m.sum() < 1:
+            continue
+        violation = torch.relu(min_d - d).pow(2)
+        losses.append((violation * m).sum() / m.sum().clamp(min=1))
+
+    if not losses:
+        return pred_coords.new_zeros(())
+    return torch.stack(losses).mean()

@@ -156,18 +156,6 @@ def main():
                    help="Sampling seeds = [seed_offset, seed_offset+1, ...]")
     p.add_argument("--use_ema", action="store_true", default=True)
     p.add_argument("--no_ema", dest="use_ema", action="store_false")
-    p.add_argument("--n_recycle", type=int, default=0,
-                   help="Inference-time recycling iterations (0 = baseline). "
-                        "Applies to both stages unless --n_recycle_s1/--n_recycle_s2 are set.")
-    p.add_argument("--recycle_t_start", type=float, default=0.5,
-                   help="t value to re-noise to at each recycle iter (0.5 = midpoint).")
-    # Stage-specific inference knobs.
-    p.add_argument("--n_steps_s2", type=int, default=None,
-                   help="Stage 2 Euler steps. Defaults to --n_steps.")
-    p.add_argument("--n_recycle_s1", type=int, default=None,
-                   help="Stage 1 recycle iters. Defaults to --n_recycle.")
-    p.add_argument("--n_recycle_s2", type=int, default=None,
-                   help="Stage 2 recycle iters. Defaults to --n_recycle.")
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -178,18 +166,11 @@ def main():
     model = load_from_checkpoint(args.ckpt, device, use_ema=args.use_ema)
     model.eval()
 
-    if type(model).__name__ != "TwoStageMambaFold":
-        raise RuntimeError(f"expected TwoStageMambaFold checkpoint, got {type(model).__name__}")
-    n_steps_s2 = args.n_steps_s2 if args.n_steps_s2 is not None else args.n_steps
-    n_recycle_s1 = args.n_recycle_s1 if args.n_recycle_s1 is not None else args.n_recycle
-    n_recycle_s2 = args.n_recycle_s2 if args.n_recycle_s2 is not None else args.n_recycle
-    print(f"[infer] two-stage sampler "
-          f"(n_steps_s1={args.n_steps} s2={n_steps_s2} "
-          f"recycle s1={n_recycle_s1} s2={n_recycle_s2} t={args.recycle_t_start})")
+    print(f"[infer] direct all-atom sampler (n_steps={args.n_steps})")
 
     # Auto-fill --esm_dir from the ckpt's saved args when the ckpt was
     # trained with use_plm=True. This avoids silent "batch.esm is None"
-    # failures when callers (run_eval.sh, run_recycle_ablation.sh) forget
+    # failures when callers forget
     # to forward --esm_dir explicitly. Explicit --esm_dir takes priority.
     if args.esm_dir is None:
         ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)
@@ -245,7 +226,7 @@ def main():
         b_zero = np.zeros_like(aa_mask, dtype=np.float32)
 
         # GT written once
-        save_pdb(true_aa, res_type, atom_mask_np, b_zero,
+        save_pdb(true_aa, res_type, aa_mask, b_zero,
                             chain_id_np, out_dir / f"{pid}_gt.pdb")
 
         n_ok = 0
@@ -253,14 +234,10 @@ def main():
         for si, sd in enumerate(seeds):
             try:
                 with torch.no_grad():
-                    _, pred_aa, _, _ = sample(
+                    _, pred_aa, _, _, conf = sample(
                         model, ex,
                         lambda x, ti: make_batch(x, ex_c, ti, device),
-                        n_steps_s1=args.n_steps,
-                        n_steps_s2=n_steps_s2,
-                        n_recycle_s1=n_recycle_s1,
-                        n_recycle_s2=n_recycle_s2,
-                        recycle_t_start=args.recycle_t_start,
+                        n_steps=args.n_steps,
                         seed=sd, device=device,
                     )
             except torch.cuda.OutOfMemoryError:
@@ -271,13 +248,16 @@ def main():
                 print(f"[err] {pid} seed={sd}: {type(e).__name__}: {e}")
                 continue
 
+            # Predicted pLDDT (per-residue) → per-atom B-factor column (0-100 scale).
+            b_pred = (np.asarray(conf, dtype=np.float32)[:, None] * 100.0
+                      * atom_mask_np.astype(np.float32))
             pred_aa_aligned = kabsch_align_to_gt(pred_aa, true_aa, aa_mask)
             seed_path = out_dir / f"{pid}_pred_seed{si}.pdb"
-            save_pdb(pred_aa_aligned, res_type, atom_mask_np, b_zero,
+            save_pdb(pred_aa_aligned, res_type, atom_mask_np, b_pred,
                                 chain_id_np, seed_path)
             # First successful seed also written as the canonical "<pid>_pred.pdb"
             if n_ok == 0:
-                save_pdb(pred_aa_aligned, res_type, atom_mask_np, b_zero,
+                save_pdb(pred_aa_aligned, res_type, atom_mask_np, b_pred,
                                     chain_id_np, out_dir / f"{pid}_pred.pdb")
             n_ok += 1
 
@@ -296,17 +276,12 @@ def main():
         "ckpt": str(args.ckpt),
         "ids_file": str(args.ids),
         "n_steps": args.n_steps,
-        "n_recycle": args.n_recycle,
-        "recycle_t_start": args.recycle_t_start,
         "max_length": args.max_length,
         "use_ema": args.use_ema,
         "single_chain_only": True,
         "n_predicted": len(summary_rows),
         "rows": summary_rows,
     }
-    manifest["n_steps_s2"] = n_steps_s2
-    manifest["n_recycle_s1"] = n_recycle_s1
-    manifest["n_recycle_s2"] = n_recycle_s2
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"[done] predictions written: {len(summary_rows)} → {out_dir}")
 

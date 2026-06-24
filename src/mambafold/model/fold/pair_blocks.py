@@ -1,4 +1,4 @@
-"""PairBlock — composes one round of pair-side updates for Stage 1.
+"""PairBlock — composes one round of pair-side updates.
 
 Pairmixer design (arXiv:2510.18870 "Triangle Multiplication is All You Need"):
 triangle multiplication is the load-bearing op, so the block is just the two

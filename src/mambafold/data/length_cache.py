@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -104,8 +105,7 @@ def build_length_cache(
             if (i + 1) % 20000 == 0:
                 print(f"[length_cache]   {i + 1}/{len(files)} probed, "
                       f"{len(result)} valid")
-    # Atomic-ish write
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
     with open(tmp, "w") as f:
         json.dump(result, f)
     tmp.replace(path)
@@ -162,7 +162,7 @@ def build_chain_index(
                 print(f"[chain_index]   {i + 1}/{len(files)} files, "
                       f"{len(index)} chains")
     index.sort()                                  # determinism (by file_idx, origin)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
     with open(tmp, "w") as f:
         json.dump(index, f)
     tmp.replace(path)

@@ -1,7 +1,6 @@
 # Pair Module — Linear Triangular Attention + Multiplicative Update
 
-Companion to `docs/architecture.md`. Defines the pair-side computation in
-Stage 1.
+Companion to `docs/architecture.md`. Defines the pair-side computation.
 
 References:
 - SeedFold (arXiv:2512.24354v1) §3 — Linear Triangular Attention with ReLU
@@ -187,7 +186,7 @@ def pair_to_single(pair, res_mask):
     return Linear(d_pair, d_res)(pair_row)                       # [B, L, d_res]
 ```
 
-Operates on the richer Stage 1 pair tensor.
+Operates on the direct all-atom model's pair tensor.
 
 ## 6. Distogram Aux Head
 
@@ -209,7 +208,7 @@ class DistogramHead(nn.Module):
 
 Distogram targets binned in [2 Å, 22 Å], 64 bins. Cross-entropy loss.
 
-## 7. Hyperparameter Defaults (Stage 1)
+## 7. Hyperparameter Defaults
 
 | Param | Value | Notes |
 |---|---|---|

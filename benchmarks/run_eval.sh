@@ -7,7 +7,7 @@
 #     TIER  = t0_smoke | t1_quick | t2_full
 #     GPU_ID = optional, defaults to 0
 #
-# Example (after Phase 3 finishes):
+# Example:
 #   bash benchmarks/run_eval.sh outputs/train/<run>/ckpt_latest.pt t1_quick 0
 #
 # Outputs:
@@ -25,7 +25,7 @@ TIER="${2:?Usage: $0 <CKPT> <TIER> [GPU_ID]}"
 GPU_ID="${3:-0}"
 # Optional env-var hooks for ablations: SUFFIX appends to RUN_DIR, EXTRA_INF_ARGS
 # is splatted into run_inference.py invocation (deliberately unquoted to allow
-# multi-word args like "--n_steps 200 --n_recycle 1").
+# multi-word args like "--n_steps 200").
 SUFFIX="${SUFFIX:-}"
 EXTRA_INF_ARGS="${EXTRA_INF_ARGS:-}"
 
@@ -68,12 +68,12 @@ CUDA_VISIBLE_DEVICES="$GPU_ID" PYTHONPATH=src PYTHONUNBUFFERED=1 \
 
 # Step 2: scoring (isolated venv)
 echo "[2/2] scoring..."
-tools/scoring_venv/bin/python -u benchmarks/score.py \
+tools/scoring_venv/bin/python -u benchmarks/score_simplefold_metrics.py \
     --in_dir "$RUN_DIR" \
     --out "$RUN_DIR/scores.json" \
     2>&1 | tee "$RUN_DIR/score.log"
 
 # Compact summary file (last block of score.log)
-grep -A 20 "=== SUMMARY ===" "$RUN_DIR/score.log" > "$RUN_DIR/summary.txt" || true
+grep -A 20 "=== SIMPLEFOLD-STYLE SUMMARY" "$RUN_DIR/score.log" > "$RUN_DIR/summary.txt" || true
 echo
 echo "===== done. summary at $RUN_DIR/summary.txt ====="

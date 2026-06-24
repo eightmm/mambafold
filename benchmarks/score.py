@@ -1,7 +1,10 @@
-"""Score single-chain predicted PDBs against ground-truth PDBs.
+"""Legacy quick scorer for single-chain predicted PDBs.
 
 Inputs are `<pdb_id>_pred.pdb` and `<pdb_id>_gt.pdb` pairs produced by
 benchmarks/run_inference.py. Metrics: CA-lDDT, TM-score, all-atom RMSD.
+
+Prefer `benchmarks/score_simplefold_metrics.py` for reporting: it matches atoms
+by identity and reports the SimpleFold-style aggregate metrics.
 """
 
 from __future__ import annotations

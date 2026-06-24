@@ -18,6 +18,15 @@ from mambafold.data.constants import (
 from mambafold.data.types import ProteinExample
 
 
+def _residue_seq_num(residue, fallback: int) -> int:
+    """Best-effort original residue number; fallback to contiguous local index."""
+    names = getattr(residue.dtype, "names", None) or ()
+    for key in ("auth_seq_id", "res_seq_num", "seq_id", "residue_index", "pdb_res_num"):
+        if key in names:
+            return int(residue[key])
+    return int(fallback)
+
+
 class AFDBDataset(Dataset):
     """Dataset for AFDB .pt files with canonical atom slot mapping."""
 
@@ -301,8 +310,8 @@ class RCSBDataset(Dataset):
         atoms = data["atoms"]
         chains = data["chains"]
 
-        # Gather (residue_idx, chain_local_idx, chain_id, chain_origin_idx) entries
-        entries: list[tuple[int, int, int, int]] = []
+        # Gather (residue_idx, chain_local_idx, residue_seq_num, chain_id, chain_origin_idx) entries
+        entries: list[tuple[int, int, int, int, int]] = []
         per_chain_counts: list[int] = []          # chain_id → total standard residues (before crop)
         per_chain_entity: list[int] = []          # chain_id → entity_id (same value for chains with identical sequence)
         per_chain_sym: list[int] = []             # chain_id → sym_id (copy number within entity, AF3 style)
@@ -322,16 +331,16 @@ class RCSBDataset(Dataset):
                 r = residues[i]
                 if (r["is_standard"] and r["name"] in AA_TO_ID
                         and r["name"] != "UNK"):
-                    kept.append((i, local))
+                    kept.append((i, local, _residue_seq_num(r, local)))
                     local += 1
             if len(kept) >= self.min_length and (
                 only_chain_origin is None or chain_origin_idx == only_chain_origin
             ):
-                for ri, loc in kept:
-                    entries.append((ri, loc, chain_id_next, chain_origin_idx))
+                for ri, loc, seq_num in kept:
+                    entries.append((ri, loc, seq_num, chain_id_next, chain_origin_idx))
                 per_chain_counts.append(len(kept))
                 # Entity id: chains with identical residue-name sequence share an id.
-                seq_tuple = tuple(str(residues[ri]["name"]) for ri, _ in kept)
+                seq_tuple = tuple(str(residues[ri]["name"]) for ri, _, _ in kept)
                 if seq_tuple not in seq_to_entity:
                     seq_to_entity[seq_tuple] = len(seq_to_entity)
                 per_chain_entity.append(seq_to_entity[seq_tuple])
@@ -355,7 +364,7 @@ class RCSBDataset(Dataset):
         if self.esm_dir is not None and path is not None:
             esm_lengths: dict[int, int] = {}
             filtered_entries = []
-            for ri, loc, cid, origin in entries:
+            for ri, loc, seq_num, cid, origin in entries:
                 if origin not in esm_lengths:
                     p = self.esm_dir / f"{path.stem}_ch{origin}.npy"
                     if not p.exists():
@@ -365,7 +374,7 @@ class RCSBDataset(Dataset):
                     except Exception:
                         return None
                 if loc < esm_lengths[origin]:
-                    filtered_entries.append((ri, loc, cid, origin))
+                    filtered_entries.append((ri, loc, seq_num, cid, origin))
             entries = filtered_entries
             if not entries:
                 return None
@@ -391,11 +400,11 @@ class RCSBDataset(Dataset):
         is_nterm_t   = torch.zeros(L, dtype=torch.bool)
         is_cterm_t   = torch.zeros(L, dtype=torch.bool)
 
-        for i, (ri, loc, cid, _origin) in enumerate(entries):
+        for i, (ri, loc, seq_num, cid, _origin) in enumerate(entries):
             res = residues[ri]
             res_name = str(res["name"])
             res_type[i]     = AA_TO_ID.get(res_name, AA_TO_ID["UNK"])
-            res_seq_nums[i] = loc       # residue index within its chain
+            res_seq_nums[i] = seq_num   # original residue number if available, else chain-local index
             chain_id_t[i]   = cid
             entity_id_t[i]  = per_chain_entity[cid]
             sym_id_t[i]     = per_chain_sym[cid]
@@ -434,7 +443,7 @@ class RCSBDataset(Dataset):
             per_chain_cache: dict[int, np.ndarray] = {}
             esm_rows: list[torch.Tensor] = []
             ok = True
-            for ri, loc, cid, origin in entries:
+            for ri, loc, _seq_num, cid, origin in entries:
                 if origin not in per_chain_cache:
                     p = self.esm_dir / f"{path.stem}_ch{origin}.npy"
                     if not p.exists():

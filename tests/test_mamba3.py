@@ -12,7 +12,7 @@ if str(SRC) not in sys.path:
 
 from mambafold.data.types import ProteinBatch
 from mambafold.model.bimamba3 import BiMamba3Block, Mamba3Block, Mamba3Layer
-from mambafold.model.fold import MambaFoldStage1
+from mambafold.model.fold import MambaFoldAllAtom
 
 
 def test_mamba3_layer_shape_and_mask():
@@ -45,7 +45,7 @@ def test_causal_and_bidirectional_blocks_run():
     assert torch.allclose(y_bidir[0, 4:], torch.zeros_like(y_bidir[0, 4:]))
 
 
-def test_stage1_runs_with_mamba_blocks():
+def test_all_atom_model_runs_with_mamba_blocks():
     B, L, A = 2, 4, 15
     dev = "cuda"
     batch = ProteinBatch(
@@ -69,7 +69,7 @@ def test_stage1_runs_with_mamba_blocks():
         esm=torch.randn(B, L, 32, device=dev),
     )
 
-    model = MambaFoldStage1(
+    model = MambaFoldAllAtom(
         d_res=64,
         d_plm=32,
         d_plm_proj=32,
@@ -87,5 +87,6 @@ def test_stage1_runs_with_mamba_blocks():
 
     out = model(batch, return_aux=True)
 
+    assert out["v_atom"].shape == (B, L, A, 3)
     assert out["v_ca"].shape == (B, L, 3)
     assert out["distogram_logits"].shape[:3] == (B, L, L)

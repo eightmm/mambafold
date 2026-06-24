@@ -1,37 +1,30 @@
 # Inference
 
-Inference uses two-stage Euler sampling in `src/mambafold/sampling/samplers.py`.
-
-1. Stage 1 integrates CA coordinates from noise to a scaffold.
-2. Stage 2 initializes atom slots with noise, sets CA from Stage 1, then integrates all atoms with CA residual refinement.
-3. Optional recycling re-noises from an intermediate `t` and denoises again.
-
-## Command
+Inference uses one direct all-atom Euler trajectory.
 
 ```bash
 PYTHONPATH=src uv run python benchmarks/run_inference.py \
   --ckpt outputs/train/<run>/ckpt_latest.pt \
   --ids benchmarks/sets/t1_quick.txt \
   --out benchmarks/results/<run>_t1 \
+  --esm_dir data/rcsb_esm \
   --n_steps 50
 ```
 
-Useful knobs:
+Outputs:
 
-| Option | Meaning |
-|---|---|
-| `--n_steps` | Stage 1 Euler steps |
-| `--n_steps_s2` | Stage 2 Euler steps, defaults to `--n_steps` |
-| `--n_recycle` | both-stage recycle count |
-| `--n_recycle_s1`, `--n_recycle_s2` | per-stage recycle override |
-| `--recycle_t_start` | re-noise time for recycling |
+- `<target>_pred.pdb`
+- `<target>_pred_seed<i>.pdb`
+- `<target>_gt.pdb`
 
-## Scoring
+Predicted per-residue confidence is written as per-atom B-factors in
+`*_pred*.pdb`. Ground-truth PDBs only emit observed atoms, so all-atom scoring
+does not compare against missing side-chain placeholders.
+
+Score with SimpleFold-style metrics:
 
 ```bash
-tools/scoring_venv/bin/python benchmarks/score.py \
+tools/scoring_venv/bin/python benchmarks/score_simplefold_metrics.py \
   --in_dir benchmarks/results/<run>_t1 \
   --out benchmarks/results/<run>_t1/scores.json
 ```
-
-Metrics: CA lDDT, TM-score, CA RMSD, all-atom RMSD where paired GT exists.

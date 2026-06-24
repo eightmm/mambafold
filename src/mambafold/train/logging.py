@@ -18,7 +18,8 @@ def init_wandb(args, out_dir, world_size, n_params, n_train,
     if args.no_wandb:
         return
     copies = getattr(args, "copies_per_protein", 1)
-    eff_batch = args.batch_size * world_size * copies
+    grad_accum = getattr(args, "grad_accum_steps", 1)
+    eff_batch = args.batch_size * world_size * copies * grad_accum
     wandb.init(
         project=args.wandb_project,
         id=resume_run_id,
@@ -56,7 +57,8 @@ def _first_metric(metrics: dict[str, float], *names: str) -> float:
     return 0.0
 
 
-def log_metrics(step, total_steps, avgs, lr, world_size, batch_size, copies):
+def log_metrics(step, total_steps, avgs, lr, world_size, batch_size, copies,
+                grad_accum_steps=1):
     """Log training metrics to stdout and wandb."""
     import wandb
     global _last_log_time, _last_log_step
@@ -71,7 +73,7 @@ def log_metrics(step, total_steps, avgs, lr, world_size, batch_size, copies):
         steps_done = step - _last_log_step
         if elapsed > 0 and steps_done > 0:
             step_time_ms = elapsed / steps_done * 1000
-            samples_per_step = batch_size * world_size * copies
+            samples_per_step = batch_size * world_size * copies * grad_accum_steps
             samples_per_sec = samples_per_step * steps_done / elapsed
     _last_log_time = now
     _last_log_step = step
@@ -87,12 +89,11 @@ def log_metrics(step, total_steps, avgs, lr, world_size, batch_size, copies):
     progress = step / total_steps * 100
     throughput = f" | {samples_per_sec:.0f} samp/s" if samples_per_sec > 0 else ""
 
-    # Metric names differ across Stage 1, Stage 2, and joint runs.
-    main_v = _first_metric(avgs, "main", "fm", "fm_atom", "s1_fm", "s2_fm_atom")
-    lddt_v = _first_metric(avgs, "lddt", "lddt_full", "s1_lddt", "s2_lddt_full")
-    bond_v = _first_metric(avgs, "bond", "bond_caca", "s1_bond_caca", "s2_bond")
-    clash_v = _first_metric(avgs, "clash", "s2_clash")
-    distogram_v = _first_metric(avgs, "distogram", "s1_distogram")
+    main_v = _first_metric(avgs, "fm_atom")
+    lddt_v = _first_metric(avgs, "lddt_atom", "lddt_ca")
+    bond_v = _first_metric(avgs, "bond")
+    clash_v = _first_metric(avgs, "clash", "ca_clash")
+    distogram_v = _first_metric(avgs, "distogram")
     extra = ""
     if bond_v or clash_v:
         extra = f" | bond={bond_v:.4f} | clash={clash_v:.4f}"
@@ -126,14 +127,10 @@ def log_metrics(step, total_steps, avgs, lr, world_size, batch_size, copies):
         if torch.cuda.is_available():
             log_d["gpu/vram_alloc_gb"] = alloc
             log_d["gpu/vram_reserved_gb"] = reserv
-        # Forward every remaining scalar metric (contact, drmsd, pcb, conf,
-        # ca_angle, ca_self_clash, s1_conf_mean, joint s1_/s2_ keys, ...) so
-        # auxiliary losses aren't silently dropped from W&B.
+        # Forward every remaining scalar metric so auxiliary losses are logged.
         _curated = {"loss", "t_mean", "grad_norm", "alpha", "target_L",
-                    "main", "fm", "fm_atom", "s1_fm", "s2_fm_atom",
-                    "lddt", "lddt_full", "s1_lddt", "s2_lddt_full",
-                    "bond", "bond_caca", "s1_bond_caca", "s2_bond",
-                    "clash", "s2_clash", "distogram", "s1_distogram"}
+                    "fm_atom", "lddt_atom", "lddt_ca",
+                    "bond", "clash", "ca_clash", "distogram"}
         for k, v in avgs.items():
             if k not in _curated and isinstance(v, (int, float)):
                 log_d[f"train/{k}"] = v
@@ -144,15 +141,16 @@ def log_val_metrics(step, val_avgs):
     """Log validation metrics to stdout and wandb."""
     import wandb
 
-    main_v = val_avgs.get("main", 0.0)
+    main_v = val_avgs.get("fm_atom", val_avgs.get("main", 0.0))
+    lddt_v = val_avgs.get("lddt_atom", val_avgs.get("lddt_ca", val_avgs.get("lddt", 0.0)))
     print(
         f"  [val] step={step} | "
         f"main={main_v:.4f} | "
-        f"lddt={val_avgs.get('lddt', 0):.4f} | "
+        f"lddt={lddt_v:.4f} | "
+        f"ca_fm={val_avgs.get('ca_fm', 0):.4f} | "
+        f"lddt_ca={val_avgs.get('lddt_ca', 0):.4f} | "
         f"bond={val_avgs.get('bond', 0):.4f} | "
         f"clash={val_avgs.get('clash', 0):.4f} | "
-        f"if_l={val_avgs.get('iface_lddt', 0):.4f} | "
-        f"if_c={val_avgs.get('iface_clash', 0):.4f} | "
         f"v_rms={val_avgs.get('v_rms', 0):.4f}",
         flush=True,
     )

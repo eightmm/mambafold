@@ -1,0 +1,106 @@
+# MambaFold - direct all-atom scratch, ~390M scale (d_state=128 for long-range).
+#
+# Purpose:
+#   Train one model to predict all atom-slot velocities directly from sequence,
+#   ESM3, noised atom coordinates, and pair/topology reasoning.
+#
+# Launch:
+#   CUDA_VISIBLE_DEVICES=0,1,2,3 CONFIG=configs/direct_allatom_360m.yaml bash scripts/train.sh
+
+# Data
+data_dir:      data/rcsb
+val_data_dir:  data/rcsb
+file_list:     data/splits/train.txt
+val_file_list: data/splits/val.txt
+max_length: 1024
+batch_size: 4
+num_workers: 16
+copies_per_protein: 1
+single_chain_only: true
+extract_monomer_chains: true
+length_bin: 128
+
+length_balanced_sampling: true
+metadata_path: data/splits/metadata.tsv
+length_balance_mode: power
+length_balance_exponent: 0.5
+length_balance_clip_min: 1.0
+length_balance_clip_max: 1.5
+length_bucketing: true
+
+crop_schedule:
+  - weights: {1024: 1.0}
+
+out_dir: null
+resume: null
+
+# Training
+total_steps: 100_000
+lr: 1.0e-4
+warmup_steps: 3_000
+grad_clip: 1.0
+t_schedule: logit_normal   # SimpleFold-style: oversample t->1 (clean) where atom detail forms
+ema_decay: 0.999
+log_interval: 50
+ckpt_interval: 5_000
+eval_interval: 5_000
+seed: 0
+grad_accum_steps: 12
+
+# Direct all-atom ~390M model (~389.6M params with this config).
+d_res: 1024
+n_trunk: 17
+d_res_type: 32
+d_res_pos: 64
+d_plm_proj: 256
+d_ca_emb: 128
+d_state: 128   # long-range recurrent memory; B200 affords it (rank stays 4)
+mimo_rank: 4
+expand: 2
+headdim: 64
+bimamba_share: false
+
+trunk_attn_layers: [15, 16]
+trunk_attn_every: null
+n_attn_heads: 16
+
+d_pair: 192
+n_pair_blocks: 4
+n_pair_heads: 4
+pair_mult_c: 128
+pair_use_cueq: true
+
+# Atom-level BiMamba encoder/decoder (intra-residue SSM; atom -> token -> atom).
+# Owns all side-chain/atomistic geometry; depth is the cheap lever (len-15 scan).
+d_atom: 128
+n_atom_layers: 4
+
+# Loss composition.
+w_fm:            1.0   # core flow-matching velocity (generative objective)
+w_lddt_ca:       1.0
+w_lddt_atom:     1.0
+w_bond:          0.05
+w_clash:         0.02
+w_ca_clash:      0.01
+w_distogram:     0.5
+w_drmsd:         0.75
+w_contact:       0.5
+w_pcb:           0.2
+w_conf:          0.05
+w_ca_angle:      0.1
+w_ca_self_clash: 0.1
+w_chirality:     1.0
+w_chirality_atom: 0.5
+alpha_mode: ramp
+max_lddt_atoms:  2048
+max_clash_atoms: 2048
+
+use_plm: true
+d_plm: 1536
+esm_dir: data/rcsb_esm
+
+wandb_project: mambafold
+wandb_name: null
+wandb_tags: [direct_allatom, scratch, single_chain, 390M, L_1024]
+wandb_offline: false
+no_wandb: false

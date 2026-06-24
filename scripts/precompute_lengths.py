@@ -7,7 +7,7 @@ on the first bucketing run; running it ahead of time avoids the startup scan.
 
 Usage:
     PYTHONPATH=src uv run python scripts/precompute_lengths.py \
-        --config configs/stage1.yaml [--length_cache_workers 16]
+        --config configs/direct_allatom_360m.yaml [--length_cache_workers 16]
 """
 
 from __future__ import annotations

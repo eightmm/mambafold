@@ -1,30 +1,12 @@
-"""coarse-to-fine 2-stage MambaFold.
+"""Direct all-atom MambaFold model components."""
 
-Stage 1: CA-only flow matching with a Pairmixer (triangle-multiplication) pair stack.
-Stage 2: all-atom flow matching conditioned on the Stage 1 CA + trunk latent.
-
-See:
-  * docs/architecture.md  — main spec
-  * docs/pair_module.md   — pair block (triangle multiplicative update)
-"""
-
-from mambafold.model.fold.conditioning import (
-    CAAnchoredFourier,
-    Stage1LatentBroadcast,
-)
+from mambafold.model.fold.all_atom import MambaFoldAllAtom
 from mambafold.model.fold.multiplicative_update import TriangleMultiplicativeUpdate
 from mambafold.model.fold.pair_blocks import PairBlock, PairTransition
-from mambafold.model.fold.stage1_ca import MambaFoldStage1
-from mambafold.model.fold.stage2_atom import MambaFoldStage2
-from mambafold.model.fold.two_stage import TwoStageMambaFold
 
 __all__ = [
+    "MambaFoldAllAtom",
     "TriangleMultiplicativeUpdate",
     "PairBlock",
     "PairTransition",
-    "CAAnchoredFourier",
-    "Stage1LatentBroadcast",
-    "MambaFoldStage1",
-    "MambaFoldStage2",
-    "TwoStageMambaFold",
 ]

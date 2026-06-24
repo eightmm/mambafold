@@ -1,20 +1,22 @@
-# 데이터 파이프라인
+# Data Pipeline
 
-현재 기준은 `configs/stage1.yaml`의 RCSB `.npz` + per-chain ESM3 `.npy` 파이프라인이다.
+Active path: `configs/direct_allatom_360m.yaml` with RCSB Boltz-style `.npz`
+records and per-chain ESM3 `.npy` caches.
 
-## 전체 흐름
+## Flow
 
 ```mermaid
 flowchart TB
-    R[RCSB mmCIF] --> C[batch_convert_cif.py<br/>Boltz-style npz]
-    C --> N[data/rcsb/*.npz]
-    N --> S[make_val_split.py<br/>train.txt / val.txt]
-    N --> E[precompute_esm.py<br/>data/rcsb_esm/*_ch*.npy]
-    N & S & E --> D[RCSBDataset]
-    D --> T[center_and_scale<br/>random_so3_augment]
-    T --> P[ProteinCollator<br/>FM corrupt x_t]
-    P --> B[ProteinBatch]
-    B --> M[MambaFold]
+    R["RCSB mmCIF"] --> C["batch_convert_cif.py -> Boltz-style npz"]
+    C --> N["data/rcsb/**/*.npz"]
+    N --> S["data/splits/train.txt / val.txt / val_casp.txt"]
+    N --> E["precompute_esm.py -> data/rcsb_esm/*_ch*.npy"]
+    N & S & E --> D["RCSBDataset"]
+    D --> X["single-chain filter + optional monomer extraction"]
+    X --> T["center_and_scale + random_so3_augment"]
+    T --> P["ProteinCollator + flow_corrupt"]
+    P --> B["ProteinBatch"]
+    B --> M["MambaFoldAllAtom"]
 ```
 
 ## Stored Files
@@ -29,7 +31,8 @@ flowchart TB
 
 ## RCSBDataset
 
-`RCSBDataset` loads all protein chains in an entry, keeps standard amino acids, and flattens chains into one residue axis while preserving:
+`RCSBDataset` loads protein chains, keeps standard amino acids, and flattens the
+kept residues into one residue axis while preserving:
 
 | Field | Meaning |
 |---|---|
@@ -39,7 +42,16 @@ flowchart TB
 | `res_seq_nums` | residue index within the original chain |
 | `is_nterm` / `is_cterm` | original-chain termini |
 
-If `len(entries) > max_length`, a random contiguous crop over the flattened chain sequence is used. Current `max_length` is `1024`.
+Active config uses both:
+
+- `single_chain_only: true`
+- `extract_monomer_chains: true`
+
+So multimer records can contribute individual monomer chains, but the model
+training target remains single-chain.
+
+If `len(example) > max_length`, a random contiguous crop is used. Active
+`max_length` is `1024`.
 
 ## ESM3 Loading
 
@@ -53,29 +65,30 @@ Rows are reassembled according to the crop and returned as `ProteinExample.esm`.
 The loader verifies that `esm_dir` exists and contains `.npy` files. If
 `use_plm=true`, missing batch ESM is a hard model error, so run
 `scripts/precompute_esm.py` until it reports `0 files to write` before training.
+
 Very long chains are limited to the residue range covered by their precomputed
-ESM rows, so random training crops do not silently fall into an unconditioned
-tail region.
+ESM rows, so random training crops do not silently enter an unconditioned tail.
 
 ## Runtime Transforms
 
 ### `center_and_scale(example)`
 
-Centers on the system-level valid-atom centroid and divides by `COORD_SCALE=10.0`.
+Centers on the observed-atom centroid and divides by `COORD_SCALE=10.0`.
 
 ### `random_so3_augment(example)`
 
-Applies one SO(3) rotation to the whole system, preserving inter-chain geometry.
+Applies one SO(3) rotation to every atom.
 
-### `flow_corrupt(coords, atom_mask, schedule="uniform")`
+### `flow_corrupt(coords, atom_mask, schedule)`
 
 ```text
 x_t = t * x_clean + (1 - t) * eps
-t ~ Uniform(0, 1)
-eps is centered over valid atoms
+eps is centered over valid observed atoms
 ```
 
-The current run uses `t_schedule: uniform` and `copies_per_protein: 1`.
+The function default is `uniform`; the active config passes
+`t_schedule: logit_normal`, a SimpleFold-style schedule that oversamples
+cleaner states near `t -> 1`.
 
 ## ProteinBatch Fields
 
@@ -105,4 +118,5 @@ PYTHONPATH=src uv run python scripts/precompute_esm.py \
   --out_dir data/rcsb_esm
 ```
 
-The script scans `.npz` files, deduplicates identical sequences, runs ESM once per unique sequence, and writes per-chain `.npy` outputs.
+The script scans `.npz` files, deduplicates identical sequences, runs ESM once
+per unique sequence, and writes per-chain `.npy` outputs.

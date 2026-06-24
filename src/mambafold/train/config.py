@@ -58,7 +58,9 @@ def parse_args(argv=None):
     parser.add_argument("--w_bond", type=float, default=0.0,
                         help="Weight for backbone + Cβ bond-length loss (0 disables).")
     parser.add_argument("--w_clash", type=float, default=0.0,
-                        help="Weight for Cα-Cα steric clash loss.")
+                        help="Weight for sampled all-atom steric clash loss.")
+    parser.add_argument("--w_ca_clash", type=float, default=0.0,
+                        help="Weight for C-alpha steric clash loss.")
     parser.add_argument("--w_distogram", type=float, default=0.0,
                         help="Auxiliary distogram CE loss (binned Cα-Cα distance). "
                              "AF2/AF3-style aux supervision; helps fold geometry.")
@@ -68,31 +70,24 @@ def parse_args(argv=None):
     parser.add_argument("--reset_optimizer", action="store_true", default=False,
                         help="On --resume, keep model+ema weights but re-initialize "
                              "optimizer and scheduler with current args (lr/warmup/"
-                             "total_steps). Use at a stage transition (e.g. PT L=512 "
-                             "→ CT L=1024).")
+                             "total_steps).")
     parser.add_argument("--start_step", type=int, default=0,
-                        help="Override starting step counter (for fresh stage start).")
+                        help="Override starting step counter when resetting optimizer/scheduler.")
     # Model
-    parser.add_argument("--d_atom", type=int, default=256)
     parser.add_argument("--d_res", type=int, default=256)
     parser.add_argument("--d_state", type=int, default=64)
     parser.add_argument("--mimo_rank", type=int, default=4)
     parser.add_argument("--headdim", type=int, default=64)
     parser.add_argument("--expand", type=int, default=2)
-    parser.add_argument("--n_atom_enc", type=int, default=2)
     parser.add_argument("--n_trunk", type=int, default=6)
-    parser.add_argument("--n_atom_dec", type=int, default=2)
     parser.add_argument("--d_res_pos", type=int, default=64)
-    parser.add_argument("--d_atom_slot", type=int, default=32)
     parser.add_argument("--d_res_type", type=int, default=32,
                         help="Residue-type embedding dim fed to trunk (sequence signal)")
     # PLM
     parser.add_argument("--use_plm", action="store_true", default=False)
     parser.add_argument("--d_plm", type=int, default=1536)
     parser.add_argument("--esm_dir", default=None)
-    # Which stage to train. 1 = CA-only, 2 = all-atom (frozen S1), joint = both.
-    parser.add_argument("--stage", default=1)
-    # Stage 1 pair-side knobs.
+    # Pair-side knobs.
     parser.add_argument("--d_pair", type=int, default=192)
     parser.add_argument("--n_pair_blocks", type=int, default=4)
     # cuEquivariance fused triangle-mult kernel (Triton). ~1.3× @L512, ~3× @L1024
@@ -109,13 +104,18 @@ def parse_args(argv=None):
     parser.add_argument("--bimamba_share", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--n_pair_heads", type=int, default=4)
     parser.add_argument("--pair_mult_c", type=int, default=128)
+    # Atom-level BiMamba encoder/decoder (intra-residue SSM; atom→token→atom).
+    parser.add_argument("--d_atom", type=int, default=128)
+    parser.add_argument("--n_atom_layers", type=int, default=4)
     parser.add_argument("--d_plm_proj", type=int, default=256)
     parser.add_argument("--d_ca_emb", type=int, default=128)
-    # Stage 1 aux loss weights.
+    # Auxiliary loss weights.
+    # Weight on the core flow-matching velocity loss (the generative objective).
+    # 1.0 = current behaviour; lower the aux weights or raise this if the ~5-6x
+    # nominal aux mass is found to drown the learned vector field.
+    parser.add_argument("--w_fm", type=float, default=1.0)
+    parser.add_argument("--w_lddt_atom", type=float, default=1.0)
     parser.add_argument("--w_lddt_ca", type=float, default=1.0)
-    parser.add_argument("--w_bond_caca", type=float, default=0.1)
-    # Stage 1 scaffold-quality aux: distance-map, long-range contact, pseudo-Cβ
-    # orientation, confidence calibration, local Cα geometry.
     parser.add_argument("--w_drmsd", type=float, default=0.5)
     parser.add_argument("--w_contact", type=float, default=0.3)
     parser.add_argument("--w_pcb", type=float, default=0.2)
@@ -127,26 +127,11 @@ def parse_args(argv=None):
     # every reflection-invariant aux misses). Key term; tune if it fights local
     # geometry early.
     parser.add_argument("--w_chirality", type=float, default=0.5)
-    parser.add_argument("--n_cycles_train", type=int, default=1,
-                        help="Stage 1 recycling iterations (1 = no recycling). "
-                             "Earlier cycles run under no_grad and feed their "
-                             "predicted Cα distance map back into the pair init.")
-    # Stage 2: Stage 1 ckpt path and aux weights.
-    parser.add_argument("--stage1_ckpt", default=None,
-                        help="Path to a Phase-1 ckpt whose weights initialise Stage 1.")
-    parser.add_argument("--w_lddt_full", type=float, default=1.0)
-    parser.add_argument("--w_ca_anchor", type=float, default=2.0,
-                        help="Stage 2 CA residual anchor to Stage 1 CA scaffold.")
-    parser.add_argument("--ca_condition_noise_std", type=float, default=0.0,
-                        help="Stddev of optional noise added to Stage 2 CA condition (normalized units).")
-    parser.add_argument("--ca_condition_noise_prob", type=float, default=0.0,
-                        help="Probability of applying Stage 2 CA condition noise per forward.")
-    # Joint finetune: Phase-2 ckpt to warm-start; falls back to
-    # `stage1_ckpt` + fresh Stage 2 when omitted.
-    parser.add_argument("--joint_init_ckpt", default=None,
-                        help="TwoStage ckpt (Phase-2 output) for joint warm start.")
-    parser.add_argument("--w_stage1", type=float, default=1.0,
-                        help="Global multiplier on Stage 1 loss sum during joint.")
+    # All-atom (Cα N/C/CB tetrahedron) chirality — per-residue side-chain
+    # stereochemistry, complements the CA-CA-CA global-handedness term above.
+    parser.add_argument("--w_chirality_atom", type=float, default=0.5)
+    parser.add_argument("--max_lddt_atoms", type=int, default=2048)
+    parser.add_argument("--max_clash_atoms", type=int, default=2048)
     # Length-balanced sampler — counters the PDB short-tail bias (90% < 500 aa)
     # by upweighting longer proteins. dataset audit identified this as the main
     # cause of mono lDDT degradation at L=512-1024 (0.80 → 0.72).
@@ -173,11 +158,6 @@ def parse_args(argv=None):
                         help="Used when mode=power. w = (L/200)^exponent clipped.")
     parser.add_argument("--length_balance_clip_min", type=float, default=1.0)
     parser.add_argument("--length_balance_clip_max", type=float, default=1.5)
-    # Stage 2 atom-side dims.
-    parser.add_argument("--d_res_polish", type=int, default=512)
-    parser.add_argument("--n_polish", type=int, default=4)
-    parser.add_argument("--d_ca_anchor", type=int, default=64)
-    parser.add_argument("--d_fourier", type=int, default=128)
     # W&B
     parser.add_argument("--wandb_project", default="mambafold")
     parser.add_argument("--wandb_name", default=None)
@@ -187,11 +167,6 @@ def parse_args(argv=None):
 
     parser.set_defaults(**cfg)
     args = parser.parse_args(argv)
-
-    if args.stage in ("1", "stage1"):
-        args.stage = 1
-    elif args.stage in ("2", "stage2"):
-        args.stage = 2
 
     if args.out_dir is None:
         job_id = os.environ.get("SLURM_JOB_ID", None)
