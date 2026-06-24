@@ -99,6 +99,12 @@ def log_metrics(step, total_steps, avgs, lr, world_size, batch_size, copies,
         extra = f" | bond={bond_v:.4f} | clash={clash_v:.4f}"
     if distogram_v:
         extra += f" | dist={distogram_v:.4f}"
+    chir_v = avgs.get("chirality", 0.0) + avgs.get("chirality_atom", 0.0)
+    conf_v = avgs.get("conf", 0.0)
+    if chir_v:
+        extra += f" | chir={chir_v:.4f}"
+    if conf_v:
+        extra += f" | conf={conf_v:.4f}"
     print(
         f"  step {step:>7d}/{total_steps} ({progress:.1f}%) | "
         f"loss={avgs['loss']:.4f} | main={main_v:.4f} | "
@@ -128,9 +134,11 @@ def log_metrics(step, total_steps, avgs, lr, world_size, batch_size, copies,
             log_d["gpu/vram_alloc_gb"] = alloc
             log_d["gpu/vram_reserved_gb"] = reserv
         # Forward every remaining scalar metric so auxiliary losses are logged.
+        # NOTE: lddt_ca / ca_clash are intentionally NOT curated here — the
+        # explicit keys above collapse them into lddt/clash via _first_metric,
+        # so the catch-all below is the only place they reach W&B.
         _curated = {"loss", "t_mean", "grad_norm", "alpha", "target_L",
-                    "fm_atom", "lddt_atom", "lddt_ca",
-                    "bond", "clash", "ca_clash", "distogram"}
+                    "fm_atom", "lddt_atom", "bond", "clash", "distogram"}
         for k, v in avgs.items():
             if k not in _curated and isinstance(v, (int, float)):
                 log_d[f"train/{k}"] = v
