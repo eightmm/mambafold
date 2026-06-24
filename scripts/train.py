@@ -89,7 +89,9 @@ def main():
             broadcast_buffers=False,
             find_unused_parameters=False,
             gradient_as_bucket_view=True,
-            static_graph=True,
+            # NOTE: static_graph=True is incompatible with the grad-accum
+            # `model.no_sync()` path below (triggers reducer.cpp
+            # `expect_autograd_hooks_` assert on the first micro-step backward).
         )
 
     ema = EMA(model.module if is_dist else model, decay=args.ema_decay)
