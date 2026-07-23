@@ -1,15 +1,15 @@
-# Frozen model projects
+# Model projects
 
-Each subdirectory is a self-contained release contract rather than a mutable
-training recipe. A project contains its model artifact identity, saved config,
-data and evaluation boundary, score record, and a minimal verification or
-inference entrypoint.
+Each directory under `projects/` is a versioned model release contract. It
+contains the checkpoint identity, inference boundary, evaluation record, and
+minimal entrypoints required to use that release without changing its reported
+result.
 
-| Project | Status | Purpose |
+| Project | Status | Entry point |
 | --- | --- | --- |
-| [`esm3/`](esm3/) | frozen at `esm3-v1.1.0` | Completed ESM3-conditioned MambaFold checkpoint and CASP14 evaluation |
-| `esmc6b/` | reserved | Future ESMC-6B project; do not create it until a completed checkpoint and frozen evaluation record exist |
+| [`esm3/`](esm3/) | frozen model artifact; interface release `esm3-v1.1.0` | `predict_fasta.py` for FASTA, `run_casp14.sh` for the fixed benchmark protocol |
+| `esmc6b/` | reserved | Created only after a completed checkpoint and frozen evaluation artifact exist |
 
-Do not add training experiments, new checkpoints, or changed metric results to
-a frozen project. Those belong to a new project/version with a new manifest and
-Git tag.
+A new user interface or a future model may receive a new release tag, but the
+ESM3 step-120,000 EMA checkpoint, saved training configuration, and CASP14
+result must not be modified.
