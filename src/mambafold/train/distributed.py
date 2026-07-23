@@ -1,12 +1,56 @@
 """DDP utilities: process group setup, all_reduce, GPU monitor."""
 
 import os
+import re
 import subprocess
 import threading
 from datetime import timedelta
 
 import torch
 import torch.distributed as dist
+
+
+def _leading_int(value: str | None) -> int | None:
+    """Parse Slurm counts such as ``32`` or ``32(x2)``."""
+    if not value:
+        return None
+    match = re.match(r"\s*(\d+)", value)
+    return int(match.group(1)) if match else None
+
+
+def resolve_dataloader_workers(
+    requested: int,
+    world_size: int,
+    *,
+    reserve_per_rank: int = 1,
+) -> tuple[int, int, str]:
+    """Cap per-rank DataLoader workers to the CPUs already allocated.
+
+    ``num_workers`` is per rank, while Slurm CPU allocations usually cover the
+    whole torchrun task.  Keep one CPU per rank for the training process and
+    divide only the remainder among DataLoader workers.  This function never
+    requests or changes cluster resources.
+    """
+    if requested < 0:
+        raise ValueError(f"num_workers must be >= 0, got {requested}")
+    if world_size < 1:
+        raise ValueError(f"world_size must be >= 1, got {world_size}")
+
+    slurm_cpus = _leading_int(os.environ.get("SLURM_CPUS_ON_NODE"))
+    if slurm_cpus is not None:
+        available = slurm_cpus
+        source = "SLURM_CPUS_ON_NODE"
+    else:
+        try:
+            available = len(os.sched_getaffinity(0))
+            source = "sched_getaffinity"
+        except (AttributeError, OSError):
+            available = os.cpu_count() or world_size
+            source = "os.cpu_count"
+
+    per_rank = max(1, available // world_size)
+    cap = max(0, per_rank - max(0, reserve_per_rank))
+    return min(requested, cap), available, source
 
 
 def setup_dist():
@@ -84,6 +128,20 @@ def all_reduce_mean(tensor: torch.Tensor) -> float:
     """모든 rank의 텐서를 sum한 뒤 world_size로 나눈 평균 반환."""
     dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
     return (tensor / dist.get_world_size()).item()
+
+
+def any_rank_true(value: bool, device: torch.device | str) -> bool:
+    """Return whether ``value`` is true on any rank (all ranks must call)."""
+    flag = torch.tensor([int(value)], device=device, dtype=torch.int32)
+    dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+    return bool(flag.item())
+
+
+def distributed_max_int(value: int, device: torch.device | str) -> int:
+    """Return the maximum integer value across ranks (all ranks must call)."""
+    result = torch.tensor([value], device=device, dtype=torch.int64)
+    dist.all_reduce(result, op=dist.ReduceOp.MAX)
+    return int(result.item())
 
 
 class GPUMonitor:

@@ -1,6 +1,7 @@
 """Model construction, LR scheduler, checkpoint I/O, and seeding."""
 
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -40,9 +41,14 @@ def build_model(cfg: dict, device: str = "cpu"):
         trunk_attn_layers=cfg.get("trunk_attn_layers", None),
         trunk_attn_every=cfg.get("trunk_attn_every", None),
         n_attn_heads=cfg.get("n_attn_heads", 16),
+        trunk_time_film=cfg.get("trunk_time_film", False),
+        trunk_adaln_zero=cfg.get("trunk_adaln_zero", False),
+        self_conditioning=cfg.get("self_conditioning", False),
         bimamba_share=cfg.get("bimamba_share", False),
         d_atom=cfg.get("d_atom", 128),
         n_atom_layers=cfg.get("n_atom_layers", 4),
+        use_pair_stack=cfg.get("use_pair_stack", True),
+        pairfree_aux_heads=cfg.get("pairfree_aux_heads", False),
     ).to(torch.device(device))
 
 
@@ -70,7 +76,9 @@ def save_checkpoint(out_dir: Path, step: int, model, ema, optimizer, scheduler, 
 
     raw_model = model.module if isinstance(model, DDP) else model
     path = out_dir / f"ckpt_{step:07d}.pt"
+    tmp_path = out_dir / f".{path.name}.tmp"
     torch.save({
+        "checkpoint_version": 2,
         "step": step,
         "model": raw_model.state_dict(),
         "ema": ema.state_dict(),
@@ -78,11 +86,14 @@ def save_checkpoint(out_dir: Path, step: int, model, ema, optimizer, scheduler, 
         "scheduler": scheduler.state_dict(),
         "args": vars(args) if not isinstance(args, dict) else args,
         "wandb_run_id": wandb.run.id if wandb.run is not None else None,
-    }, path)
+    }, tmp_path)
+    os.replace(tmp_path, path)
     latest = out_dir / "ckpt_latest.pt"
-    if latest.exists() or latest.is_symlink():
-        latest.unlink()
-    latest.symlink_to(path.name)
+    latest_tmp = out_dir / ".ckpt_latest.pt.tmp"
+    if latest_tmp.exists() or latest_tmp.is_symlink():
+        latest_tmp.unlink()
+    latest_tmp.symlink_to(path.name)
+    os.replace(latest_tmp, latest)
     print(f"Saved: {path}", flush=True)
 
 
@@ -91,8 +102,13 @@ def load_from_checkpoint(ckpt_path: str | Path, device: str = "cpu", use_ema: bo
     a = ckpt["args"]
     cfg = dict(a if isinstance(a, dict) else vars(a))
     cfg.setdefault("trunk_attn_layers", None)
+    cfg.setdefault("trunk_time_film", False)
+    cfg.setdefault("trunk_adaln_zero", False)
+    cfg.setdefault("self_conditioning", False)
     cfg.setdefault("bimamba_share", False)
     cfg.setdefault("pair_use_cueq", False)
+    cfg.setdefault("use_pair_stack", True)
+    cfg.setdefault("pairfree_aux_heads", False)
     model = build_model(cfg, device)
     key = "ema" if (use_ema and "ema" in ckpt) else "model"
     missing, unexpected = model.load_state_dict(ckpt[key], strict=False)
@@ -115,7 +131,11 @@ def load_checkpoint(path: Path, model, ema, optimizer, scheduler, device) -> int
     if missing or unexpected:
         print(f"[resume] model missing={len(missing)} unexpected={len(unexpected)}", flush=True)
     if ema_missing or ema_unexpected:
-        print(f"[resume] ema missing={len(ema_missing)} unexpected={len(ema_unexpected)}", flush=True)
+        print(
+            f"[resume] ema missing={len(ema_missing)} "
+            f"unexpected={len(ema_unexpected)}",
+            flush=True,
+        )
     optimizer.load_state_dict(ckpt["optimizer"])
     scheduler.load_state_dict(ckpt["scheduler"])
     return int(ckpt["step"])

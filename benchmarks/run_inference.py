@@ -1,7 +1,7 @@
 """Run MambaFold inference on a single-chain benchmark id list.
 
 Reads a text file of PDB IDs (one per line), samples one prediction per id with
-FM Euler ODE, and writes paired PDBs:
+the direct all-atom sampler, and writes paired PDBs:
 
     <out_dir>/<pdb_id>_pred.pdb   # model prediction (Kabsch-aligned to GT)
     <out_dir>/<pdb_id>_gt.pdb     # ground truth
@@ -13,7 +13,7 @@ Usage:
         --ckpt outputs/train/<phase>/ckpt_latest.pt \
         --ids  benchmarks/sets/t1_quick.txt \
         --out  benchmarks/results/<phase>_t1 \
-        [--max_length 1024] [--n_steps 50] [--no_ema]
+        [--max_length 1024] [--n_steps 50] [--sampler ode|sde] [--no_ema]
 """
 
 from __future__ import annotations
@@ -109,7 +109,9 @@ def make_batch(x, ex, t_cur, device):
         res_mask=torch.ones(1, L, dtype=torch.bool, device=device),
         atom_mask=ex.atom_mask.unsqueeze(0).to(device),
         valid_mask=(ex.atom_mask & ex.observed_mask).unsqueeze(0).to(device),
-        ca_mask=(ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID]).unsqueeze(0).to(device),
+        ca_mask=(ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID])
+        .unsqueeze(0)
+        .to(device),
         chain_id=ex.chain_id.unsqueeze(0).to(device),
         entity_id=ex.entity_id.unsqueeze(0).to(device),
         sym_id=ex.sym_id.unsqueeze(0).to(device),
@@ -143,17 +145,57 @@ def main():
     p.add_argument("--ids", required=True, help="text file of PDB IDs, one per line")
     p.add_argument("--out", required=True)
     p.add_argument("--data_dir", default="data/rcsb")
-    p.add_argument("--esm_dir", default=None,
-                   help="optional ESM dir (must match training: leave unset for no-ESM models)")
+    p.add_argument(
+        "--esm_dir",
+        default=None,
+        help="optional ESM dir (must match training: leave unset for no-ESM models)",
+    )
     p.add_argument("--max_length", type=int, default=2048)
-    p.add_argument("--n_steps", type=int, default=50,
-                   help="Euler ODE integration steps")
-    p.add_argument("--n_seeds", type=int, default=1,
-                   help="Number of independent samples per target. Each is written as "
-                        "`<pid>_pred_seed<i>.pdb`; the seed-0 file is also linked at "
-                        "`<pid>_pred.pdb` so existing scoring code keeps working.")
-    p.add_argument("--seed_offset", type=int, default=0,
-                   help="Sampling seeds = [seed_offset, seed_offset+1, ...]")
+    p.add_argument("--n_steps", type=int, default=50, help="Sampler integration steps")
+    p.add_argument(
+        "--sampler",
+        choices=["ode", "sde"],
+        default="ode",
+        help="ode = Euler flow path; sde = SimpleFold-style Euler-Maruyama",
+    )
+    p.add_argument(
+        "--sde_tau",
+        type=float,
+        default=0.01,
+        help="SimpleFold SDE stochasticity scale when --sampler=sde",
+    )
+    p.add_argument(
+        "--sde_eps",
+        type=float,
+        default=0.01,
+        help="SimpleFold SDE diffusion eps in w(t)=(1-t)/(t+eps)",
+    )
+    p.add_argument(
+        "--sde_w_cutoff",
+        type=float,
+        default=0.99,
+        help="Set diffusion coefficient to zero for t >= cutoff",
+    )
+    p.add_argument(
+        "--sde_log_timesteps",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use SimpleFold log timesteps for SDE sampling",
+    )
+    p.add_argument(
+        "--n_seeds",
+        type=int,
+        default=1,
+        help="Number of independent samples per target. Each is written as "
+        "`<pid>_pred_seed<i>.pdb`; the seed-0 file is also linked at "
+        "`<pid>_pred.pdb` so existing scoring code keeps working.",
+    )
+    p.add_argument(
+        "--seed_offset",
+        type=int,
+        default=0,
+        help="Sampling seeds = [seed_offset, seed_offset+1, ...]",
+    )
     p.add_argument("--use_ema", action="store_true", default=True)
     p.add_argument("--no_ema", dest="use_ema", action="store_false")
     args = p.parse_args()
@@ -166,7 +208,11 @@ def main():
     model = load_from_checkpoint(args.ckpt, device, use_ema=args.use_ema)
     model.eval()
 
-    print(f"[infer] direct all-atom sampler (n_steps={args.n_steps})")
+    print(
+        f"[infer] direct all-atom sampler={args.sampler} "
+        f"(n_steps={args.n_steps}, tau={args.sde_tau}, eps={args.sde_eps}, "
+        f"log_timesteps={args.sde_log_timesteps})"
+    )
 
     # Auto-fill --esm_dir from the ckpt's saved args when the ckpt was
     # trained with use_plm=True. This avoids silent "batch.esm is None"
@@ -220,14 +266,15 @@ def main():
         true_aa = ex_c.coords.numpy() * COORD_SCALE
         res_type = ex_c.res_type.numpy()
         atom_mask_np = ex_c.atom_mask.numpy().astype(bool)
-        chain_id_np = ex_c.chain_id.numpy() if ex.chain_id is not None else np.zeros(L, dtype=np.int64)
+        chain_id_np = (
+            ex_c.chain_id.numpy() if ex.chain_id is not None else np.zeros(L, dtype=np.int64)
+        )
 
         # B-factor: zero (no per-atom pLDDT calc here — scoring step computes lDDT)
         b_zero = np.zeros_like(aa_mask, dtype=np.float32)
 
         # GT written once
-        save_pdb(true_aa, res_type, aa_mask, b_zero,
-                            chain_id_np, out_dir / f"{pid}_gt.pdb")
+        save_pdb(true_aa, res_type, aa_mask, b_zero, chain_id_np, out_dir / f"{pid}_gt.pdb")
 
         n_ok = 0
         seeds = list(range(args.seed_offset, args.seed_offset + args.n_seeds))
@@ -235,10 +282,17 @@ def main():
             try:
                 with torch.no_grad():
                     _, pred_aa, _, _, conf = sample(
-                        model, ex,
+                        model,
+                        ex,
                         lambda x, ti: make_batch(x, ex_c, ti, device),
                         n_steps=args.n_steps,
-                        seed=sd, device=device,
+                        seed=sd,
+                        device=device,
+                        sampler=args.sampler,
+                        sde_tau=args.sde_tau,
+                        sde_eps=args.sde_eps,
+                        sde_w_cutoff=args.sde_w_cutoff,
+                        sde_log_timesteps=args.sde_log_timesteps,
                     )
             except torch.cuda.OutOfMemoryError:
                 print(f"[oom] {pid}: L={L} chains={n_chains} seed={sd}")
@@ -249,16 +303,24 @@ def main():
                 continue
 
             # Predicted pLDDT (per-residue) → per-atom B-factor column (0-100 scale).
-            b_pred = (np.asarray(conf, dtype=np.float32)[:, None] * 100.0
-                      * atom_mask_np.astype(np.float32))
+            b_pred = (
+                np.asarray(conf, dtype=np.float32)[:, None]
+                * 100.0
+                * atom_mask_np.astype(np.float32)
+            )
             pred_aa_aligned = kabsch_align_to_gt(pred_aa, true_aa, aa_mask)
             seed_path = out_dir / f"{pid}_pred_seed{si}.pdb"
-            save_pdb(pred_aa_aligned, res_type, atom_mask_np, b_pred,
-                                chain_id_np, seed_path)
+            save_pdb(pred_aa_aligned, res_type, atom_mask_np, b_pred, chain_id_np, seed_path)
             # First successful seed also written as the canonical "<pid>_pred.pdb"
             if n_ok == 0:
-                save_pdb(pred_aa_aligned, res_type, atom_mask_np, b_pred,
-                                    chain_id_np, out_dir / f"{pid}_pred.pdb")
+                save_pdb(
+                    pred_aa_aligned,
+                    res_type,
+                    atom_mask_np,
+                    b_pred,
+                    chain_id_np,
+                    out_dir / f"{pid}_pred.pdb",
+                )
             n_ok += 1
 
         if n_ok == 0:
@@ -269,13 +331,20 @@ def main():
         summary_rows.append({"pdb_id": pid, "L": int(L), "n_chains": n_chains, "n_seeds_ok": n_ok})
         elapsed = time.time() - t0
         eta = elapsed / (i + 1) * (len(ids) - i - 1)
-        print(f"[{i+1:>4}/{len(ids)}] {pid}  L={L:>5}  chains={n_chains:>2}  "
-              f"elapsed={elapsed:6.1f}s  eta={eta:6.1f}s")
+        print(
+            f"[{i + 1:>4}/{len(ids)}] {pid}  L={L:>5}  chains={n_chains:>2}  "
+            f"elapsed={elapsed:6.1f}s  eta={eta:6.1f}s"
+        )
 
     manifest = {
         "ckpt": str(args.ckpt),
         "ids_file": str(args.ids),
         "n_steps": args.n_steps,
+        "sampler": args.sampler,
+        "sde_tau": args.sde_tau,
+        "sde_eps": args.sde_eps,
+        "sde_w_cutoff": args.sde_w_cutoff,
+        "sde_log_timesteps": args.sde_log_timesteps,
         "max_length": args.max_length,
         "use_ema": args.use_ema,
         "single_chain_only": True,

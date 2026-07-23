@@ -41,13 +41,19 @@ def parse_pdb_bytes(payload: bytes, target_id: str):
     return parser.get_structure(target_id, io.StringIO(text))
 
 
-def convert_tar(tar_path: Path, out_dir: Path) -> tuple[list[str], list[str]]:
+def convert_tar(
+    tar_path: Path,
+    out_dir: Path,
+    allowed_ids: set[str] | None = None,
+) -> tuple[list[str], list[str]]:
     ok: list[str] = []
     failures: list[str] = []
     with tarfile.open(tar_path, "r:gz") as tf:
         members = [m for m in tf.getmembers() if m.isfile() and m.name.endswith(".pdb")]
         for member in sorted(members, key=lambda m: m.name):
             tid = target_id_from_member(member.name)
+            if allowed_ids is not None and tid not in allowed_ids:
+                continue
             out_path = out_dir / tid[1:3] / f"{tid}.npz"
             if out_path.exists() and out_path.stat().st_size > 0:
                 ok.append(tid)
@@ -71,6 +77,11 @@ def main() -> None:
     ap.add_argument("--tar", action="append", required=True, help="CASP target .tar.gz")
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--ids_out", required=True)
+    ap.add_argument(
+        "--ids_file",
+        default=None,
+        help="Optional target ID allow-list. Requested IDs must all be present.",
+    )
     ap.add_argument("--fail_out", default=None)
     args = ap.parse_args()
 
@@ -78,10 +89,17 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     ids: list[str] = []
     failures: list[str] = []
+    allowed_ids = None
+    if args.ids_file:
+        allowed_ids = {
+            line.strip().lower()
+            for line in Path(args.ids_file).read_text().splitlines()
+            if line.strip()
+        }
 
     for raw_tar in args.tar:
         tar_path = Path(raw_tar)
-        ok, fail = convert_tar(tar_path, out_dir)
+        ok, fail = convert_tar(tar_path, out_dir, allowed_ids)
         ids.extend(ok)
         failures.extend(fail)
         print(f"{tar_path}: ok={len(ok)} fail={len(fail)}", flush=True)
@@ -90,11 +108,20 @@ def main() -> None:
     Path(args.ids_out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.ids_out).write_text("\n".join(ids) + ("\n" if ids else ""))
 
-    fail_out = Path(args.fail_out) if args.fail_out else Path(args.ids_out).with_suffix(".failed.tsv")
+    fail_out = (
+        Path(args.fail_out) if args.fail_out else Path(args.ids_out).with_suffix(".failed.tsv")
+    )
     fail_out.write_text("target_id\terror\n" + "\n".join(failures) + ("\n" if failures else ""))
 
     print(f"wrote ids: {args.ids_out} n={len(ids)}")
     print(f"failures: {fail_out} n={len(failures)}")
+
+    if allowed_ids is not None and set(ids) != allowed_ids:
+        missing = sorted(allowed_ids - set(ids))
+        unexpected = sorted(set(ids) - allowed_ids)
+        raise RuntimeError(
+            f"Target allow-list mismatch: missing={missing}, unexpected={unexpected}"
+        )
 
 
 if __name__ == "__main__":

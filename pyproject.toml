@@ -1,7 +1,7 @@
 [project]
 name = "mambafold"
 version = "0.1.0"
-description = "Mamba-based all-atom protein structure prediction with flow matching and ESM3 conditioning"
+description = "Mamba-based all-atom protein structure prediction with flow matching and PLM conditioning"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "torch>=2.4",
@@ -14,6 +14,10 @@ dependencies = [
     "esm>=3.2.3",
     "causal-conv1d>=1.4",
     "mamba-ssm",
+    "nvidia-cuda-cccl==13.0.85; sys_platform == 'linux'",
+    "nvidia-cuda-crt==13.0.88; sys_platform == 'linux'",
+    "nvidia-cuda-nvcc==13.0.88; sys_platform == 'linux'",
+    "nvidia-nvvm==13.0.88; sys_platform == 'linux'",
     "ipykernel>=7.2.0",
     "ipympl>=0.10.0",
 ]
@@ -37,6 +41,12 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"benchmarks/run_inference.py" = ["E402"]
+"scripts/profile_pair.py" = ["E402"]
+"scripts/smoke_all_atom.py" = ["E402"]
+"tests/test_mamba3.py" = ["E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

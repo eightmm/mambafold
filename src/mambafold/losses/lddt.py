@@ -22,7 +22,8 @@ def soft_lddt_ca_loss(
         true_coords: [B, L, A, 3] ground truth coordinates
         ca_mask: [B, L] bool — residues with valid C-alpha
         cutoff: distance cutoff in normalized units (default 1.5 = 15Å)
-        thresholds: LDDT distance thresholds in normalized units (default = 0.5,1,2,4 Å ÷ COORD_SCALE)
+        thresholds: LDDT distance thresholds in normalized units
+            (default = 0.5,1,2,4 Å ÷ COORD_SCALE)
 
     Returns: scalar loss (1 - mean LDDT)
     """
@@ -37,13 +38,15 @@ def soft_lddt_ca_loss(
     # Pair mask: both residues valid, within cutoff, not self
     pair_mask = ca_mask.unsqueeze(2) & ca_mask.unsqueeze(1)  # [B, L, L]
     pair_mask = pair_mask & (true_dist < cutoff)
-    pair_mask = pair_mask & ~torch.eye(pred_ca.shape[1], dtype=torch.bool, device=pred_ca.device).unsqueeze(0)
+    pair_mask = pair_mask & ~torch.eye(
+        pred_ca.shape[1], dtype=torch.bool, device=pred_ca.device
+    ).unsqueeze(0)
 
     # Soft LDDT per pair
     dist_error = torch.abs(pred_dist - true_dist)
-    lddt_per_pair = sum(
-        torch.sigmoid((thr - dist_error) * 5.0) for thr in thresholds
-    ) / len(thresholds)  # [B, L, L]
+    lddt_per_pair = sum(torch.sigmoid((thr - dist_error) * 5.0) for thr in thresholds) / len(
+        thresholds
+    )  # [B, L, L]
 
     # Masked mean
     mask_f = pair_mask.to(lddt_per_pair.dtype)

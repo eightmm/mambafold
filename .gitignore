@@ -19,6 +19,7 @@ outputs/
 # Heavy data (not pushed to git)
 data/rcsb
 data/rcsb_esm/
+data/rcsb_esm_official_full/
 data/overfit/
 
 # Benchmark results (large PDB outputs, regenerable)
@@ -32,5 +33,16 @@ tools/scoring_venv/
 tools/pip_tmp/
 data/rcsb_cif/
 data/rcsb_esmc/
+data/rcsb_esmc6b_official_full/
+data/rcsb_boltz_official_full/
+data/rcsb_boltz_partial_67k/
+data/rcsb_partial_67k
+data/rcsb_boltz_v2_unused/
+data/afdb_swissprot/npz/
+data/afdb_swissprot/
+data/afdb_swissprot_esm/
+data/afdb_swissprot_esmc6b/
+data/casp_official/
+data/external/afdb_swissprot_cif/
 tools/
 data/splits/sequences.fasta

@@ -56,10 +56,17 @@ def main():
 
     B, L, A, d_plm = 2, 16, 15, 16
     model = MambaFoldAllAtom(
-        d_res=128, n_trunk=2,
-        d_res_type=16, d_res_pos=16,
-        d_plm=d_plm, d_plm_proj=16, d_ca_emb=32,
-        d_pair=32, n_pair_blocks=2, n_pair_heads=2, pair_mult_c=32,
+        d_res=128,
+        n_trunk=2,
+        d_res_type=16,
+        d_res_pos=16,
+        d_plm=d_plm,
+        d_plm_proj=16,
+        d_ca_emb=32,
+        d_pair=32,
+        n_pair_blocks=2,
+        n_pair_heads=2,
+        pair_mult_c=32,
         mimo_rank=2,
     ).to(device)
     batch = make_dummy_batch(B, L, A, d_plm, device)

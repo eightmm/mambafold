@@ -67,22 +67,32 @@ class SequenceFourierEmbedder(nn.Module):
     MAX_ENTITIES = 64
     MAX_SYM = 32
 
-    def __init__(self, d_out: int = 64, num_freqs: int = 8,
-                 d_chain: int = 16, d_entity: int = 16, d_sym: int = 8):
+    def __init__(
+        self,
+        d_out: int = 64,
+        num_freqs: int = 8,
+        d_chain: int = 16,
+        d_entity: int = 16,
+        d_sym: int = 8,
+    ):
         super().__init__()
-        self.chain_embed  = nn.Embedding(self.MAX_CHAINS,   d_chain)
+        self.chain_embed = nn.Embedding(self.MAX_CHAINS, d_chain)
         self.entity_embed = nn.Embedding(self.MAX_ENTITIES, d_entity)
-        self.sym_embed    = nn.Embedding(self.MAX_SYM,      d_sym)
+        self.sym_embed = nn.Embedding(self.MAX_SYM, d_sym)
         # raw rel (1) + sin/cos rel × num_freqs (2F) + categorical embeds
         in_dim = 1 + 2 * num_freqs + d_chain + d_entity + d_sym
         self.proj = nn.Linear(in_dim, d_out)
         freqs = 2.0 ** torch.linspace(0, 4, num_freqs)
         self.register_buffer("freqs", freqs)
 
-    def forward(self, seq_nums: Tensor, mask: Tensor,
-                chain_id: Tensor | None = None,
-                entity_id: Tensor | None = None,
-                sym_id: Tensor | None = None) -> Tensor:
+    def forward(
+        self,
+        seq_nums: Tensor,
+        mask: Tensor,
+        chain_id: Tensor | None = None,
+        entity_id: Tensor | None = None,
+        sym_id: Tensor | None = None,
+    ) -> Tensor:
         valid = mask.to(torch.bool)
         rel = seq_nums.to(self.freqs.dtype)  # already per-chain 0-base from dataset
 
@@ -145,18 +155,22 @@ class AtomFeatureEmbedder(nn.Module):
         super().__init__()
         self.pair_embed = nn.Embedding(NUM_PAIR_TYPES, d_atom)
         self.coord_embed = CoordinateFourierEmbedder(d_out=d_fourier)
-        self.atom_slot_embed = nn.Embedding(MAX_ATOMS_PER_RES, d_atom_slot) if d_atom_slot > 0 else None
-        self.res_type_embed = nn.Embedding(NUM_RES_TYPES, d_res_type_atom) if d_res_type_atom > 0 else None
+        self.atom_slot_embed = (
+            nn.Embedding(MAX_ATOMS_PER_RES, d_atom_slot) if d_atom_slot > 0 else None
+        )
+        self.res_type_embed = (
+            nn.Embedding(NUM_RES_TYPES, d_res_type_atom) if d_res_type_atom > 0 else None
+        )
         in_dim = d_atom + d_fourier + d_res_pos + d_atom_slot + d_res_type_atom
         self.proj = nn.Linear(in_dim, d_atom)
 
     def forward(
         self,
-        pair_type: Tensor,             # [B, L, A]
-        coords: Tensor,                # [B, L, A, 3]
-        atom_mask: Tensor,             # [B, L, A]
+        pair_type: Tensor,  # [B, L, A]
+        coords: Tensor,  # [B, L, A, 3]
+        atom_mask: Tensor,  # [B, L, A]
         res_pos_feat: Tensor | None = None,  # [B, L, d_res_pos]
-        res_type: Tensor | None = None,      # [B, L]
+        res_type: Tensor | None = None,  # [B, L]
     ) -> Tensor:
         """
         Args:
@@ -185,7 +199,7 @@ class AtomFeatureEmbedder(nn.Module):
             parts.append(self.atom_slot_embed(slot_ids).view(1, 1, A, -1).expand(B, L, -1, -1))
 
         if self.res_type_embed is not None and res_type is not None:
-            rt = self.res_type_embed(res_type)               # [B, L, d_res_type_atom]
+            rt = self.res_type_embed(res_type)  # [B, L, d_res_type_atom]
             parts.append(rt.unsqueeze(2).expand(-1, -1, A, -1))
 
         out = self.proj(torch.cat(parts, dim=-1))

@@ -8,12 +8,40 @@ Reference: github.com/state-spaces/mamba  |  arXiv:2603.15569
 
 from __future__ import annotations
 
+import importlib
+import sys
+import types
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from mamba_ssm.modules.mamba3 import Mamba3 as _Mamba3
 from torch import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
+
+
+def _load_mamba3_class():
+    """Load Mamba3 without requiring its unused legacy selective-scan extension.
+
+    ``mamba_ssm.__init__`` imports the Mamba-1 CUDA extension eagerly even when
+    callers only use the Triton/TileLang Mamba-3 kernels.  Cluster nodes expose
+    CUDA 13 while the available legacy extension may target CUDA 12; in that
+    case, provide a module stub for the unused extension and retry the official
+    Mamba3 import. Any other import failure remains fatal.
+    """
+    try:
+        return importlib.import_module("mamba_ssm.modules.mamba3").Mamba3
+    except ImportError as exc:
+        message = str(exc)
+        if "selective_scan_cuda" not in message and "libcudart.so" not in message:
+            raise
+        for name in list(sys.modules):
+            if name == "mamba_ssm" or name.startswith("mamba_ssm."):
+                sys.modules.pop(name, None)
+        sys.modules["selective_scan_cuda"] = types.ModuleType("selective_scan_cuda")
+        return importlib.import_module("mamba_ssm.modules.mamba3").Mamba3
+
+
+_Mamba3 = _load_mamba3_class()
 
 
 def _default_chunk_size(mimo_rank: int) -> int:
@@ -90,6 +118,33 @@ class SwiGLU(nn.Module):
                 Computed as w2(SiLU(w1(x)) * w3(x)).
         """
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
+
+
+class AdaLNZero(nn.Module):
+    """Time-conditioned AdaLN-Zero modulation for residual branches.
+
+    For each branch, projects the FM time embedding to scale, shift, and gate.
+    The projection is zero-initialized, so each branch starts as an identity
+    residual path and learns how strongly to activate at each noise level.
+    """
+
+    def __init__(self, d_model: int, d_temb: int, n_branches: int = 2):
+        super().__init__()
+        self.d_model = d_model
+        self.n_branches = n_branches
+        self.proj = nn.Linear(d_temb, n_branches * 3 * d_model)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, x: Tensor, temb: Tensor | None, branch: int) -> tuple[Tensor, Tensor]:
+        if temb is None:
+            raise RuntimeError("AdaLNZero requires temb.")
+        params = self.proj(F.silu(temb)).view(temb.shape[0], self.n_branches, 3, self.d_model)
+        scale, shift, gate = params[:, branch].unbind(dim=1)
+        scale = scale.to(x.dtype).unsqueeze(1)
+        shift = shift.to(x.dtype).unsqueeze(1)
+        gate = gate.to(x.dtype).unsqueeze(1)
+        return x * (1 + scale) + shift, gate
 
 
 class Mamba3Layer(nn.Module):
@@ -195,7 +250,8 @@ class Mamba3Block(nn.Module):
     """Causal Mamba-3 block: pre-norm SSM + SwiGLU FFN."""
 
     def __init__(self, d_model: int, d_state: int = 64, mimo_rank: int = 4,
-                 expand: int = 2, headdim: int = 64):
+                 expand: int = 2, headdim: int = 64,
+                 adaln_zero: bool = False, d_temb: int = 128):
         """
         Args:
             d_model (int): Token feature dimension. Input/output shape [B, S, d_model].
@@ -210,8 +266,9 @@ class Mamba3Block(nn.Module):
                                headdim=headdim, mimo_rank=mimo_rank)
         self.norm2 = RMSNorm(d_model)
         self.ffn = SwiGLU(d_model)
+        self.adaln = AdaLNZero(d_model, d_temb, n_branches=2) if adaln_zero else None
 
-    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+    def forward(self, x: Tensor, mask: Tensor, temb: Tensor | None = None) -> Tensor:
         """
         Args:
             x (Tensor): Input token sequence of shape [B, S, d_model].
@@ -222,8 +279,14 @@ class Mamba3Block(nn.Module):
                 Residual stream: x + SSM(RMSNorm(x)) + FFN(RMSNorm(x)),
                 then padding positions zeroed.
         """
-        x = x + self.ssm(self.norm1(x), mask)
-        x = x + self.ffn(self.norm2(x))
+        if self.adaln is None:
+            x = x + self.ssm(self.norm1(x), mask)
+            x = x + self.ffn(self.norm2(x))
+            return x * mask.unsqueeze(-1).to(x.dtype)
+        h, gate = self.adaln(self.norm1(x), temb, branch=0)
+        x = x + gate * self.ssm(h, mask)
+        h, gate = self.adaln(self.norm2(x), temb, branch=1)
+        x = x + gate * self.ffn(h)
         return x * mask.unsqueeze(-1).to(x.dtype)
 
 
@@ -231,7 +294,8 @@ class BiMamba3Block(nn.Module):
     """Bidirectional Mamba-3: forward + backward SSM summed."""
 
     def __init__(self, d_model: int, d_state: int = 64, mimo_rank: int = 4,
-                 expand: int = 2, headdim: int = 64, share_dir: bool = False):
+                 expand: int = 2, headdim: int = 64, share_dir: bool = False,
+                 adaln_zero: bool = False, d_temb: int = 128):
         """
         Args:
             d_model (int): Token feature dimension. Input/output shape [B, S, d_model].
@@ -254,16 +318,26 @@ class BiMamba3Block(nn.Module):
             headdim=headdim, mimo_rank=mimo_rank)
         self.norm2 = RMSNorm(d_model)
         self.ffn = SwiGLU(d_model)
+        self.adaln = AdaLNZero(d_model, d_temb, n_branches=2) if adaln_zero else None
 
-    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+    def forward(self, x: Tensor, mask: Tensor, temb: Tensor | None = None) -> Tensor:
         """Residual: x + mamba_f(h) + flip(mamba_b(flip(h))) + FFN(RMSNorm(x)),
         padding zeroed. With share_dir, mamba_b is the (weight-tied) mamba_f."""
         h = self.norm1(x)
+        gate = None
+        if self.adaln is not None:
+            h, gate = self.adaln(h, temb, branch=0)
         mamba_b = self.mamba_f if self.share_dir else self.mamba_b
         y_f = self.mamba_f(h, mask)
         y_b = _flip_by_mask(mamba_b(_flip_by_mask(h, mask), mask), mask)
-        x = x + y_f + y_b
-        x = x + self.ffn(self.norm2(x))
+        y = y_f + y_b
+        x = x + (gate * y if gate is not None else y)
+        h = self.norm2(x)
+        if self.adaln is not None:
+            h, gate = self.adaln(h, temb, branch=1)
+            x = x + gate * self.ffn(h)
+        else:
+            x = x + self.ffn(h)
         return x * mask.unsqueeze(-1).to(x.dtype)
 
 
@@ -338,18 +412,40 @@ class AttnBlock(nn.Module):
     and the stack behaves like pure Mamba until attention is learned to help.
     """
 
-    def __init__(self, d_model: int, n_heads: int = 16):
+    def __init__(self, d_model: int, n_heads: int = 16,
+                 adaln_zero: bool = False, d_temb: int = 128):
         super().__init__()
         self.norm1 = RMSNorm(d_model)
         self.attn = GatedSelfAttention(d_model, n_heads)
         self.attn_scale = nn.Parameter(torch.zeros(d_model))   # LayerScale gate
         self.norm2 = RMSNorm(d_model)
         self.ffn = SwiGLU(d_model)
+        self.adaln = AdaLNZero(d_model, d_temb, n_branches=2) if adaln_zero else None
 
-    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
-        x = x + self.attn_scale * self.attn(self.norm1(x), mask)
-        x = x + self.ffn(self.norm2(x))
+    def forward(self, x: Tensor, mask: Tensor, temb: Tensor | None = None) -> Tensor:
+        if self.adaln is None:
+            x = x + self.attn_scale * self.attn(self.norm1(x), mask)
+            x = x + self.ffn(self.norm2(x))
+            return x * mask.unsqueeze(-1).to(x.dtype)
+        h, gate = self.adaln(self.norm1(x), temb, branch=0)
+        x = x + gate * self.attn(h, mask)
+        h, gate = self.adaln(self.norm2(x), temb, branch=1)
+        x = x + gate * self.ffn(h)
         return x * mask.unsqueeze(-1).to(x.dtype)
+
+
+class TimeFiLM(nn.Module):
+    """Zero-init feature-wise modulation from the FM time embedding."""
+
+    def __init__(self, d_model: int, d_temb: int):
+        super().__init__()
+        self.proj = nn.Linear(d_temb, 2 * d_model)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, x: Tensor, temb: Tensor) -> Tensor:
+        scale, shift = self.proj(temb).chunk(2, dim=-1)
+        return x * (1 + scale.to(x.dtype).unsqueeze(1)) + shift.to(x.dtype).unsqueeze(1)
 
 
 class MambaStack(nn.Module):
@@ -362,7 +458,10 @@ class MambaStack(nn.Module):
                  attn_layers: list[int] | None = None,
                  attn_every: int | None = None,
                  n_attn_heads: int = 16,
-                 bimamba_share: bool = False):
+                 bimamba_share: bool = False,
+                 layerwise_time_film: bool = False,
+                 adaln_zero: bool = False,
+                 d_temb: int = 128):
         """
         Args:
             d_model, n_layers, d_state, mimo_rank, expand, headdim, bidirectional:
@@ -373,32 +472,48 @@ class MambaStack(nn.Module):
                 attention (indices k-1, 2k-1, ...).
             n_attn_heads: hybrid attention layer head count (RoPE positions).
             bimamba_share: weight-tie the two BiMamba directions (halves SSM params).
+            layerwise_time_film: inject the FM time embedding before every block.
+            adaln_zero: add time-conditioned scale/shift/gates inside each
+                residual branch, zero-initialized so the stack starts as identity.
         """
         super().__init__()
         self.n_layers = n_layers
+        self.adaln_zero = adaln_zero
 
-        attn_idx = set(attn_layers) if attn_layers is not None else set()
-        if attn_layers is None and attn_every:
+        attn_idx = set(attn_layers) if attn_layers else set()
+        if not attn_layers and attn_every:
             attn_idx = {i for i in range(n_layers) if (i + 1) % attn_every == 0}
         self.attn_idx = sorted(attn_idx)
 
         layers = []
         for i in range(n_layers):
             if i in attn_idx:
-                layers.append(AttnBlock(d_model, n_heads=n_attn_heads))
+                layers.append(AttnBlock(
+                    d_model, n_heads=n_attn_heads,
+                    adaln_zero=adaln_zero, d_temb=d_temb,
+                ))
             elif bidirectional:
                 layers.append(BiMamba3Block(d_model=d_model, d_state=d_state,
                                             mimo_rank=mimo_rank, expand=expand,
-                                            headdim=headdim, share_dir=bimamba_share))
+                                            headdim=headdim, share_dir=bimamba_share,
+                                            adaln_zero=adaln_zero, d_temb=d_temb))
             else:
                 layers.append(Mamba3Block(d_model=d_model, d_state=d_state,
                                           mimo_rank=mimo_rank, expand=expand,
-                                          headdim=headdim))
+                                          headdim=headdim,
+                                          adaln_zero=adaln_zero, d_temb=d_temb))
         self.layers = nn.ModuleList(layers)
+        self.time_films = nn.ModuleList([
+            TimeFiLM(d_model, d_temb) for _ in range(n_layers)
+        ]) if layerwise_time_film else None
 
-    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+    def forward(self, x: Tensor, mask: Tensor, temb: Tensor | None = None) -> Tensor:
         """Pass through all blocks (sequential unit-weight residual).
         [B, S, d_model] → same."""
-        for layer in self.layers:
-            x = layer(x, mask)
+        if (self.time_films is not None or self.adaln_zero) and temb is None:
+            raise RuntimeError("MambaStack time conditioning requires temb.")
+        for i, layer in enumerate(self.layers):
+            if self.time_films is not None:
+                x = self.time_films[i](x, temb)
+            x = layer(x, mask, temb)
         return x

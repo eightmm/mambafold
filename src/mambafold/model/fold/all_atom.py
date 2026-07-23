@@ -1,7 +1,7 @@
-"""Direct all-atom flow matching model with a Linear Triangle pair stack.
+"""Direct all-atom flow matching model.
 
 Inputs:
-    res_type, ESM3, chain_id/entity_id/sym_id, res_seq_nums,
+    res_type, PLM, chain_id/entity_id/sym_id, res_seq_nums,
     is_nterm/is_cterm, noised atom-slot coordinates, t
 
 Outputs:
@@ -10,11 +10,13 @@ Outputs:
     trunk_latent  [B, L, d_res]  — residue representation for aux heads
 
 The model is intentionally single-path: no separate coarse path and no
-recycling loop. It reasons at three SSM levels — atom → token → atom:
-an atom-level BiMamba encoder pools each residue's atoms into a token, the
-Mamba + triangle-mult pair trunk does global (inter-residue) reasoning, and an
-atom-level BiMamba decoder reads the residue latent back out into per-atom
-velocities (see `atom_mamba.py`).
+recycling loop. The mainline reasons at three SSM levels — atom → token → atom:
+an atom-level BiMamba encoder pools each residue's atoms into a token, a
+pair-free BiMamba residue trunk with optional sparse attention does global
+inter-residue reasoning, and an atom-level BiMamba decoder reads the residue
+latent back out into per-atom velocities (see `atom_mamba.py`). A lightweight
+pair-free aux head can emit distogram/contact logits without feeding pair
+features back into the trunk.
 """
 
 from __future__ import annotations
@@ -49,18 +51,23 @@ class TimeEmbedding(nn.Module):
     def __init__(self, d_out: int, n_freqs: int = 64):
         super().__init__()
         self.register_buffer(
-            "freqs", torch.exp(torch.linspace(0.0, math.log(1000.0), n_freqs)),
+            "freqs",
+            torch.exp(torch.linspace(0.0, math.log(1000.0), n_freqs)),
             persistent=False,
         )
         self.mlp = nn.Sequential(
-            nn.Linear(2 * n_freqs, d_out), nn.SiLU(), nn.Linear(d_out, d_out),
+            nn.Linear(2 * n_freqs, d_out),
+            nn.SiLU(),
+            nn.Linear(d_out, d_out),
         )
 
     def forward(self, t: Tensor) -> Tensor:
-        t = t.reshape(t.shape[0], 1).to(self.freqs.dtype)       # [B, 1]
-        ang = t * self.freqs                                    # [B, n_freqs]
+        t = t.reshape(t.shape[0], 1).to(self.freqs.dtype)  # [B, 1]
+        ang = t * self.freqs  # [B, n_freqs]
         emb = torch.cat([torch.sin(ang), torch.cos(ang)], dim=-1)
-        return self.mlp(emb)                                    # [B, d_out]
+        return self.mlp(emb)  # [B, d_out]
+
+
 class MambaFoldAllAtom(nn.Module):
     """Direct all-atom flow matching model.
 
@@ -71,10 +78,10 @@ class MambaFoldAllAtom(nn.Module):
         n_trunk: Number of BiMamba3 layers in the trunk. Default 12.
         d_res_type: Residue-type embedding dim. Default 32.
         d_res_pos: Sequence position (chain/entity/sym + Fourier) embed dim.
-        d_plm: PLM (ESM3) embedding dim. Default 1536.
+        d_plm: External PLM embedding dim. Default 1536.
         d_plm_proj: Internal PLM projection width. Default 256.
         d_ca_emb: Fourier embed dim of per-atom x_t scalar coords. Default 128.
-        use_plm: If True, ESM3 features are required (loud error otherwise).
+        use_plm: If True, external PLM features are required (loud error otherwise).
         # Pair stack
         d_pair: Pair tensor dim. Default 192.
         n_pair_blocks: Number of PairBlocks. Default 4 (after I1 memory profile).
@@ -115,15 +122,23 @@ class MambaFoldAllAtom(nn.Module):
         trunk_attn_layers: list[int] | None = None,
         trunk_attn_every: int | None = None,
         n_attn_heads: int = 16,
+        trunk_time_film: bool = False,
+        trunk_adaln_zero: bool = False,
         bimamba_share: bool = False,
         d_atom: int = 128,
         n_atom_layers: int = 4,
+        use_pair_stack: bool = True,
+        self_conditioning: bool = False,
+        pairfree_aux_heads: bool = False,
     ):
         super().__init__()
         self.d_res = d_res
         self.d_pair = d_pair
         self.use_plm = use_plm
         self.d_plm = d_plm
+        self.use_pair_stack = use_pair_stack
+        self.pairfree_aux_heads = pairfree_aux_heads
+        self.self_conditioning = self_conditioning
         self.relpos_max = relpos_max
         self.n_relpos_bins = 2 * relpos_max + 2  # in-chain bins + OUT_OF_CHAIN
 
@@ -131,6 +146,11 @@ class MambaFoldAllAtom(nn.Module):
         self.res_type_embed = nn.Embedding(NUM_RES_TYPES, d_res_type)
         self.seq_pos_embed = SequenceFourierEmbedder(d_out=d_res_pos) if d_res_pos > 0 else None
         self.ca_coord_embed = CoordinateFourierEmbedder(d_out=d_ca_emb)
+        if self_conditioning:
+            self.self_cond_proj = nn.Linear(d_ca_emb, d_ca_emb, bias=False)
+            nn.init.zeros_(self.self_cond_proj.weight)
+        else:
+            self.self_cond_proj = None
 
         # FM time/noise-level conditioning. A sinusoidal+MLP embedding of t is
         # broadcast into the trunk (FiLM on the trunk input) and the atom
@@ -145,8 +165,14 @@ class MambaFoldAllAtom(nn.Module):
         # token already carries intra-residue (side-chain) structure. Reuses the
         # trunk's SSM hyperparameters.
         self.atom_encoder = AtomEncoder(
-            d_atom, d_ca_emb, n_layers=n_atom_layers, d_temb=d_temb,
-            d_state=d_state, mimo_rank=mimo_rank, expand=expand, headdim=headdim,
+            d_atom,
+            d_ca_emb,
+            n_layers=n_atom_layers,
+            d_temb=d_temb,
+            d_state=d_state,
+            mimo_rank=mimo_rank,
+            expand=expand,
+            headdim=headdim,
             bimamba_share=bimamba_share,
         )
 
@@ -167,41 +193,74 @@ class MambaFoldAllAtom(nn.Module):
 
         # ── Sequence trunk ──────────────────────────────────────────────
         self.residue_trunk = MambaStack(
-            d_res, n_trunk,
-            d_state=d_state, mimo_rank=mimo_rank, expand=expand, headdim=headdim,
+            d_res,
+            n_trunk,
+            d_state=d_state,
+            mimo_rank=mimo_rank,
+            expand=expand,
+            headdim=headdim,
             bidirectional=bidirectional,
-            attn_layers=trunk_attn_layers, attn_every=trunk_attn_every,
+            attn_layers=trunk_attn_layers,
+            attn_every=trunk_attn_every,
             n_attn_heads=n_attn_heads,
+            layerwise_time_film=trunk_time_film,
+            d_temb=d_temb,
+            adaln_zero=trunk_adaln_zero,
             bimamba_share=bimamba_share,
         )
+        if trunk_attn_every is not None and not self.residue_trunk.attn_idx:
+            raise RuntimeError(f"trunk_attn_every={trunk_attn_every} produced no attention layers.")
 
         # ── Pair representation ─────────────────────────────────────────
-        self.pair_init_single = nn.Linear(d_res, d_pair)
-        if use_plm:
-            self.pair_init_esm = nn.Linear(d_plm_proj, d_pair)
-        else:
-            self.pair_init_esm = None
-        self.relpos_embed = nn.Embedding(self.n_relpos_bins, d_pair)
+        if use_pair_stack:
+            self.pair_init_single = nn.Linear(d_res, d_pair)
+            if use_plm:
+                self.pair_init_esm = nn.Linear(d_plm_proj, d_pair)
+            else:
+                self.pair_init_esm = None
+            self.relpos_embed = nn.Embedding(self.n_relpos_bins, d_pair)
 
-        self.pair_blocks = nn.ModuleList([
-            PairBlock(
-                d_pair=d_pair,
-                mult_c=pair_mult_c,
-                use_cueq_mult=pair_use_cueq,
+            self.pair_blocks = nn.ModuleList(
+                [
+                    PairBlock(
+                        d_pair=d_pair,
+                        mult_c=pair_mult_c,
+                        use_cueq_mult=pair_use_cueq,
+                    )
+                    for _ in range(n_pair_blocks)
+                ]
             )
-            for _ in range(n_pair_blocks)
-        ])
 
-        # pair → single bias: attention pooling over each row (keeps which j
-        # matters) projected back to d_res.
-        self.pair_to_single = PairToSingleAttention(d_pair, d_res, n_heads=n_pair_heads)
+            # pair → single bias: attention pooling over each row (keeps which j
+            # matters) projected back to d_res.
+            self.pair_to_single = PairToSingleAttention(d_pair, d_res, n_heads=n_pair_heads)
+        else:
+            self.pair_init_single = None
+            self.pair_init_esm = None
+            self.relpos_embed = None
+            self.pair_blocks = nn.ModuleList()
+            self.pair_to_single = None
+        if pairfree_aux_heads and not use_pair_stack:
+            self.pairfree_left = nn.Linear(d_res, d_pair)
+            self.pairfree_right = nn.Linear(d_res, d_pair)
+            self.pairfree_relpos = nn.Embedding(self.n_relpos_bins, d_pair)
+        else:
+            self.pairfree_left = None
+            self.pairfree_right = None
+            self.pairfree_relpos = None
 
         # ── all-atom output decoder ─────────────────────────────────────
         # BiMamba over atom slots, conditioned on the trunk residue latent and
         # skipping in the encoder's per-atom representation, → per-atom velocity.
         self.atom_decoder = AtomDecoder(
-            d_res, d_atom, n_layers=n_atom_layers, d_temb=d_temb,
-            d_state=d_state, mimo_rank=mimo_rank, expand=expand, headdim=headdim,
+            d_res,
+            d_atom,
+            n_layers=n_atom_layers,
+            d_temb=d_temb,
+            d_state=d_state,
+            mimo_rank=mimo_rank,
+            expand=expand,
+            headdim=headdim,
             bimamba_share=bimamba_share,
         )
 
@@ -222,19 +281,20 @@ class MambaFoldAllAtom(nn.Module):
         )
 
         # ── Distogram + contact aux heads ────────────────────────────────
-        # Symmetrise the pair tensor internally; train the pair stack directly
-        # on Cα-Cα distance / contact prediction — the strongest early signal
-        # and the main way the (Mamba) trunk is pushed to encode long-range
-        # tertiary contacts it cannot see by sequence scan alone.
+        # Only available when the explicit pair stack is enabled.
         self.n_distogram_bins = 64
-        self.distogram_head = nn.Sequential(
-            nn.LayerNorm(d_pair),
-            nn.Linear(d_pair, self.n_distogram_bins),
-        )
-        self.contact_head = nn.Sequential(
-            nn.LayerNorm(d_pair),
-            nn.Linear(d_pair, 1),
-        )
+        if use_pair_stack or pairfree_aux_heads:
+            self.distogram_head = nn.Sequential(
+                nn.LayerNorm(d_pair),
+                nn.Linear(d_pair, self.n_distogram_bins),
+            )
+            self.contact_head = nn.Sequential(
+                nn.LayerNorm(d_pair),
+                nn.Linear(d_pair, 1),
+            )
+        else:
+            self.distogram_head = None
+            self.contact_head = None
 
     # ── helpers ─────────────────────────────────────────────────────────
 
@@ -242,7 +302,8 @@ class MambaFoldAllAtom(nn.Module):
     def _chain_break(chain_id: Tensor, res_mask: Tensor) -> Tensor:
         """Per-residue flag — True at first residue of each chain visible in the crop."""
         prev = torch.cat(
-            [torch.full_like(chain_id[:, :1], -1), chain_id[:, :-1]], dim=1,
+            [torch.full_like(chain_id[:, :1], -1), chain_id[:, :-1]],
+            dim=1,
         )
         return ((chain_id != prev) & res_mask).unsqueeze(-1)  # [B, L, 1]
 
@@ -256,21 +317,28 @@ class MambaFoldAllAtom(nn.Module):
         )
 
     def _compose_residue_input(
-        self, batch: ProteinBatch, coord_feat: Tensor, plm: Tensor | None,
+        self,
+        batch: ProteinBatch,
+        coord_feat: Tensor,
+        plm: Tensor | None,
     ) -> Tensor:
         B, L = batch.res_type.shape
         dtype = coord_feat.dtype
 
         terminus_feat = torch.stack(
-            [batch.is_nterm.to(dtype), batch.is_cterm.to(dtype)], dim=-1,
-        )                                                                  # [B, L, 2]
+            [batch.is_nterm.to(dtype), batch.is_cterm.to(dtype)],
+            dim=-1,
+        )  # [B, L, 2]
         chain_break_feat = self._chain_break(batch.chain_id, batch.res_mask).to(dtype)
-        rt_feat = self.res_type_embed(batch.res_type)                      # [B, L, d_res_type]
+        rt_feat = self.res_type_embed(batch.res_type)  # [B, L, d_res_type]
         parts = [coord_feat, terminus_feat, chain_break_feat, rt_feat]
         if self.seq_pos_embed is not None:
             pos_feat = self.seq_pos_embed(
-                batch.res_seq_nums, batch.res_mask,
-                chain_id=batch.chain_id, entity_id=batch.entity_id, sym_id=batch.sym_id,
+                batch.res_seq_nums,
+                batch.res_mask,
+                chain_id=batch.chain_id,
+                entity_id=batch.entity_id,
+                sym_id=batch.sym_id,
             )
             parts.append(pos_feat)
         if plm is not None:
@@ -291,62 +359,93 @@ class MambaFoldAllAtom(nn.Module):
                 f"got {x_t.shape[-2]}."
             )
         atom_mask = batch.atom_mask.unsqueeze(-1).to(x_t.dtype)
-        return self.ca_coord_embed(x_t * atom_mask)
+        coord_emb = self.ca_coord_embed(x_t * atom_mask)
+        if self.self_cond_proj is not None:
+            x_sc = batch.x_self_cond
+            if x_sc is None:
+                sc_emb = torch.zeros_like(coord_emb)
+            elif x_sc.shape != x_t.shape:
+                raise RuntimeError(
+                    f"x_self_cond shape {tuple(x_sc.shape)} != x_t shape {tuple(x_t.shape)}"
+                )
+            else:
+                sc_emb = self.self_cond_proj(
+                    self.ca_coord_embed(x_sc.to(dtype=x_t.dtype) * atom_mask)
+                )
+            coord_emb = coord_emb + sc_emb
+        return coord_emb
 
     def _embed_plm(self, batch: ProteinBatch, dtype: torch.dtype) -> Tensor | None:
-        """Project ESM3 features (loud failure if expected but missing)."""
+        """Project external PLM features (loud failure if expected but missing)."""
         if not self.use_plm:
             return None
         if batch.esm is None:
             raise RuntimeError(
                 "MambaFoldAllAtom built with use_plm=True but batch.esm is None. "
-                "Pre-compute ESM3 features (scripts/precompute_esm.py)."
+                "Pre-compute PLM features (scripts/precompute_esm.py)."
             )
         if batch.esm.shape[-1] != self.d_plm:
             raise RuntimeError(f"Expected ESM dim {self.d_plm}, got {batch.esm.shape[-1]}.")
-        return self.plm_proj(self.plm_norm(batch.esm.to(dtype=dtype)))       # [B, L, d_plm_proj]
+        return self.plm_proj(self.plm_norm(batch.esm.to(dtype=dtype)))  # [B, L, d_plm_proj]
 
     def _pair_and_heads(
-        self, batch: ProteinBatch, res0: Tensor, plm: Tensor | None,
-        atom_repr: Tensor, temb: Tensor, return_aux: bool,
+        self,
+        batch: ProteinBatch,
+        res0: Tensor,
+        plm: Tensor | None,
+        atom_repr: Tensor,
+        temb: Tensor,
+        return_aux: bool,
     ) -> dict:
         """Build pair features, run the pair stack, then all output heads."""
         mask_f = batch.res_mask.unsqueeze(-1).to(res0.dtype)
 
-        s_p = self.pair_init_single(res0)
-        pair = s_p.unsqueeze(2) + s_p.unsqueeze(1)                           # [B, L, L, d_pair]
-        if self.pair_init_esm is not None and plm is not None:
-            e_p = self.pair_init_esm(plm)
-            pair = pair + e_p.unsqueeze(2) + e_p.unsqueeze(1)
-        pair = pair + self.relpos_embed(self._relpos_bin(batch))
+        pair = None
+        if self.use_pair_stack:
+            s_p = self.pair_init_single(res0)
+            pair = s_p.unsqueeze(2) + s_p.unsqueeze(1)  # [B, L, L, d_pair]
+            if self.pair_init_esm is not None and plm is not None:
+                e_p = self.pair_init_esm(plm)
+                pair = pair + e_p.unsqueeze(2) + e_p.unsqueeze(1)
+            pair = pair + self.relpos_embed(self._relpos_bin(batch))
 
-        pair_mask = batch.res_mask.unsqueeze(2) & batch.res_mask.unsqueeze(1)  # [B, L, L]
-        for blk in self.pair_blocks:
-            pair = blk(pair, pair_mask)
-
-        res = res0 + self.pair_to_single(pair, batch.res_mask)
+            pair_mask = batch.res_mask.unsqueeze(2) & batch.res_mask.unsqueeze(1)  # [B, L, L]
+            for blk in self.pair_blocks:
+                pair = blk(pair, pair_mask)
+            res = res0 + self.pair_to_single(pair, batch.res_mask)
+        else:
+            res = res0
         B, L = batch.res_type.shape
         mask_atom = batch.atom_mask.to(res.dtype).unsqueeze(-1)
         v_atom = self.atom_decoder(res, atom_repr, batch, temb) * mask_atom
         v_ca = v_atom[:, :, CA_ATOM_ID, :] * mask_f
 
         out = {
-            "v_ca":         v_ca,
-            "v_atom":       v_atom,
+            "v_ca": v_ca,
+            "v_atom": v_atom,
             "trunk_latent": res,
-            "pcb_dir":      F.normalize(self.pcb_head(res), dim=-1) * mask_f,
-            "conf":         torch.sigmoid(self.conf_head(res)).squeeze(-1) * batch.res_mask.to(res.dtype),
+            "pcb_dir": F.normalize(self.pcb_head(res), dim=-1) * mask_f,
+            "conf": torch.sigmoid(self.conf_head(res)).squeeze(-1) * batch.res_mask.to(res.dtype),
         }
-        if return_aux:
-            pair_sym = (pair + pair.transpose(1, 2)) / 2
-            out["distogram_logits"] = self.distogram_head(pair_sym)         # [B,L,L,n_bins]
+        aux_pair = pair
+        if return_aux and aux_pair is None and self.pairfree_left is not None:
+            aux_pair = (
+                self.pairfree_left(res).unsqueeze(2)
+                + self.pairfree_right(res).unsqueeze(1)
+                + self.pairfree_relpos(self._relpos_bin(batch))
+            )
+        if return_aux and aux_pair is not None:
+            pair_sym = (aux_pair + aux_pair.transpose(1, 2)) / 2
+            out["distogram_logits"] = self.distogram_head(pair_sym)  # [B,L,L,n_bins]
             out["contact_logits"] = self.contact_head(pair_sym).squeeze(-1)  # [B,L,L]
         return out
 
     # ── forward ─────────────────────────────────────────────────────────
 
     def forward(
-        self, batch: ProteinBatch, return_aux: bool = False,
+        self,
+        batch: ProteinBatch,
+        return_aux: bool = False,
     ) -> dict:
         """
         Always returns a dict so train/eval/inference share one interface.
@@ -362,12 +461,12 @@ class MambaFoldAllAtom(nn.Module):
             conf         [B, L]     — predicted all-atom lDDT (pLDDT) in [0, 1]
             distogram_logits/contact_logits — only if return_aux
         """
-        temb = self.time_embed(batch.t)                         # [B, d_temb]
-        coord_emb = self._atom_coord_embed(batch)               # [B, L, A, d_ca_emb]
+        temb = self.time_embed(batch.t)  # [B, d_temb]
+        coord_emb = self._atom_coord_embed(batch)  # [B, L, A, d_ca_emb]
         atom_token, atom_repr = self.atom_encoder(coord_emb, batch, temb)  # token [B,L,d_atom]
         plm = self._embed_plm(batch, atom_token.dtype)
 
         res0 = self._compose_residue_input(batch, atom_token, plm)
-        res0 = self.film_trunk(res0, temb)                      # inject noise level
-        res0 = self.residue_trunk(res0, batch.res_mask)
+        res0 = self.film_trunk(res0, temb)  # inject noise level
+        res0 = self.residue_trunk(res0, batch.res_mask, temb)
         return self._pair_and_heads(batch, res0, plm, atom_repr, temb, return_aux)

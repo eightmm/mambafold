@@ -1,11 +1,29 @@
 """Canonical amino acid and atom constants for protein structure prediction."""
 
+import numpy as np
+
 # 20 standard amino acids (3-letter → 1-letter → index)
 AA_3TO1 = {
-    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
-    "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
-    "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
-    "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+    "ALA": "A",
+    "ARG": "R",
+    "ASN": "N",
+    "ASP": "D",
+    "CYS": "C",
+    "GLN": "Q",
+    "GLU": "E",
+    "GLY": "G",
+    "HIS": "H",
+    "ILE": "I",
+    "LEU": "L",
+    "LYS": "K",
+    "MET": "M",
+    "PHE": "F",
+    "PRO": "P",
+    "SER": "S",
+    "THR": "T",
+    "TRP": "W",
+    "TYR": "Y",
+    "VAL": "V",
 }
 
 AA_TO_ID = {aa: i for i, aa in enumerate(sorted(AA_3TO1.keys()))}
@@ -41,7 +59,22 @@ RESIDUE_ATOMS = {
     "PRO": ["N", "CA", "C", "O", "CB", "CG", "CD"],
     "SER": ["N", "CA", "C", "O", "CB", "OG"],
     "THR": ["N", "CA", "C", "O", "CB", "OG1", "CG2"],
-    "TRP": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "NE1", "CE2", "CE3", "CZ2", "CZ3", "CH2"],
+    "TRP": [
+        "N",
+        "CA",
+        "C",
+        "O",
+        "CB",
+        "CG",
+        "CD1",
+        "CD2",
+        "NE1",
+        "CE2",
+        "CE3",
+        "CZ2",
+        "CZ3",
+        "CH2",
+    ],
     "TYR": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "OH"],
     "VAL": ["N", "CA", "C", "O", "CB", "CG1", "CG2"],
     "UNK": ["N", "CA", "C", "O", "CB"],
@@ -49,8 +82,7 @@ RESIDUE_ATOMS = {
 
 # Build atom name → slot index mapping per residue
 RESIDUE_ATOM_TO_SLOT = {
-    res: {atom: i for i, atom in enumerate(atoms)}
-    for res, atoms in RESIDUE_ATOMS.items()
+    res: {atom: i for i, atom in enumerate(atoms)} for res, atoms in RESIDUE_ATOMS.items()
 }
 
 # Atom type vocabulary (unique atom names across all residues)
@@ -64,30 +96,48 @@ COORD_SCALE = 10.0  # Angstrom -> normalized
 # (residue, atom) pair vocabulary — unique chemical identity per atom slot
 # Sorted by residue name then slot order for determinism.
 RESIDUE_ATOM_PAIRS: list[tuple[str, str]] = [
-    (res, atom)
-    for res in sorted(RESIDUE_ATOMS.keys())
-    for atom in RESIDUE_ATOMS[res]
+    (res, atom) for res in sorted(RESIDUE_ATOMS.keys()) for atom in RESIDUE_ATOMS[res]
 ]
 PAIR_TO_ID: dict[tuple[str, str], int] = {p: i for i, p in enumerate(RESIDUE_ATOM_PAIRS)}
-PAIR_PAD_ID: int = len(RESIDUE_ATOM_PAIRS)          # index for empty/padding slots
-NUM_PAIR_TYPES: int = len(RESIDUE_ATOM_PAIRS) + 1   # +1 for PAD
+PAIR_PAD_ID: int = len(RESIDUE_ATOM_PAIRS)  # index for empty/padding slots
+NUM_PAIR_TYPES: int = len(RESIDUE_ATOM_PAIRS) + 1  # +1 for PAD
 
 # ── Boltz npz structured array dtypes ────────────────────────────────────────
 
-import numpy as np
-
-BOLTZ_RESIDUES_DTYPE = np.dtype([
-    ("name", "<U5"), ("res_type", "i1"), ("res_idx", "<i4"),
-    ("atom_idx", "<i4"), ("atom_num", "<i4"), ("atom_center", "<i4"),
-    ("atom_disto", "<i4"), ("is_standard", "?"), ("is_present", "?"),
-])
-BOLTZ_ATOMS_DTYPE = np.dtype([
-    ("name", "i1", (4,)), ("element", "i1"), ("charge", "i1"),
-    ("coords", "<f4", (3,)), ("conformer", "<f4", (3,)),
-    ("is_present", "?"), ("chirality", "i1"),
-])
-BOLTZ_CHAINS_DTYPE = np.dtype([
-    ("name", "<U5"), ("mol_type", "i1"), ("entity_id", "<i4"),
-    ("sym_id", "<i4"), ("asym_id", "<i4"), ("atom_idx", "<i4"),
-    ("atom_num", "<i4"), ("res_idx", "<i4"), ("res_num", "<i4"),
-])
+BOLTZ_RESIDUES_DTYPE = np.dtype(
+    [
+        ("name", "<U5"),
+        ("res_type", "i1"),
+        ("res_idx", "<i4"),
+        ("atom_idx", "<i4"),
+        ("atom_num", "<i4"),
+        ("atom_center", "<i4"),
+        ("atom_disto", "<i4"),
+        ("is_standard", "?"),
+        ("is_present", "?"),
+    ]
+)
+BOLTZ_ATOMS_DTYPE = np.dtype(
+    [
+        ("name", "i1", (4,)),
+        ("element", "i1"),
+        ("charge", "i1"),
+        ("coords", "<f4", (3,)),
+        ("conformer", "<f4", (3,)),
+        ("is_present", "?"),
+        ("chirality", "i1"),
+    ]
+)
+BOLTZ_CHAINS_DTYPE = np.dtype(
+    [
+        ("name", "<U5"),
+        ("mol_type", "i1"),
+        ("entity_id", "<i4"),
+        ("sym_id", "<i4"),
+        ("asym_id", "<i4"),
+        ("atom_idx", "<i4"),
+        ("atom_num", "<i4"),
+        ("res_idx", "<i4"),
+        ("res_num", "<i4"),
+    ]
+)

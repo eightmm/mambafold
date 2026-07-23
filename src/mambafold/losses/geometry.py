@@ -20,11 +20,11 @@ _N, _CA, _C, _O, _CB = 0, 1, 2, 3, 4
 
 # Ideal bond lengths in Å (Engh & Huber 2001). Pre-scaled to normalized units.
 _IDEAL_A = {
-    "N_CA":  1.458,
-    "CA_C":  1.525,
-    "C_O":   1.229,
+    "N_CA": 1.458,
+    "CA_C": 1.525,
+    "C_O": 1.229,
     "CA_CB": 1.530,
-    "C_N":   1.329,  # peptide bond
+    "C_N": 1.329,  # peptide bond
 }
 IDEAL = {k: v / COORD_SCALE for k, v in _IDEAL_A.items()}
 
@@ -36,18 +36,19 @@ def _gly_id() -> int:
     global _GLY_ID
     if _GLY_ID is None:
         from mambafold.data.constants import AA_TO_ID
+
         _GLY_ID = AA_TO_ID["GLY"]
     return _GLY_ID
 
 
 def bond_length_loss(
-    pred_coords: Tensor,      # [B, L, A, 3] predicted (or reconstructed) coords
-    res_type: Tensor,         # [B, L]    residue type IDs
-    atom_mask: Tensor,        # [B, L, A] valid-atom mask
-    res_mask: Tensor,         # [B, L]    valid-residue mask
-    chain_id: Tensor | None = None,      # [B, L] optional chain IDs
+    pred_coords: Tensor,  # [B, L, A, 3] predicted (or reconstructed) coords
+    res_type: Tensor,  # [B, L]    residue type IDs
+    atom_mask: Tensor,  # [B, L, A] valid-atom mask
+    res_mask: Tensor,  # [B, L]    valid-residue mask
+    chain_id: Tensor | None = None,  # [B, L] optional chain IDs
     res_seq_nums: Tensor | None = None,  # [B, L] optional chain-local residue indices
-    true_coords: Tensor | None = None,   # [B, L, A, 3] optional GT coordinates
+    true_coords: Tensor | None = None,  # [B, L, A, 3] optional GT coordinates
 ) -> Tensor:
     """Huber-style bond length deviation in normalized units.
 
@@ -70,17 +71,15 @@ def bond_length_loss(
         m = (vi & vj & res_mask).to(pred_coords.dtype)
         if extra_mask is not None:
             m = m * extra_mask.to(pred_coords.dtype)
-        d = torch.linalg.norm(
-            pred_coords[..., slot_i, :] - pred_coords[..., slot_j, :], dim=-1
-        )
+        d = torch.linalg.norm(pred_coords[..., slot_i, :] - pred_coords[..., slot_j, :], dim=-1)
         err = (d - ideal).abs()
         losses.append((err * m).sum())
         counts.append(m.sum())
 
     # Within-residue backbone bonds (all residues)
-    _bond(_N,  _CA, IDEAL["N_CA"])
-    _bond(_CA, _C,  IDEAL["CA_C"])
-    _bond(_C,  _O,  IDEAL["C_O"])
+    _bond(_N, _CA, IDEAL["N_CA"])
+    _bond(_CA, _C, IDEAL["CA_C"])
+    _bond(_C, _O, IDEAL["C_O"])
 
     # CA-CB (skip GLY)
     non_gly = (res_type != _gly_id()) & res_mask
@@ -88,21 +87,23 @@ def bond_length_loss(
 
     # Peptide bond C(i) - N(i+1)
     if L >= 2:
-        c_i  = pred_coords[:, :-1, _C,  :]
-        n_j  = pred_coords[:,  1:, _N,  :]
-        mi   = atom_mask[:, :-1, _C]  & res_mask[:, :-1]
-        mj   = atom_mask[:,  1:, _N]  & res_mask[:,  1:]
+        c_i = pred_coords[:, :-1, _C, :]
+        n_j = pred_coords[:, 1:, _N, :]
+        mi = atom_mask[:, :-1, _C] & res_mask[:, :-1]
+        mj = atom_mask[:, 1:, _N] & res_mask[:, 1:]
         peptide = mi & mj
         if chain_id is not None:
             peptide = peptide & (chain_id[:, :-1] == chain_id[:, 1:])
         if res_seq_nums is not None:
             peptide = peptide & ((res_seq_nums[:, 1:] - res_seq_nums[:, :-1]) == 1)
         if true_coords is not None:
-            true_cn = torch.linalg.norm(true_coords[:, :-1, _C, :] - true_coords[:, 1:, _N, :], dim=-1)
+            true_cn = torch.linalg.norm(
+                true_coords[:, :-1, _C, :] - true_coords[:, 1:, _N, :], dim=-1
+            )
             peptide = peptide & (true_cn < (IDEAL["C_N"] + 0.06))
-        m    = peptide.to(pred_coords.dtype)
-        d    = torch.linalg.norm(c_i - n_j, dim=-1)
-        err  = (d - IDEAL["C_N"]).abs()
+        m = peptide.to(pred_coords.dtype)
+        d = torch.linalg.norm(c_i - n_j, dim=-1)
+        err = (d - IDEAL["C_N"]).abs()
         losses.append((err * m).sum())
         counts.append(m.sum())
 
@@ -112,9 +113,9 @@ def bond_length_loss(
 
 
 def ca_clash_loss(
-    pred_coords: Tensor,           # [B, L, A, 3]
-    res_mask: Tensor,              # [B, L]
-    chain_id: Tensor | None = None,# [B, L] int; None → treat as single chain
+    pred_coords: Tensor,  # [B, L, A, 3]
+    res_mask: Tensor,  # [B, L]
+    chain_id: Tensor | None = None,  # [B, L] int; None → treat as single chain
     min_dist_A: float = 3.8,
     seq_sep: int = 2,
 ) -> Tensor:
@@ -125,19 +126,19 @@ def ca_clash_loss(
     because different chains have no sequence neighbour notion.
     """
     min_d = min_dist_A / COORD_SCALE
-    ca = pred_coords[:, :, _CA, :]                                    # [B, L, 3]
+    ca = pred_coords[:, :, _CA, :]  # [B, L, 3]
     B, L, _ = ca.shape
     d = torch.linalg.norm(ca.unsqueeze(2) - ca.unsqueeze(1), dim=-1)  # [B, L, L]
 
     idx = torch.arange(L, device=ca.device)
-    seq_far = (idx.unsqueeze(0) - idx.unsqueeze(1)).abs() > seq_sep   # [L, L]
+    seq_far = (idx.unsqueeze(0) - idx.unsqueeze(1)).abs() > seq_sep  # [L, L]
 
     if chain_id is None:
         pair = res_mask.unsqueeze(2) & res_mask.unsqueeze(1) & seq_far.unsqueeze(0)
     else:
-        same_chain = chain_id.unsqueeze(2) == chain_id.unsqueeze(1)   # [B, L, L]
+        same_chain = chain_id.unsqueeze(2) == chain_id.unsqueeze(1)  # [B, L, L]
         intra = same_chain & seq_far.unsqueeze(0)
-        inter = ~same_chain                                           # all cross-chain pairs
+        inter = ~same_chain  # all cross-chain pairs
         pair = res_mask.unsqueeze(2) & res_mask.unsqueeze(1) & (intra | inter)
 
     m = pair.to(d.dtype)

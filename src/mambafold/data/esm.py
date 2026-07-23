@@ -8,8 +8,140 @@ Usage:
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
 import torch
 from torch import Tensor
+
+ESMC_6B_MODEL_NAME = "esmc-6b"
+ESMC_6B_REPO_ID = "biohub/ESMC-6B"
+ESMC_6B_REVISION = "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a"
+ESMC_6B_DIM = 2560
+
+
+def _map_hf_esmc_key(key: str) -> str | None:
+    """Map official HF ESMC keys to the esm<=3.2 local implementation."""
+    if key.endswith("._extra_state"):
+        return None
+    if key.startswith("esmc."):
+        key = key.removeprefix("esmc.")
+    elif key.startswith("lm_head."):
+        key = "sequence_head." + key.removeprefix("lm_head.")
+
+    replacements = {
+        ".attn.layernorm_qkv.layer_norm_weight": ".attn.layernorm_qkv.0.weight",
+        ".attn.layernorm_qkv.layer_norm_bias": ".attn.layernorm_qkv.0.bias",
+        ".attn.layernorm_qkv.weight": ".attn.layernorm_qkv.1.weight",
+        ".ffn.layer_norm_weight": ".ffn.0.weight",
+        ".ffn.layer_norm_bias": ".ffn.0.bias",
+        ".ffn.fc1_weight": ".ffn.1.weight",
+        ".ffn.fc2_weight": ".ffn.3.weight",
+    }
+    for hf_name, local_name in replacements.items():
+        if hf_name in key:
+            return key.replace(hf_name, local_name)
+    return key
+
+
+def _esmc_6b_snapshot_dir() -> Path:
+    override = os.environ.get("ESMC_6B_MODEL_DIR")
+    if override:
+        snapshot = Path(override).expanduser()
+    else:
+        hub_cache = os.environ.get("HF_HUB_CACHE")
+        if hub_cache:
+            cache_root = Path(hub_cache).expanduser()
+        else:
+            hf_home = Path(os.environ.get("HF_HOME", "~/.cache/huggingface")).expanduser()
+            cache_root = hf_home / "hub"
+        snapshot = (
+            cache_root
+            / "models--biohub--ESMC-6B"
+            / "snapshots"
+            / ESMC_6B_REVISION
+        )
+
+    required = ("config.json", "model.safetensors.index.json", "tokenizer.json")
+    missing = [name for name in required if not (snapshot / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"Missing pinned {ESMC_6B_REPO_ID} files under {snapshot}: {missing}. "
+            "Run scripts/download_esmc6b.sh first."
+        )
+    return snapshot
+
+
+def _load_esmc_6b(device: torch.device):
+    """Load the pinned official ESMC-6B checkpoint without upgrading transformers.
+
+    The HF checkpoint uses TransformerEngine-style parameter names. The tensor
+    values are identical to the legacy ``esm`` implementation after the key
+    mapping above (verified exhaustively against the official ESMC-600M pair).
+    """
+    from esm.models.esmc import ESMC
+    from esm.tokenization import get_esmc_model_tokenizers
+    from safetensors import safe_open
+
+    snapshot = _esmc_6b_snapshot_dir()
+    config = json.loads((snapshot / "config.json").read_text())
+    expected = {"d_model": ESMC_6B_DIM, "n_heads": 40, "n_layers": 80}
+    actual = {key: config.get(key) for key in expected}
+    if actual != expected:
+        raise RuntimeError(f"Unexpected ESMC-6B config in {snapshot}: {actual}")
+
+    index = json.loads((snapshot / "model.safetensors.index.json").read_text())
+    weight_map = index.get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map:
+        raise RuntimeError(f"Invalid ESMC-6B weight index: {snapshot}")
+    shards = sorted(set(weight_map.values()))
+    missing_shards = [name for name in shards if not (snapshot / name).is_file()]
+    if missing_shards:
+        raise FileNotFoundError(
+            f"Incomplete pinned ESMC-6B snapshot {snapshot}; missing {missing_shards}"
+        )
+
+    # Meta construction avoids allocating an additional 25 GB fp32 model.
+    with torch.device("meta"):
+        model = ESMC(
+            d_model=expected["d_model"],
+            n_heads=expected["n_heads"],
+            n_layers=expected["n_layers"],
+            tokenizer=get_esmc_model_tokenizers(),
+            use_flash_attn=True,
+        ).eval()
+
+    state: dict[str, Tensor] = {}
+    for shard in shards:
+        with safe_open(snapshot / shard, framework="pt", device="cpu") as handle:
+            for hf_key in handle.keys():
+                local_key = _map_hf_esmc_key(hf_key)
+                if local_key is None:
+                    continue
+                if local_key in state:
+                    raise RuntimeError(f"Duplicate mapped ESMC-6B key: {local_key}")
+                state[local_key] = handle.get_tensor(hf_key).to(torch.bfloat16)
+
+    expected_keys = set(model.state_dict())
+    actual_keys = set(state)
+    if actual_keys != expected_keys:
+        missing = sorted(expected_keys - actual_keys)
+        unexpected = sorted(actual_keys - expected_keys)
+        raise RuntimeError(
+            f"ESMC-6B state mismatch: missing={missing[:10]} unexpected={unexpected[:10]}"
+        )
+    model.load_state_dict(state, strict=True, assign=True)
+    # RoPE inverse frequencies are non-persistent buffers, so they are absent
+    # from the checkpoint and remain meta tensors after the assigned load.
+    # Recompute the tiny buffers on CPU before moving the complete model.
+    from esm.layers.rotary import RotaryEmbedding
+
+    for module in model.modules():
+        if isinstance(module, RotaryEmbedding):
+            module.device = torch.device("cpu")
+            module.reset_parameters()
+    return model.to(device=device).eval()
 
 
 class ESMEmbedder:
@@ -92,12 +224,15 @@ class ESMEmbedder:
     def _get_client(self):
         if self._client is not None:
             return self._client
-        api = self._get_api()
         name = self.model_name
-        if name.startswith("esmc"):
+        if name.lower() in {ESMC_6B_MODEL_NAME, ESMC_6B_REPO_ID.lower()}:
+            self._client = _load_esmc_6b(self.device)
+        elif name.startswith("esmc"):
+            api = self._get_api()
             _, ESMC, _, _ = api
             self._client = ESMC.from_pretrained(name).to(self.device)
         else:
+            api = self._get_api()
             ESM3, _, _, _ = api
             self._client = ESM3.from_pretrained(name).to(self.device)
         self._client.eval()

@@ -25,13 +25,14 @@ from pathlib import Path
 from mambafold.data.dataset import RCSBDataset
 
 _DEFAULT_CACHE_DIR = Path(".cache/length_cache")
+_ESM_CACHE_SCHEMA = 2  # sequence-addressed cache with occurrence fallback
 
 # ── Worker (one probe dataset per process; built without scanning files) ─────
 _PROBE: RCSBDataset | None = None
 
 
 def _make_probe(cfg: dict) -> RCSBDataset:
-    ds = RCSBDataset.__new__(RCSBDataset)          # bypass __init__ file scan
+    ds = RCSBDataset.__new__(RCSBDataset)  # bypass __init__ file scan
     ds.data_dir = Path(cfg["data_dir"])
     ds.max_length = cfg["max_length"]
     ds.min_length = cfg["min_length"]
@@ -61,6 +62,7 @@ def _dataset_cfg(dataset: RCSBDataset) -> dict:
         "min_length": dataset.min_length,
         "min_obs_ratio": dataset.min_obs_ratio,
         "esm_dir": str(dataset.esm_dir) if dataset.esm_dir else None,
+        "esm_cache_schema": _ESM_CACHE_SCHEMA,
         "single_chain_only": dataset.single_chain_only,
     }
 
@@ -73,7 +75,14 @@ def _cache_path(dataset: RCSBDataset, cache_dir: Path) -> Path:
     h.update(str(len(dataset.files)).encode())
     h.update("\n".join(str(f) for f in dataset.files).encode())
     name = Path(cfg["data_dir"]).name
-    return cache_dir / f"len_{name}_L{cfg['max_length']}_sc{int(cfg['single_chain_only'])}_{h.hexdigest()[:12]}.json"
+    cache_name = (
+        f"len_{name}_L{cfg['max_length']}_sc{int(cfg['single_chain_only'])}_"
+        f"{h.hexdigest()[:12]}.json"
+    )
+    return (
+        cache_dir
+        / cache_name
+    )
 
 
 def build_length_cache(
@@ -93,18 +102,14 @@ def build_length_cache(
 
     files = [str(f) for f in dataset.files]
     cfg = _dataset_cfg(dataset)
-    print(f"[length_cache] building over {len(files)} files "
-          f"({num_workers} workers) → {path}")
+    print(f"[length_cache] building over {len(files)} files ({num_workers} workers) → {path}")
     result: dict[str, int] = {}
     with Pool(num_workers, initializer=_init_worker, initargs=(cfg,)) as pool:
-        for i, (p, L) in enumerate(
-            pool.imap_unordered(_probe_one, files, chunksize=64)
-        ):
+        for i, (p, L) in enumerate(pool.imap_unordered(_probe_one, files, chunksize=64)):
             if L is not None:
                 result[p] = int(L)
             if (i + 1) % 20000 == 0:
-                print(f"[length_cache]   {i + 1}/{len(files)} probed, "
-                      f"{len(result)} valid")
+                print(f"[length_cache]   {i + 1}/{len(files)} probed, {len(result)} valid")
     tmp = path.with_suffix(f".{os.getpid()}.tmp")
     with open(tmp, "w") as f:
         json.dump(result, f)
@@ -148,8 +153,7 @@ def build_chain_index(
     files = [str(f) for f in dataset.files]
     path_to_idx = {str(f): i for i, f in enumerate(dataset.files)}
     cfg = _dataset_cfg(dataset)
-    print(f"[chain_index] building over {len(files)} files "
-          f"({num_workers} workers) → {path}")
+    print(f"[chain_index] building over {len(files)} files ({num_workers} workers) → {path}")
     index: list[tuple[int, int, int]] = []
     with Pool(num_workers, initializer=_init_worker, initargs=(cfg,)) as pool:
         for i, (p, chains) in enumerate(
@@ -159,13 +163,11 @@ def build_chain_index(
             for origin, L in chains:
                 index.append((fi, int(origin), int(L)))
             if (i + 1) % 20000 == 0:
-                print(f"[chain_index]   {i + 1}/{len(files)} files, "
-                      f"{len(index)} chains")
-    index.sort()                                  # determinism (by file_idx, origin)
+                print(f"[chain_index]   {i + 1}/{len(files)} files, {len(index)} chains")
+    index.sort()  # determinism (by file_idx, origin)
     tmp = path.with_suffix(f".{os.getpid()}.tmp")
     with open(tmp, "w") as f:
         json.dump(index, f)
     tmp.replace(path)
-    print(f"[chain_index] done: {len(index)} monomer chains from {len(files)} files "
-          f"→ {path}")
+    print(f"[chain_index] done: {len(index)} monomer chains from {len(files)} files → {path}")
     return index

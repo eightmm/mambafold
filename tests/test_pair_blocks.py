@@ -23,7 +23,6 @@ from mambafold.model.fold.pair_blocks import (  # noqa: E402
     PairTransition,
 )
 
-
 # ── Triangle Multiplicative Update ────────────────────────────────────────
 
 def test_mult_update_outgoing_shape():

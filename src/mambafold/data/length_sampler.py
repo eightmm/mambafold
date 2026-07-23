@@ -49,7 +49,9 @@ def _load_protein_lengths(metadata_path: Path) -> dict[str, int]:
     return dict(chains)
 
 
-def _weight_from_length(L: int, mode: str, exponent: float, clip_min: float, clip_max: float) -> float:
+def _weight_from_length(
+    L: int, mode: str, exponent: float, clip_min: float, clip_max: float
+) -> float:
     """Map a protein's sum-chain length to a sampling weight.
 
     mode="power": w = max(clip_min, min(clip_max, (L / 200) ** exponent))
@@ -59,7 +61,7 @@ def _weight_from_length(L: int, mode: str, exponent: float, clip_min: float, cli
     """
     base = max(L, 1) / 200.0
     if mode == "power":
-        w = base ** exponent
+        w = base**exponent
     elif mode == "linear_clip":
         w = base
     else:
@@ -119,8 +121,7 @@ class LengthBalancedDistributedSampler(Sampler[int]):
         self.rank = rank
         self.world_size = world_size
         self.num_samples = (
-            num_samples_per_rank if num_samples_per_rank is not None
-            else math.ceil(n / world_size)
+            num_samples_per_rank if num_samples_per_rank is not None else math.ceil(n / world_size)
         )
         self.seed = seed
         self.epoch = 0
@@ -138,7 +139,10 @@ class LengthBalancedDistributedSampler(Sampler[int]):
         g = torch.Generator()
         g.manual_seed(self.seed + self.epoch * self.world_size + self.rank)
         idx = torch.multinomial(
-            self.weights, self.num_samples, replacement=True, generator=g,
+            self.weights,
+            self.num_samples,
+            replacement=True,
+            generator=g,
         )
         return iter(idx.tolist())
 
@@ -170,11 +174,18 @@ class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
     `RCSBDataset.__getitem__` returns `files[idx]` directly (no skip-to-next),
     keeping each batch's real content aligned with the length it was bucketed by.
 
-    Per epoch (per rank, independent draw with a rank-offset seed):
-      1. draw `num_samples_per_rank` valid indices ~ length-balance weights (replacement).
-      2. split the draw into megabatches of `batch_size · megabatch_mult`,
-         sort each megabatch by true length, chunk into `batch_size` batches.
-      3. shuffle the batch order (so length-sorted batches aren't fed monotonically).
+    Per epoch, every rank deterministically reconstructs the same global draw:
+      1. draw `num_samples_per_rank * world_size` valid indices ~ length-balance
+         weights (replacement).
+      2. split into global megabatches, sort by true length, and chunk into
+         `batch_size * world_size` global batches.
+      3. shard each global batch across ranks and shuffle the shared batch order.
+
+    Aligning ranks to one length-sorted global batch is important for JIT-backed
+    sequence kernels: independent per-rank draws can make one rank compile a new
+    long-sequence kernel while another rank reaches a DDP collective, eventually
+    timing out. The training loop still synchronizes the final padded length to
+    cover the rare global batch that straddles a padding-bin boundary.
 
     Megabatches (not a single global sort) keep epoch-to-epoch stochasticity
     while still grouping similar lengths. `drop_last` happens inside each
@@ -217,17 +228,20 @@ class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
         self.rank = rank
         self.world_size = world_size
         self.num_samples = (
-            num_samples_per_rank if num_samples_per_rank is not None
+            num_samples_per_rank
+            if num_samples_per_rank is not None
             else math.ceil(len(self.valid) / world_size)
         )
         self.seed = seed
         self.epoch = 0
         self.megabatch_mult = max(1, megabatch_mult)
 
-        # Exact batch count = full batches summed over megabatches (drop_last).
-        mb = self.batch_size * self.megabatch_mult
-        full_mb, rem = divmod(self.num_samples, mb)
-        self._n_batches = full_mb * self.megabatch_mult + rem // self.batch_size
+        # Exact per-rank batch count after globally aligned drop_last.
+        global_batch = self.batch_size * self.world_size
+        mb = global_batch * self.megabatch_mult
+        global_samples = self.num_samples * self.world_size
+        full_mb, rem = divmod(global_samples, mb)
+        self._n_batches = full_mb * self.megabatch_mult + rem // global_batch
 
         self._n_valid = len(self.valid)
         self._mode = mode
@@ -239,22 +253,33 @@ class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
 
     def __iter__(self) -> Iterator[list[int]]:
         g = torch.Generator()
-        g.manual_seed(self.seed + self.epoch * self.world_size + self.rank)
-        pos = torch.multinomial(                       # positions into self.valid
-            self.weights, self.num_samples, replacement=True, generator=g,
+        # All ranks must build the same global draw and batch order. Rank only
+        # selects its non-overlapping slice from each global batch below.
+        g.manual_seed(self.seed + self.epoch)
+        global_samples = self.num_samples * self.world_size
+        pos = torch.multinomial(  # positions into self.valid
+            self.weights,
+            global_samples,
+            replacement=True,
+            generator=g,
         )
         lens = self.lengths[pos]
-        mb = self.batch_size * self.megabatch_mult
+        global_batch = self.batch_size * self.world_size
+        mb = global_batch * self.megabatch_mult
 
         batches: list[list[int]] = []
         for s in range(0, len(pos), mb):
-            chunk = pos[s:s + mb]
-            order = torch.argsort(lens[s:s + mb])          # sort this megabatch by length
+            chunk = pos[s : s + mb]
+            order = torch.argsort(lens[s : s + mb])  # sort this megabatch by length
             chunk = chunk[order]
-            n_full = len(chunk) // self.batch_size
+            n_full = len(chunk) // global_batch
             for b in range(n_full):
-                sel = chunk[b * self.batch_size:(b + 1) * self.batch_size]
-                batches.append(self.valid[sel].tolist())   # map positions → dataset indices
+                sel = chunk[b * global_batch : (b + 1) * global_batch]
+                # Striding gives every rank samples spanning the same narrow
+                # length interval instead of assigning low lengths to rank 0
+                # and high lengths to the last rank.
+                local = sel[self.rank :: self.world_size]
+                batches.append(self.valid[local].tolist())  # positions → dataset indices
 
         # Shuffle batch order so the model doesn't see length-monotonic batches.
         perm = torch.randperm(len(batches), generator=g).tolist()

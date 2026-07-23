@@ -8,6 +8,8 @@ Flow matching convention:
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -31,6 +33,10 @@ from mambafold.losses.geometry import (
     ca_clash_loss,
 )
 from mambafold.losses.lddt import soft_lddt_all_atom_loss, soft_lddt_ca_loss
+
+
+def _zero_like_loss(ref: Tensor) -> Tensor:
+    return ref.sum() * 0.0
 
 
 def _alpha(t: Tensor, mode: str) -> float:
@@ -101,39 +107,102 @@ def allatom_loss_surface(
 
     loss_fm = _fm_loss_atom(v_atom, x_clean, eps, batch.valid_mask)
     loss_lddt_atom = soft_lddt_all_atom_loss(
-        x_hat, x_clean, batch.valid_mask,
-        cutoff=lddt_cutoff, max_atoms=max_lddt_atoms,
+        x_hat,
+        x_clean,
+        batch.valid_mask,
+        cutoff=lddt_cutoff,
+        max_atoms=max_lddt_atoms,
     )
     loss_lddt_ca = soft_lddt_ca_loss(x_hat, x_clean, batch.ca_mask, cutoff=lddt_cutoff)
-    loss_bond = bond_length_loss(
-        x_hat, batch.res_type, batch.atom_mask, batch.res_mask,
-        chain_id=batch.chain_id, res_seq_nums=batch.res_seq_nums,
-        true_coords=x_clean,
+    loss_bond = (
+        bond_length_loss(
+            x_hat,
+            batch.res_type,
+            batch.atom_mask,
+            batch.res_mask,
+            chain_id=batch.chain_id,
+            res_seq_nums=batch.res_seq_nums,
+            true_coords=x_clean,
+        )
+        if w_bond
+        else _zero_like_loss(x_hat)
     )
-    loss_clash = all_atom_clash_loss(
-        x_hat, batch.valid_mask, batch.res_mask,
-        chain_id=batch.chain_id, max_atoms=max_clash_atoms,
+    loss_clash = (
+        all_atom_clash_loss(
+            x_hat,
+            batch.valid_mask,
+            batch.res_mask,
+            chain_id=batch.chain_id,
+            max_atoms=max_clash_atoms,
+        )
+        if w_clash
+        else _zero_like_loss(x_hat)
     )
-    loss_ca_clash = ca_clash_loss(x_hat, batch.res_mask, chain_id=batch.chain_id)
+    loss_ca_clash = (
+        ca_clash_loss(x_hat, batch.res_mask, chain_id=batch.chain_id)
+        if w_ca_clash
+        else _zero_like_loss(x_hat)
+    )
 
-    dist_logits = out["distogram_logits"].float()
-    contact_logits = out["contact_logits"].float()
-    pcb_dir = out["pcb_dir"].float()
-    conf = out["conf"].float()
-    loss_dist = distogram_loss_ca_only(dist_logits, x_clean_ca, batch.ca_mask)
+    loss_dist = (
+        distogram_loss_ca_only(out["distogram_logits"].float(), x_clean_ca, batch.ca_mask)
+        if w_distogram and "distogram_logits" in out
+        else _zero_like_loss(x_hat)
+    )
     loss_drmsd = drmsd_ca(x_hat_ca, x_clean_ca, batch.ca_mask)
-    loss_contact = contact_loss_ca(contact_logits, x_clean_ca, batch.ca_mask)
-    loss_pcb = pseudo_cb_loss(pcb_dir, x_clean, batch.atom_mask, batch.res_mask)
-    loss_conf = confidence_loss_allatom(conf, x_hat, x_clean, batch.valid_mask, batch.res_mask)
-    loss_angle = ca_virtual_angle_floor(
-        x_hat_ca, batch.ca_mask, batch.chain_id, batch.res_seq_nums, true_ca=x_clean_ca,
+    loss_contact = (
+        contact_loss_ca(out["contact_logits"].float(), x_clean_ca, batch.ca_mask)
+        if w_contact and "contact_logits" in out
+        else _zero_like_loss(x_hat)
     )
-    loss_selfclash = ca_self_clash(x_hat_ca, batch.ca_mask, batch.chain_id)
-    loss_chir = ca_chirality_loss(
-        x_hat_ca, x_clean_ca, batch.ca_mask, batch.chain_id, batch.res_seq_nums,
+    loss_pcb = (
+        pseudo_cb_loss(out["pcb_dir"].float(), x_clean, batch.atom_mask, batch.res_mask)
+        if w_pcb
+        else _zero_like_loss(x_hat)
     )
-    loss_chir_atom = allatom_chirality_loss(
-        x_hat, x_clean, batch.atom_mask, batch.res_mask,
+    loss_conf = (
+        confidence_loss_allatom(
+            out["conf"].float(), x_hat, x_clean, batch.valid_mask, batch.res_mask
+        )
+        if w_conf
+        else _zero_like_loss(x_hat)
+    )
+    loss_angle = (
+        ca_virtual_angle_floor(
+            x_hat_ca,
+            batch.ca_mask,
+            batch.chain_id,
+            batch.res_seq_nums,
+            true_ca=x_clean_ca,
+        )
+        if w_ca_angle
+        else _zero_like_loss(x_hat)
+    )
+    loss_selfclash = (
+        ca_self_clash(x_hat_ca, batch.ca_mask, batch.chain_id)
+        if w_ca_self_clash
+        else _zero_like_loss(x_hat)
+    )
+    loss_chir = (
+        ca_chirality_loss(
+            x_hat_ca,
+            x_clean_ca,
+            batch.ca_mask,
+            batch.chain_id,
+            batch.res_seq_nums,
+        )
+        if w_chirality
+        else _zero_like_loss(x_hat)
+    )
+    loss_chir_atom = (
+        allatom_chirality_loss(
+            x_hat,
+            x_clean,
+            batch.atom_mask,
+            batch.res_mask,
+        )
+        if w_chirality_atom
+        else _zero_like_loss(x_hat)
     )
 
     alpha = _alpha(batch.t, alpha_mode)
@@ -200,32 +269,62 @@ def allatom_forward_and_loss(
     lddt_cutoff: float = 1.5,
     max_lddt_atoms: int = 2048,
     max_clash_atoms: int = 2048,
+    self_condition_prob: float = 0.0,
 ):
     model.train()
     amp_enabled = use_amp and batch.device.type == "cuda"
+    raw_model = getattr(model, "module", model)
+    used_self_cond = False
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
+        if self_condition_prob > 0.0 and getattr(raw_model, "self_conditioning", False):
+            p = max(0.0, min(1.0, float(self_condition_prob)))
+            if torch.rand((), device=batch.device).item() < p:
+                with torch.no_grad():
+                    sc_out = model(batch, return_aux=False)
+                    x_self_cond = _recon_atom(
+                        batch.x_t.float(), batch.t, sc_out["v_atom"].float()
+                    ).detach()
+                batch = replace(batch, x_self_cond=x_self_cond)
+                used_self_cond = True
         out = model(batch, return_aux=True)
 
     loss, metrics = allatom_loss_surface(
-        out, batch, alpha_mode=alpha_mode, w_fm=w_fm,
-        w_lddt_atom=w_lddt_atom, w_lddt_ca=w_lddt_ca,
-        w_bond=w_bond, w_clash=w_clash, w_ca_clash=w_ca_clash,
-        w_distogram=w_distogram, w_drmsd=w_drmsd, w_contact=w_contact,
-        w_pcb=w_pcb, w_conf=w_conf, w_ca_angle=w_ca_angle,
-        w_ca_self_clash=w_ca_self_clash, w_chirality=w_chirality,
+        out,
+        batch,
+        alpha_mode=alpha_mode,
+        w_fm=w_fm,
+        w_lddt_atom=w_lddt_atom,
+        w_lddt_ca=w_lddt_ca,
+        w_bond=w_bond,
+        w_clash=w_clash,
+        w_ca_clash=w_ca_clash,
+        w_distogram=w_distogram,
+        w_drmsd=w_drmsd,
+        w_contact=w_contact,
+        w_pcb=w_pcb,
+        w_conf=w_conf,
+        w_ca_angle=w_ca_angle,
+        w_ca_self_clash=w_ca_self_clash,
+        w_chirality=w_chirality,
         w_chirality_atom=w_chirality_atom,
         lddt_cutoff=lddt_cutoff,
-        max_lddt_atoms=max_lddt_atoms, max_clash_atoms=max_clash_atoms,
+        max_lddt_atoms=max_lddt_atoms,
+        max_clash_atoms=max_clash_atoms,
     )
     metrics["loss"] = loss.item()
     metrics["t_mean"] = batch.t.mean().item()
+    metrics["self_cond"] = 1.0 if used_self_cond else 0.0
     return loss, metrics
 
 
 @torch.no_grad()
 def allatom_eval_step(
-    model, batch: ProteinBatch, use_amp: bool = True, lddt_cutoff: float = 1.5,
-    max_lddt_atoms: int = 2048, max_clash_atoms: int = 2048,
+    model,
+    batch: ProteinBatch,
+    use_amp: bool = True,
+    lddt_cutoff: float = 1.5,
+    max_lddt_atoms: int = 2048,
+    max_clash_atoms: int = 2048,
 ) -> dict:
     model.eval()
     amp_enabled = use_amp and batch.device.type == "cuda"
@@ -235,14 +334,27 @@ def allatom_eval_step(
         v_rms = (out["v_atom"].pow(2).sum() / n_valid / 3).sqrt()
 
     _, metrics = allatom_loss_surface(
-        out, batch, alpha_mode="const", w_fm=1.0,
-        w_lddt_atom=1.0, w_lddt_ca=1.0,
-        w_bond=0.0, w_clash=0.0, w_ca_clash=0.0,
-        w_distogram=0.0, w_drmsd=0.0, w_contact=0.0,
-        w_pcb=0.0, w_conf=0.0, w_ca_angle=0.0,
-        w_ca_self_clash=0.0, w_chirality=0.0, w_chirality_atom=0.0,
+        out,
+        batch,
+        alpha_mode="const",
+        w_fm=1.0,
+        w_lddt_atom=1.0,
+        w_lddt_ca=1.0,
+        w_bond=0.0,
+        w_clash=0.0,
+        w_ca_clash=0.0,
+        w_distogram=0.0,
+        w_drmsd=0.0,
+        w_contact=0.0,
+        w_pcb=0.0,
+        w_conf=0.0,
+        w_ca_angle=0.0,
+        w_ca_self_clash=0.0,
+        w_chirality=0.0,
+        w_chirality_atom=0.0,
         lddt_cutoff=lddt_cutoff,
-        max_lddt_atoms=max_lddt_atoms, max_clash_atoms=max_clash_atoms,
+        max_lddt_atoms=max_lddt_atoms,
+        max_clash_atoms=max_clash_atoms,
     )
     return {
         "fm_atom": metrics["fm_atom"],

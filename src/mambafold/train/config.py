@@ -28,6 +28,12 @@ def parse_args(argv=None):
     parser.add_argument("--max_length", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument(
+        "--loader_timeout",
+        type=float,
+        default=300.0,
+        help="Seconds to wait for a DataLoader worker before failing the run.",
+    )
     parser.add_argument("--copies_per_protein", type=int, default=1)
     parser.add_argument("--single_chain_only", action="store_true", default=False,
                         help="Use only entries with exactly one kept protein chain.")
@@ -51,6 +57,12 @@ def parse_args(argv=None):
                         help="Gradient accumulation: effective batch = "
                              "batch_size × world_size × grad_accum_steps. "
                              "DDP all-reduce is throttled to the last micro-step.")
+    parser.add_argument(
+        "--find_unused_parameters",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable DDP unused-parameter detection for ablations with disabled heads.",
+    )
     parser.add_argument("--crop_schedule", default=None,
                         help="Mixed-crop schedule (optional). YAML list of phases: "
                              "[{until: <step>, weights: {<L>: <prob>, ...}}, ...].")
@@ -94,12 +106,29 @@ def parse_args(argv=None):
     # vs native einsum. Forces mult intermediate c=d_pair (ignores pair_mult_c)
     # and needs d_pair % 32 == 0. Requires cuequivariance-ops-torch-cuXX.
     parser.add_argument("--pair_use_cueq", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--use_pair_stack", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--pairfree_aux_heads",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="When the pair stack is off, build cheap O(L^2) "
+        "distogram/contact heads from residue features.",
+    )
     # Nemotron-style hybrid: make some trunk layers RoPE self-attention.
     # `trunk_attn_layers` = explicit 0-based indices (e.g. [10,11] = last two of
     # 12); `trunk_attn_every` = every k-th layer.
     parser.add_argument("--trunk_attn_layers", type=int, nargs="*", default=None)
     parser.add_argument("--trunk_attn_every", type=int, default=None)
     parser.add_argument("--n_attn_heads", type=int, default=16)
+    parser.add_argument("--trunk_time_film", action=argparse.BooleanOptionalAction, default=False,
+                        help="Inject FM time embedding before every residue trunk block.")
+    parser.add_argument("--trunk_adaln_zero", action=argparse.BooleanOptionalAction, default=False,
+                        help="Use AdaLN-Zero time-conditioned scale/shift/gates inside "
+                             "each residue trunk residual branch.")
+    parser.add_argument("--self_conditioning", action=argparse.BooleanOptionalAction, default=False,
+                        help="Feed a detached x0 estimate back into the coordinate encoder.")
+    parser.add_argument("--self_condition_prob", type=float, default=0.0,
+                        help="Training probability of computing and using self-conditioning.")
     # Weight-tie BiMamba fwd/bwd (one shared SSM both directions) — halves trunk SSM params.
     parser.add_argument("--bimamba_share", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--n_pair_heads", type=int, default=4)

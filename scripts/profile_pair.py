@@ -49,23 +49,32 @@ def main():
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
 
-    print(f"[profile] L={args.L} d_pair={args.d_pair} n_heads={args.n_heads} "
-          f"d_head={args.d_head} mult_c={args.mult_c} "
-          f"n_blocks={args.n_blocks} batch={args.batch} dtype={args.dtype}")
+    print(
+        f"[profile] L={args.L} d_pair={args.d_pair} n_heads={args.n_heads} "
+        f"d_head={args.d_head} mult_c={args.mult_c} "
+        f"n_blocks={args.n_blocks} batch={args.batch} dtype={args.dtype}"
+    )
 
     # Stack of PairBlocks.
-    blocks = torch.nn.ModuleList([
-        PairBlock(d_pair=args.d_pair, n_heads=args.n_heads,
-                  d_head=args.d_head, mult_c=args.mult_c)
-        for _ in range(args.n_blocks)
-    ]).to(device=device, dtype=dtype)
+    blocks = torch.nn.ModuleList(
+        [
+            PairBlock(
+                d_pair=args.d_pair, n_heads=args.n_heads, d_head=args.d_head, mult_c=args.mult_c
+            )
+            for _ in range(args.n_blocks)
+        ]
+    ).to(device=device, dtype=dtype)
     n_params = sum(p.numel() for p in blocks.parameters()) / 1e6
     print(f"[profile] pair stack params: {n_params:.2f}M")
 
     # Build pair + mask
     pair = torch.randn(
-        args.batch, args.L, args.L, args.d_pair,
-        device=device, dtype=dtype,
+        args.batch,
+        args.L,
+        args.L,
+        args.d_pair,
+        device=device,
+        dtype=dtype,
         requires_grad=not args.no_backward,
     )
     mask = torch.ones(args.batch, args.L, args.L, device=device, dtype=torch.bool)
@@ -102,11 +111,15 @@ def main():
 
     print()
     if args.no_backward:
-        print(f"[summary] L={args.L} | params={n_params:.1f}M | "
-              f"peak GB={peak_fwd_gb:.2f} (fwd-only) | fwd ms={t_fwd:.0f}")
+        print(
+            f"[summary] L={args.L} | params={n_params:.1f}M | "
+            f"peak GB={peak_fwd_gb:.2f} (fwd-only) | fwd ms={t_fwd:.0f}"
+        )
     else:
-        print(f"[summary] L={args.L} | params={n_params:.1f}M | "
-              f"peak GB={peak_total_gb:.2f} | fwd+bwd ms={t_fwd + t_bwd:.0f}")
+        print(
+            f"[summary] L={args.L} | params={n_params:.1f}M | "
+            f"peak GB={peak_total_gb:.2f} | fwd+bwd ms={t_fwd + t_bwd:.0f}"
+        )
 
 
 if __name__ == "__main__":

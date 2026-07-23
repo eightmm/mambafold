@@ -48,7 +48,7 @@ def parse_cif(cif_text: str):
     return parser.get_structure("prot", StringIO(cif_text))
 
 
-def convert(structure, pdb_id: str) -> dict:
+def convert(structure, pdb_id: str, verbose: bool = True) -> dict:
     """Convert BioPython Structure to Boltz npz arrays.
 
     Only uses the first model and protein chains (standard amino acids).
@@ -124,8 +124,9 @@ def convert(structure, pdb_id: str) -> dict:
 
     # Count observed atoms
     obs = atoms["is_present"].sum()
-    print(f"  Chains: {len(chains)}  Residues: {len(residues)}  "
-          f"Atoms: {len(atoms)} ({obs} observed, {obs/len(atoms)*100:.1f}%)")
+    if verbose:
+        print(f"  Chains: {len(chains)}  Residues: {len(residues)}  "
+              f"Atoms: {len(atoms)} ({obs} observed, {obs/len(atoms)*100:.1f}%)")
 
     return dict(
         residues=residues,

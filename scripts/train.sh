@@ -25,8 +25,25 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# ── W&B auth (shared Linux account; per-user netrc lives in jaemin workspace) ─
-export NETRC=${NETRC:-/NHNHOME/WORKSPACE/0526040024_A/jaemin/.netrc}
+# Mamba-3 uses TileLang kernels and does not require the legacy Mamba-1
+# selective-scan extension.  Skip that extension when uv has to synchronize a
+# fresh environment, then point TileLang at the pinned CUDA 13 compiler wheels.
+export MAMBA_SKIP_CUDA_BUILD="${MAMBA_SKIP_CUDA_BUILD:-TRUE}"
+if [[ ! -x .venv/bin/python ]]; then
+    echo "Missing .venv; run MAMBA_SKIP_CUDA_BUILD=TRUE uv sync --extra dev first." >&2
+    exit 2
+fi
+if [[ -z "${CUDA_HOME:-}" ]]; then
+    CUDA_HOME="$(.venv/bin/python -c 'from tilelang.env import CUDA_HOME; print(CUDA_HOME)')"
+fi
+export CUDA_HOME
+export PATH="$CUDA_HOME/bin:$PATH"
+export CPLUS_INCLUDE_PATH="$CUDA_HOME/include/cccl:$CUDA_HOME/include${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}"
+
+# ── W&B auth ─────────────────────────────────────────────────────────────────
+# Use the submitting user's current home instead of a machine-specific legacy
+# workspace path. Callers can still override NETRC explicitly.
+export NETRC="${NETRC:-$HOME/.netrc}"
 
 # ── GPU selection ─────────────────────────────────────────────────────────────
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
@@ -54,11 +71,11 @@ echo "Config   : $CONFIG"
 echo "Out dir  : $OUT_DIR"
 echo "GPUs     : ${CUDA_VISIBLE_DEVICES:-all (${N_GPU})}"
 echo "Resume   : ${RESUME:-none}"
-uv run python -c "import torch; print(f'torch={torch.__version__}, cuda={torch.version.cuda}, n_gpu={torch.cuda.device_count()}')"
+uv run --no-sync python -c "import torch; print(f'torch={torch.__version__}, cuda={torch.version.cuda}, n_gpu={torch.cuda.device_count()}')"
 nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv,noheader
 echo "=========================="
 
-PYTHONPATH=src PYTHONUNBUFFERED=1 exec uv run torchrun \
+PYTHONPATH=src PYTHONUNBUFFERED=1 exec uv run --no-sync torchrun \
     --nproc_per_node="$N_GPU" \
     --master_port="$MASTER_PORT" \
     scripts/train.py \

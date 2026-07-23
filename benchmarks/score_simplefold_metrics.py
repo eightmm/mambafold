@@ -24,7 +24,6 @@ from typing import Any
 
 import numpy as np
 
-
 THRESHOLDS_LDDT = (0.5, 1.0, 2.0, 4.0)
 THRESHOLDS_GDT = (1.0, 2.0, 4.0, 8.0)
 

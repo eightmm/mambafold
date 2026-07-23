@@ -3,6 +3,7 @@
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,13 +15,16 @@ from mambafold.data.types import ProteinBatch
 from mambafold.model.bimamba3 import BiMamba3Block, Mamba3Block, Mamba3Layer
 from mambafold.model.fold import MambaFoldAllAtom
 
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Mamba-3 kernels require a CUDA device"
+)
+
 
 def test_mamba3_layer_shape_and_mask():
     # d_model * expand must be divisible by headdim (default 64 in Mamba3Layer).
     layer = Mamba3Layer(d_model=64, d_state=16, mimo_rank=2).cuda()
     x = torch.randn(2, 5, 64, device="cuda")
-    mask = torch.tensor([[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]],
-                        dtype=torch.bool, device="cuda")
+    mask = torch.tensor([[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]], dtype=torch.bool, device="cuda")
 
     y = layer(x, mask)
 
@@ -30,8 +34,7 @@ def test_mamba3_layer_shape_and_mask():
 
 def test_causal_and_bidirectional_blocks_run():
     x = torch.randn(2, 6, 64, device="cuda")
-    mask = torch.tensor([[1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 1]],
-                        dtype=torch.bool, device="cuda")
+    mask = torch.tensor([[1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 1]], dtype=torch.bool, device="cuda")
 
     causal = Mamba3Block(d_model=64, d_state=16, mimo_rank=2).cuda()
     bidir = BiMamba3Block(d_model=64, d_state=16, mimo_rank=2).cuda()

@@ -27,7 +27,9 @@ def ca_lddt(pred_ca: np.ndarray, true_ca: np.ndarray, cutoff: float = 15.0) -> f
     if not pair.any():
         return float("nan")
     diff = np.abs(dp - dt)
-    return float(np.mean([((diff < thr) & pair).sum() / pair.sum() for thr in (0.5, 1.0, 2.0, 4.0)]))
+    return float(
+        np.mean([((diff < thr) & pair).sum() / pair.sum() for thr in (0.5, 1.0, 2.0, 4.0)])
+    )
 
 
 def aa_rmsd(pred: np.ndarray, true: np.ndarray) -> float:
@@ -47,7 +49,9 @@ def parse_pdb(path: Path) -> dict:
         atom_name = line[12:16].strip()
         chain = line[21]
         res_seq = int(line[22:26])
-        x = float(line[30:38]); y = float(line[38:46]); z = float(line[46:54])
+        x = float(line[30:38])
+        y = float(line[38:46])
+        z = float(line[46:54])
         all_atoms.append((x, y, z))
         key = (chain, res_seq)
         if atom_name == "CA" and key not in seen_res:
@@ -55,7 +59,9 @@ def parse_pdb(path: Path) -> dict:
             seen_res.add(key)
     return {
         "ca": np.asarray(ca, dtype=np.float32) if ca else np.empty((0, 3), np.float32),
-        "all": np.asarray(all_atoms, dtype=np.float32) if all_atoms else np.empty((0, 3), np.float32),
+        "all": np.asarray(all_atoms, dtype=np.float32)
+        if all_atoms
+        else np.empty((0, 3), np.float32),
     }
 
 

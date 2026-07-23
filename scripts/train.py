@@ -34,7 +34,10 @@ from mambafold.train.crop_schedule import pick_crop_length
 from mambafold.train.distributed import (
     GPUMonitor,
     all_reduce_mean,
+    any_rank_true,
+    distributed_max_int,
     enable_cuda_perf_flags,
+    resolve_dataloader_workers,
     setup_dist,
 )
 from mambafold.train.ema import EMA
@@ -58,8 +61,20 @@ def main():
     args, _ = parse_args()
     enable_cuda_perf_flags()
 
+    requested_workers = args.num_workers
+    args.num_workers, allocated_cpus, cpu_source = resolve_dataloader_workers(
+        requested_workers, world_size
+    )
+    args.requested_num_workers = requested_workers
+
     if is_main:
         print(f"Config: {args.config}")
+        print(
+            "DataLoader workers: "
+            f"requested={requested_workers}/rank effective={args.num_workers}/rank "
+            f"available_cpus={allocated_cpus} source={cpu_source}",
+            flush=True,
+        )
 
     # ── output dir ───────────────────────────────────────────────────────────
     out_dir = Path(args.out_dir)
@@ -87,7 +102,7 @@ def main():
             model,
             device_ids=[int(device.split(":")[-1])],
             broadcast_buffers=False,
-            find_unused_parameters=False,
+            find_unused_parameters=args.find_unused_parameters,
             gradient_as_bucket_view=True,
             # NOTE: static_graph=True is incompatible with the grad-accum
             # `model.no_sync()` path below (triggers reducer.cpp
@@ -98,6 +113,17 @@ def main():
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     if is_main:
         print(f"Model: {n_params:.2f}M params")
+        raw_model = model.module if is_dist else model
+        trunk = getattr(raw_model, "residue_trunk", None)
+        print(
+            "Architecture: "
+            f"attn_idx={getattr(trunk, 'attn_idx', [])} "
+            f"self_conditioning={getattr(raw_model, 'self_conditioning', False)} "
+            f"self_condition_prob={getattr(args, 'self_condition_prob', 0.0)} "
+            f"use_pair_stack={getattr(raw_model, 'use_pair_stack', False)} "
+            f"pairfree_aux_heads={getattr(raw_model, 'pairfree_aux_heads', False)}",
+            flush=True,
+        )
 
     # Only optimize trainable params.
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -121,13 +147,22 @@ def main():
         missing, unexpected = raw_model.load_state_dict(ckpt["model"], strict=False)
         ema_missing, ema_unexpected = ema.load_state_dict(ckpt["ema"], strict=False)
         if is_main and (missing or unexpected):
-            print(f"  [resume] model missing={len(missing)} unexpected={len(unexpected)}", flush=True)
+            print(
+                f"  [resume] model missing={len(missing)} "
+                f"unexpected={len(unexpected)}",
+                flush=True,
+            )
             if missing:
                 print(f"    missing: {missing[:5]}{'...' if len(missing) > 5 else ''}", flush=True)
             if unexpected:
-                print(f"    unexpected: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}", flush=True)
+                suffix = "..." if len(unexpected) > 5 else ""
+                print(f"    unexpected: {unexpected[:5]}{suffix}", flush=True)
         if is_main and (ema_missing or ema_unexpected):
-            print(f"  [resume] ema missing={len(ema_missing)} unexpected={len(ema_unexpected)}", flush=True)
+            print(
+                f"  [resume] ema missing={len(ema_missing)} "
+                f"unexpected={len(ema_unexpected)}",
+                flush=True,
+            )
         if args.reset_optimizer:
             # Keep weights+EMA, fresh optimizer/scheduler with current args
             # (lr, warmup, total_steps).
@@ -176,10 +211,22 @@ def main():
                 except StopIteration:
                     loader_iter = iter(inf_loader(loader, sampler))
                     batch = next(loader_iter)
-                if batch is None:
+                missing_batch = batch is None
+                if is_dist:
+                    # A single invalid local batch must make every rank skip
+                    # before any rank enters a shape or gradient collective.
+                    missing_batch = any_rank_true(missing_batch, device)
+                if missing_batch:
                     oom = True
                     break
-                batch = batch.to(torch.device(device)).truncate_length(target_L)
+                batch = batch.truncate_length(target_L)
+                if is_dist:
+                    # TileLang kernels specialize on sequence length. Keep all
+                    # ranks on the same shape so JIT compilation cannot strand
+                    # faster ranks inside a DDP all-reduce.
+                    global_L = distributed_max_int(batch.max_len, device)
+                    batch = batch.pad_to_length(global_L)
+                batch = batch.to(torch.device(device))
 
                 is_last = (micro_idx == grad_accum - 1)
                 # Skip DDP all-reduce on intermediate micro-steps; final micro
@@ -208,12 +255,22 @@ def main():
                             w_chirality_atom=getattr(args, "w_chirality_atom", 0.5),
                             max_lddt_atoms=getattr(args, "max_lddt_atoms", 2048),
                             max_clash_atoms=getattr(args, "max_clash_atoms", 2048),
+                            self_condition_prob=getattr(args, "self_condition_prob", 0.0),
                         )
-                        if not torch.isfinite(loss):
+                        nonfinite = not bool(torch.isfinite(loss).item())
+                        if is_dist:
+                            nonfinite = any_rank_true(nonfinite, device)
+                        if nonfinite:
                             oom = True
                             break
                         (loss / grad_accum).backward()
-                except torch.cuda.OutOfMemoryError:
+                except torch.cuda.OutOfMemoryError as exc:
+                    if is_dist:
+                        raise RuntimeError(
+                            f"rank {rank} CUDA OOM at step={step} "
+                            f"micro_step={micro_idx} target_L={target_L}; "
+                            "failing the DDP run instead of desynchronizing ranks"
+                        ) from exc
                     oom = True
                     torch.cuda.empty_cache()
                     break
@@ -305,6 +362,8 @@ def main():
             gpu_monitor.stop()
 
     # ── final ────────────────────────────────────────────────────────────────
+    if is_dist:
+        dist.barrier()
     if is_main:
         save_checkpoint(out_dir, step, model, ema, optimizer, scheduler, args)
         if wandb.run is not None:
@@ -312,7 +371,8 @@ def main():
         print(f"\nDone. Total steps: {step}")
 
     if is_dist:
-        torch.distributed.destroy_process_group()
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
