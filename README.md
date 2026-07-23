@@ -11,13 +11,29 @@ different widths and their checkpoints are not interchangeable.
 
 | Track | Status | Conditioning | Config | Published evaluation |
 | --- | --- | --- | --- | --- |
-| **ESM3 legacy** | frozen, reproducible baseline | ESM3-open, 1536-d embeddings | `configs/direct_allatom_puremamba_attn6_geo_adaln_sf360.yaml` | [CASP14 70-target report](docs/models/esm3-legacy.md) |
+| **ESM3** | **frozen inference/evaluation project** | ESM3-open, 1536-d embeddings | `projects/esm3/` | [CASP14 70-target report](projects/esm3/README.md) |
 | **ESMC-6B** | active next-generation training path | pinned sequence-only ESMC-6B, 2560-d embeddings | `configs/direct_allatom_puremamba_attn6_geo_adaln_sf360_esmc6b.yaml` | no completed training checkpoint yet |
 
-The ESM3 result is retained as a historical baseline.  It must not be resumed
-with the ESMC configuration: the PLM projection is shape-incompatible.  Model
-weights and processed datasets are intentionally not committed to Git; see the
-model-track documents for provenance and reproduction requirements.
+The ESM3 result is a frozen historical project: no additional ESM3 training,
+fine-tuning, architecture changes, or result replacement is permitted. Its
+release manifest pins the exact checkpoint hash, saved training configuration,
+and CASP14 protocol. It must not be resumed with the ESMC configuration: the
+PLM projection is shape-incompatible. Model weights and processed datasets are
+intentionally not committed to Git; see the project package for provenance and
+reproduction requirements.
+
+## Frozen ESM3 project
+
+The ESM3 project is inference/evaluation only. Start with its artifact check:
+
+```bash
+python projects/esm3/verify_artifact.py \
+  --checkpoint /path/to/ckpt_0120000.pt
+```
+
+Then use [`projects/esm3/run_casp14.sh`](projects/esm3/run_casp14.sh) with
+explicit checkpoint, CASP14 `.npz`, and ESM3 embedding locations. The immutable
+release is identified by Git tag `esm3-v1.0.0`.
 
 ## Active Path
 

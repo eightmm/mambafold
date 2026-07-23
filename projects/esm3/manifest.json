@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "project_id": "mambafold-esm3-v1.0.0",
+  "status": "frozen_inference_evaluation_only",
+  "source_tag": "esm3-v1.0.0",
+  "checkpoint": {
+    "filename": "ckpt_0120000.pt",
+    "step": 120000,
+    "use_ema": true,
+    "parameter_count_millions": 422.4,
+    "bytes": 6751408501,
+    "sha256": "b7841d030706fe193418d88959c5772cb665d10cb321db978e68809aaa7de385"
+  },
+  "conditioning": {
+    "model": "esm3-open",
+    "embedding_dimensions": 1536,
+    "cache_layout": "legacy occurrence-addressed <npz_stem>_ch<origin_chain>.npy"
+  },
+  "input_contract": {
+    "single_chain_only": true,
+    "standard_amino_acids_only": true,
+    "max_length": 1024,
+    "unsupported": ["multimers", "ligands", "nucleic_acids", "metals", "cofactors", "water", "ptms"]
+  },
+  "evaluation": {
+    "benchmark": "CASP14 70 whole targets",
+    "target_count": 70,
+    "excluded_target": "T1044 (>1000 residues)",
+    "source_tar_sha256": "75592af0778e0814cb8c2e0666980066b1f851407d759ad96da32744ad16a9b8",
+    "sampler": "sde",
+    "n_steps": 500,
+    "seed_offset": 0,
+    "sde_tau": 0.01,
+    "sde_eps": 0.01,
+    "sde_w_cutoff": 0.99,
+    "sde_log_timesteps": true,
+    "scorer": {
+      "name": "OpenStructure compare-structures",
+      "version": "2.9.1",
+      "command": "ost compare-structures -m MODEL_FILE -r REFERENCE_FILE -o OUTPUT_FILE --fault-tolerant --min-pep-length 4 --lddt --bb-lddt --rigid-scores --tm-score"
+    }
+  },
+  "metrics": {
+    "gdt_ts": {"mean": 0.6697285714285715, "median": 0.697},
+    "gdt_ha": {"mean": 0.5323714285714285, "median": 0.5165},
+    "tm_score": {"mean": 0.7566571428571429, "median": 0.843},
+    "lddt": {"mean": 0.6573857142857144, "median": 0.7325},
+    "bb_lddt": {"mean": 0.7634142857142857, "median": 0.8475},
+    "rmsd_angstrom": {"mean": 6.276457142857143, "median": 3.258}
+  },
+  "training_provenance": {
+    "hardware": "4 x NVIDIA B200",
+    "saved_config": "projects/esm3/training_config.json",
+    "training_source_commit": null,
+    "note": "The training-source commit was not recorded with the historical checkpoint. This release freezes compatible inference/evaluation source and does not claim bitwise training reproduction."
+  }
+}

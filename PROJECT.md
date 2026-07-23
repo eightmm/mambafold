@@ -18,6 +18,10 @@
   4x NVIDIA B200, while the new ESMC-6B mainline targets 4x RTX 6000 Ada. W&B
   is used for tracking and Boltz-style processed RCSB data for comparability.
 - Scope: single-chain proteins, standard amino acids, L <= 1024 active training. MSA-free / PLM-conditioned path using pinned sequence-only ESMC-6B embeddings; legacy ESM3 caches/checkpoints remain reproducible but are not the next training path.
+- Frozen ESM3 project: `projects/esm3/` is inference/evaluation only and is
+  released under immutable Git tag `esm3-v1.0.0`. No ESM3 continued training,
+  fine-tuning, architectural changes, or replacement of its recorded CASP14
+  result is permitted; a future change requires a new project ID and tag.
 - Non-goals: multimer/interface prediction, ligands, nucleic acids, metals, cofactors, water, non-standard residues/PTMs, EqM.
 
 ## Architecture
@@ -211,6 +215,12 @@ Papers whose ideas are used, and where in the code.
 - destructive git operations
 
 ## Open Decisions
+
+- Resolved (2026-07-23): the completed ESM3 model is a frozen standalone
+  project (`projects/esm3/`), with checkpoint SHA-256, exact saved config,
+  CASP14/OpenStructure contract, artifact verifier, and inference-only entry
+  point. It is versioned as `esm3-v1.0.0` and will not receive additional
+  training or result changes.
 
 - Resolved (2026-07-15): PLM cache identity is the full canonical amino-acid
   sequence, not the PDB/chain occurrence. Storage uses deterministic SHA-256
