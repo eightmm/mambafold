@@ -1,9 +1,10 @@
-# MambaFold ESM3 v1.0.0
+# MambaFold ESM3 frozen project
 
 **Status: frozen.** This is the complete ESM3-conditioned MambaFold project.
 It is limited to inference and evaluation of the retained checkpoint; it does
 not accept continued training, fine-tuning, architectural changes, or metric
-replacement. The immutable source identifier is Git tag `esm3-v1.0.0`.
+replacement. The current immutable interface release is Git tag `esm3-v1.1.0`.
+The model artifact itself remains the same step-120,000 EMA checkpoint.
 
 ## What is frozen
 
@@ -51,6 +52,27 @@ python projects/esm3/verify_artifact.py \
 ```
 
 The verifier requires the SHA-256 in the manifest and fails on a mismatch.
+
+## Predict from your own FASTA
+
+For sequence-only use, provide a single-chain FASTA file. Each record must use
+only the 20 standard amino-acid letters and have a length from 10 to 1,024.
+The script computes ESM3-open embeddings, samples an all-atom structure, and
+writes one `<fasta_id>.pdb` per record. The PDB B-factor column contains the
+model's predicted pLDDT on a 0–100 scale.
+
+```bash
+PYTHONPATH=src python projects/esm3/predict_fasta.py \
+  --fasta projects/esm3/examples/example.fasta \
+  --checkpoint /path/to/ckpt_0120000.pt \
+  --out predictions/example \
+  --n_steps 50 --seed 0
+```
+
+`--n_steps 50` is a practical default for exploratory predictions. The recorded
+CASP14 result uses the separate fixed evaluation contract with 500 SDE steps.
+FASTA inference does not write a ground-truth PDB and must not be scored as a
+CASP14 result without the frozen benchmark inputs and OpenStructure protocol.
 
 ## Reproduce the recorded inference contract
 

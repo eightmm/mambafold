@@ -1,8 +1,9 @@
 {
   "schema_version": 1,
-  "project_id": "mambafold-esm3-v1.0.0",
+  "project_id": "mambafold-esm3",
   "status": "frozen_inference_evaluation_only",
-  "source_tag": "esm3-v1.0.0",
+  "source_tag": "esm3-v1.1.0",
+  "model_artifact_id": "esm3-checkpoint-120k-ema-v1",
   "checkpoint": {
     "filename": "ckpt_0120000.pt",
     "step": 120000,

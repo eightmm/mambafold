@@ -7,7 +7,7 @@ inference entrypoint.
 
 | Project | Status | Purpose |
 | --- | --- | --- |
-| [`esm3/`](esm3/) | frozen at `esm3-v1.0.0` | Completed ESM3-conditioned MambaFold checkpoint and CASP14 evaluation |
+| [`esm3/`](esm3/) | frozen at `esm3-v1.1.0` | Completed ESM3-conditioned MambaFold checkpoint and CASP14 evaluation |
 | `esmc6b/` | reserved | Future ESMC-6B project; do not create it until a completed checkpoint and frozen evaluation record exist |
 
 Do not add training experiments, new checkpoints, or changed metric results to

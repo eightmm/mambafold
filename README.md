@@ -32,8 +32,8 @@ python projects/esm3/verify_artifact.py \
 ```
 
 Then use [`projects/esm3/run_casp14.sh`](projects/esm3/run_casp14.sh) with
-explicit checkpoint, CASP14 `.npz`, and ESM3 embedding locations. The immutable
-release is identified by Git tag `esm3-v1.0.0`.
+explicit checkpoint, CASP14 `.npz`, and ESM3 embedding locations. The current
+immutable interface release is identified by Git tag `esm3-v1.1.0`.
 
 ## Active Path
 

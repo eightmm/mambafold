@@ -16,6 +16,13 @@ outputs/
 .ruff_cache/
 .cache/
 
+# Local agent/project operating notes (kept locally, never published)
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+HANDOFF.md
+PROJECT.md
+
 # Heavy data (not pushed to git)
 data/rcsb
 data/rcsb_esm/
