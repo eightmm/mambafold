@@ -7,7 +7,7 @@ model tracks:
 | Track | Status | What is available |
 | --- | --- | --- |
 | **ESM3** | frozen | Verified 422.4M-parameter checkpoint, FASTA inference, and CASP14 evaluation record |
-| **ESMC-6B** | research track | Training/data-preparation code; no completed checkpoint or reported benchmark |
+| **ESMC-6B** | active research track | 404.9M-parameter training run and interim step-88,500 CASP14 result |
 
 ## Use the frozen ESM3 model
 
@@ -64,20 +64,30 @@ single-chain targets with SDE (500 steps, seed 0) and OpenStructure 2.9.1.
 
 The table below uses mean CASP14 values under the common 70-target,
 500-step SDE, OpenStructure 2.9.1 reporting contract. SimpleFold aggregates
-are from the [SimpleFold paper](https://arxiv.org/abs/2509.18480); MambaFold is
-the frozen local OpenStructure result.
+are from the [SimpleFold paper](https://arxiv.org/abs/2509.18480). The ESM3 row
+is frozen; the ESMC-6B row is an interim checkpoint and is not a model release.
 
 | Model | Parameters | GDT-TS ↑ | TM-score ↑ | all-atom lDDT ↑ | backbone lDDT ↑ | RMSD (Å) ↓ |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | SimpleFold-360M | 360M | 0.585 | 0.674 | 0.617 | 0.703 | 9.382 |
 | SimpleFold-3B | 2.86B | 0.639 | 0.720 | **0.666** | 0.747 | 7.732 |
+| MambaFold-ESMC-6B, step 88,500 | 404.9M | 0.629 | 0.718 | 0.612 | 0.738 | 7.275 |
 | **MambaFold-ESM3** | **422.4M** | **0.670** | **0.757** | 0.657 | **0.763** | **6.276** |
 
-Against the size-matched SimpleFold-360M, MambaFold improves mean GDT-TS by
-0.085, TM-score by 0.083, all-atom lDDT by 0.040, and backbone lDDT by 0.060,
+Against the size-matched SimpleFold-360M, the frozen ESM3 model improves mean
+GDT-TS by 0.085, TM-score by 0.083, all-atom lDDT by 0.040, and backbone lDDT
+by 0.060,
 while reducing mean RMSD by 3.106 Å. Against SimpleFold-3B it is higher on
 GDT-TS, TM-score, backbone lDDT, and RMSD, but lower by 0.009 all-atom lDDT.
 These are aggregate comparisons, not a paired significance test.
+
+The interim ESMC-6B model is already above SimpleFold-360M in GDT-TS
+(+0.044), TM-score (+0.044), and backbone lDDT (+0.035), and lowers RMSD by
+2.107 Å. Its all-atom lDDT is 0.005 lower. It is close to SimpleFold-3B in
+global fold metrics at substantially smaller model size, but remains below it
+in local all-atom quality. ESMC-6B sequence pretraining postdates CASP14, so
+this row is a retrospective architecture benchmark rather than a temporally
+clean blind-test claim.
 
 The full artifact identity, evaluation protocol, and CASP14 reproduction entry
 point are in [projects/esm3](projects/esm3/README.md). FASTA predictions are
@@ -107,8 +117,11 @@ tests/             focused correctness checks
 
 The ESMC-6B path is checkpoint-incompatible with ESM3 (2,560-dimensional
 sequence-only embeddings versus 1,536-dimensional ESM3 embeddings). It is
-reserved for new from-scratch training and must never resume the frozen ESM3
-checkpoint. Its status and data contract are documented in
+trained from scratch and must never resume the frozen ESM3 checkpoint. As of
+the 2026-08-12 snapshot, the active 8-GPU run has a step-111,500 checkpoint on
+the way to 170,000 steps; the newest complete CASP14 evaluation remains the
+step-88,500 EMA result above. Its detailed status, 50k→88.5k progression, and
+reporting limits are documented in
 [docs/models/esmc6b.md](docs/models/esmc6b.md).
 
 ## License and model artifacts

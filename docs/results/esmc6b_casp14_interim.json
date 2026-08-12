@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "status": "interim_research_result",
+  "snapshot_date": "2026-08-12",
+  "model": {
+    "name": "MambaFold-ESMC-6B",
+    "parameter_count": 404860000,
+    "conditioning": "biohub/ESMC-6B sequence embeddings",
+    "conditioning_revision": "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a",
+    "embedding_dimensions": 2560,
+    "latest_retained_checkpoint_step": 111500,
+    "planned_training_steps": 170000,
+    "latest_fully_evaluated_step": 88500
+  },
+  "evaluation": {
+    "benchmark": "CASP14 70 whole-chain targets",
+    "target_count": 70,
+    "success_count": 70,
+    "excluded_target": "T1044 (>1024 residues)",
+    "use_ema": true,
+    "sampler": "sde",
+    "n_steps": 500,
+    "seed": 0,
+    "sde_tau": 0.01,
+    "sde_eps": 0.01,
+    "sde_w_cutoff": 0.99,
+    "sde_log_timesteps": true,
+    "source_tar_sha256": "75592af0778e0814cb8c2e0666980066b1f851407d759ad96da32744ad16a9b8",
+    "scorer": {
+      "name": "OpenStructure compare-structures",
+      "version": "2.9.1",
+      "options": "--fault-tolerant --min-pep-length 4 --lddt --bb-lddt --rigid-scores --tm-score"
+    }
+  },
+  "checkpoints": [
+    {
+      "step": 50000,
+      "metrics_mean": {
+        "gdt_ts": 0.5963142857142857,
+        "gdt_ha": 0.458,
+        "tm_score": 0.6865857142857142,
+        "lddt": 0.5765571428571429,
+        "bb_lddt": 0.7186714285714286,
+        "rmsd_angstrom": 8.178042857142856
+      }
+    },
+    {
+      "step": 88500,
+      "metrics_mean": {
+        "gdt_ts": 0.6289285714285714,
+        "gdt_ha": 0.4872714285714286,
+        "tm_score": 0.7178571428571429,
+        "lddt": 0.6122142857142857,
+        "bb_lddt": 0.7381714285714285,
+        "rmsd_angstrom": 7.274571428571429
+      }
+    }
+  ],
+  "limitations": [
+    "Training is still in progress and no ESMC-6B checkpoint is released.",
+    "The latest retained checkpoint has not received this full evaluation.",
+    "ESMC-6B pretraining postdates CASP14; this is not a temporally clean blind test."
+  ]
+}
