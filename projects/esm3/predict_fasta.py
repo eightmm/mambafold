@@ -170,6 +170,65 @@ def write_pdb(
     path.write_text("".join(lines))
 
 
+def write_cif(
+    coords: np.ndarray,
+    example: ProteinExample,
+    confidence: np.ndarray,
+    path: Path,
+    entry_id: str,
+) -> None:
+    """Write one all-atom single-chain mmCIF with predicted pLDDT B-factors."""
+    block_id = SAFE_ID.sub("_", entry_id).strip("._") or "prediction"
+    lines = [
+        f"data_{block_id}\n",
+        "#\n",
+        f"_entry.id {block_id}\n",
+        "#\n",
+        "loop_\n",
+        "_atom_site.group_PDB\n",
+        "_atom_site.id\n",
+        "_atom_site.type_symbol\n",
+        "_atom_site.label_atom_id\n",
+        "_atom_site.label_alt_id\n",
+        "_atom_site.label_comp_id\n",
+        "_atom_site.label_asym_id\n",
+        "_atom_site.label_entity_id\n",
+        "_atom_site.label_seq_id\n",
+        "_atom_site.pdbx_PDB_ins_code\n",
+        "_atom_site.Cartn_x\n",
+        "_atom_site.Cartn_y\n",
+        "_atom_site.Cartn_z\n",
+        "_atom_site.occupancy\n",
+        "_atom_site.B_iso_or_equiv\n",
+        "_atom_site.pdbx_formal_charge\n",
+        "_atom_site.auth_seq_id\n",
+        "_atom_site.auth_comp_id\n",
+        "_atom_site.auth_asym_id\n",
+        "_atom_site.auth_atom_id\n",
+        "_atom_site.pdbx_PDB_model_num\n",
+    ]
+    serial = 1
+    for residue_index, res_id in enumerate(example.res_type.tolist(), start=1):
+        residue = next(name for name, value in AA_TO_ID.items() if value == res_id)
+        b_factor = max(
+            0.0,
+            min(100.0, float(confidence[residue_index - 1]) * 100.0),
+        )
+        for slot, atom_name in enumerate(RESIDUE_ATOMS[residue]):
+            if not example.atom_mask[residue_index - 1, slot]:
+                continue
+            x, y, z = (float(v) for v in coords[residue_index - 1, slot])
+            element = atom_name[0]
+            lines.append(
+                f"ATOM {serial} {element} {atom_name} . {residue} A 1 "
+                f"{residue_index} ? {x:.3f} {y:.3f} {z:.3f} 1.00 "
+                f"{b_factor:.2f} ? {residue_index} {residue} A {atom_name} 1\n"
+            )
+            serial += 1
+    lines.append("#\n")
+    path.write_text("".join(lines))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fasta", type=Path, required=True, help="single-chain protein FASTA")
@@ -180,6 +239,12 @@ def main() -> None:
     parser.add_argument("--device", default="cuda", choices=("cuda",))
     parser.add_argument("--n_steps", type=int, default=50, help="SDE integration steps")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--output-format",
+        choices=("pdb", "cif", "both"),
+        default="both",
+        help="structure file format; mmCIF uses the .cif extension (default: both)",
+    )
     args = parser.parse_args()
 
     if args.n_steps < 1:
@@ -216,10 +281,20 @@ def main() -> None:
                 sde_w_cutoff=0.99,
                 sde_log_timesteps=True,
             )
-        output_path = args.out / f"{name}.pdb"
-        write_pdb(coords, example, confidence, output_path)
-        output_rows.append({"id": name, "length": len(sequence), "pdb": output_path.name})
-        print(f"[{index}/{len(records)}] {name} L={len(sequence)} -> {output_path}")
+        outputs = {}
+        if args.output_format in ("pdb", "both"):
+            output_path = args.out / f"{name}.pdb"
+            write_pdb(coords, example, confidence, output_path)
+            outputs["pdb"] = output_path.name
+        if args.output_format in ("cif", "both"):
+            output_path = args.out / f"{name}.cif"
+            write_cif(coords, example, confidence, output_path, name)
+            outputs["cif"] = output_path.name
+        output_rows.append({"id": name, "length": len(sequence), **outputs})
+        print(
+            f"[{index}/{len(records)}] {name} L={len(sequence)} -> "
+            f"{', '.join(outputs.values())}"
+        )
 
     (args.out / "manifest.json").write_text(
         json.dumps(
@@ -230,6 +305,7 @@ def main() -> None:
                 "sampler": "sde",
                 "n_steps": args.n_steps,
                 "seed": args.seed,
+                "output_format": args.output_format,
                 "records": output_rows,
             },
             indent=2,

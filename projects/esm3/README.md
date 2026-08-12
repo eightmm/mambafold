@@ -58,16 +58,20 @@ The verifier requires the SHA-256 in the manifest and fails on a mismatch.
 For sequence-only use, provide a single-chain FASTA file. Each record must use
 only the 20 standard amino-acid letters and have a length from 10 to 1,024.
 The script computes ESM3-open embeddings, samples an all-atom structure, and
-writes one `<fasta_id>.pdb` per record. The PDB B-factor column contains the
-model's predicted pLDDT on a 0–100 scale.
+writes `<fasta_id>.pdb`, `<fasta_id>.cif`, or both per record. Both formats
+store the model's predicted pLDDT in B-factors on a 0–100 scale.
 
 ```bash
 PYTHONPATH=src python projects/esm3/predict_fasta.py \
   --fasta projects/esm3/examples/example.fasta \
   --checkpoint /path/to/ckpt_0120000.pt \
   --out predictions/example \
-  --n_steps 50 --seed 0
+  --output-format both --n_steps 50 --seed 0
 ```
+
+`--output-format` accepts `pdb`, `cif`, or `both` and defaults to `both`.
+The repository's fixed external benchmark inputs are available under
+[`benchmarks/external_testsets`](../../benchmarks/external_testsets/README.md).
 
 `--n_steps 50` is a practical default for exploratory predictions. The recorded
 CASP14 result uses the separate fixed evaluation contract with 500 SDE steps.

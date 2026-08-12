@@ -37,13 +37,15 @@ CASP14 result are fixed. The current interface release is
      --fasta projects/esm3/examples/example.fasta \
      --checkpoint /path/to/ckpt_0120000.pt \
      --out predictions/example \
-     --n_steps 50 --seed 0
+     --output-format both --n_steps 50 --seed 0
    ```
 
-The output directory contains one PDB per FASTA record and a prediction
-manifest. PDB B-factors store predicted pLDDT on a 0–100 scale. Inputs must
-use the 20 standard amino-acid letters and have length 10–1,024; multimers,
-ligands, nucleic acids, metals, cofactors, waters, and PTMs are out of scope.
+The output directory contains PDB and mmCIF (`.cif`) structures plus a
+prediction manifest. Select `pdb`, `cif`, or `both` with `--output-format`.
+Both structure formats store predicted pLDDT as B-factors on a 0–100 scale.
+Inputs must use the 20 standard amino-acid letters and have length 10–1,024;
+multimers, ligands, nucleic acids, metals, cofactors, waters, and PTMs are out
+of scope.
 
 ## ESM3 result
 
@@ -58,9 +60,37 @@ single-chain targets with SDE (500 steps, seed 0) and OpenStructure 2.9.1.
 | backbone lDDT | 0.763 | 0.847 |
 | RMSD (Å; lower is better) | 6.276 | 3.258 |
 
+### Comparison with SimpleFold
+
+The table below uses mean CASP14 values under the common 70-target,
+500-step SDE, OpenStructure 2.9.1 reporting contract. SimpleFold aggregates
+are from the [SimpleFold paper](https://arxiv.org/abs/2509.18480); MambaFold is
+the frozen local OpenStructure result.
+
+| Model | Parameters | GDT-TS ↑ | TM-score ↑ | all-atom lDDT ↑ | backbone lDDT ↑ | RMSD (Å) ↓ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| SimpleFold-360M | 360M | 0.585 | 0.674 | 0.617 | 0.703 | 9.382 |
+| SimpleFold-3B | 2.86B | 0.639 | 0.720 | **0.666** | 0.747 | 7.732 |
+| **MambaFold-ESM3** | **422.4M** | **0.670** | **0.757** | 0.657 | **0.763** | **6.276** |
+
+Against the size-matched SimpleFold-360M, MambaFold improves mean GDT-TS by
+0.085, TM-score by 0.083, all-atom lDDT by 0.040, and backbone lDDT by 0.060,
+while reducing mean RMSD by 3.106 Å. Against SimpleFold-3B it is higher on
+GDT-TS, TM-score, backbone lDDT, and RMSD, but lower by 0.009 all-atom lDDT.
+These are aggregate comparisons, not a paired significance test.
+
 The full artifact identity, evaluation protocol, and CASP14 reproduction entry
 point are in [projects/esm3](projects/esm3/README.md). FASTA predictions are
 not CASP14 scores unless evaluated with that frozen target set and protocol.
+
+## External test FASTA files
+
+Fixed model-input FASTAs are committed under
+[`benchmarks/external_testsets`](benchmarks/external_testsets/README.md):
+CASP14 (70), strict single-chain CASP15 (22) and CASP16 (21), CAMEO22 (183),
+Apo (90), and CoDNaS (77). The model consumes these files through the same
+FASTA interface used for user sequences. Reference structures remain separate
+evaluation artifacts and are not required to generate a prediction.
 
 ## Repository layout
 

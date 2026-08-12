@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "sets": [
+    {
+      "name": "CASP14 whole",
+      "kind": "folding",
+      "records": 70,
+      "fasta": "casp14_70.fasta",
+      "sha256": "77ac5eccd97eb97fa58111daa15c5875963aabc85dcf46cd8afbf73d4cdd8aa0"
+    },
+    {
+      "name": "CASP15 strict single-chain",
+      "kind": "folding",
+      "records": 22,
+      "fasta": "casp15_single_chain_22.fasta",
+      "sha256": "23f03d952f08da4c08832dd89e388a174bd3e927398beec4ca3ffb5ef9147047"
+    },
+    {
+      "name": "CASP16 strict single-chain",
+      "kind": "folding",
+      "records": 21,
+      "fasta": "casp16_single_chain_21.fasta",
+      "sha256": "a5c42094cea41a489512bfd172f139f3c409d42d888acb411319267beb98efba"
+    },
+    {
+      "name": "SimpleFold CAMEO22",
+      "kind": "folding",
+      "records": 183,
+      "fasta": "cameo22_183.fasta",
+      "sha256": "5a27b36c23a1f07f20e0ccfa0fb49911b6b06429f59b4252673cb6abb7d764df"
+    },
+    {
+      "name": "SimpleFold Apo",
+      "kind": "two-state",
+      "records": 90,
+      "fasta": "apo_90.fasta",
+      "sha256": "57bb1337e3f53703f945f404d7f2d7bc61c03d1994955a2a93e82d9f86330657"
+    },
+    {
+      "name": "SimpleFold CoDNaS",
+      "kind": "two-state",
+      "records": 77,
+      "fasta": "codnas_77.fasta",
+      "sha256": "0a1e9ce38f9ce8fe5d5493cbcd5c8ada28b756c8ac1cd5a331b9f4d9246cc9f0"
+    }
+  ]
+}
