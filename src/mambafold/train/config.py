@@ -34,9 +34,19 @@ def parse_args(argv=None):
         default=300.0,
         help="Seconds to wait for a DataLoader worker before failing the run.",
     )
+    parser.add_argument(
+        "--prefetch_factor",
+        type=int,
+        default=1,
+        help="Batches prefetched by each DataLoader worker.",
+    )
     parser.add_argument("--copies_per_protein", type=int, default=1)
-    parser.add_argument("--single_chain_only", action="store_true", default=False,
-                        help="Use only entries with exactly one kept protein chain.")
+    parser.add_argument(
+        "--single_chain_only",
+        action="store_true",
+        default=False,
+        help="Use only entries with exactly one kept protein chain.",
+    )
     # Output
     parser.add_argument("--out_dir", default=None)
     parser.add_argument("--resume", default=None)
@@ -47,44 +57,142 @@ def parse_args(argv=None):
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--log_interval", type=int, default=50)
     parser.add_argument("--ckpt_interval", type=int, default=5_000)
+    parser.add_argument(
+        "--keep_last_checkpoints",
+        type=int,
+        default=3,
+        help="Keep this many most recent numbered checkpoints in addition to milestones.",
+    )
+    parser.add_argument(
+        "--keep_checkpoint_steps",
+        type=int,
+        nargs="*",
+        default=[],
+        help="Numbered milestone checkpoints that pruning must retain.",
+    )
     parser.add_argument("--eval_interval", type=int, default=0)
-    parser.add_argument("--t_schedule", default="uniform",
-                        help="Time sampling schedule: 'uniform' (FM standard) or "
-                             "'logit_normal' (SimpleFold-style oversampling near t→1).")
+    parser.add_argument(
+        "--max_val_batches",
+        type=int,
+        default=0,
+        help="Maximum validation batches per evaluation (0 means all).",
+    )
+    parser.add_argument(
+        "--t_schedule",
+        default="uniform",
+        help="Time sampling schedule: 'uniform' (FM standard) or "
+        "'logit_normal' (SimpleFold-style oversampling near t→1).",
+    )
     parser.add_argument("--ema_decay", type=float, default=0.999)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--grad_accum_steps", type=int, default=1,
-                        help="Gradient accumulation: effective batch = "
-                             "batch_size × world_size × grad_accum_steps. "
-                             "DDP all-reduce is throttled to the last micro-step.")
+    parser.add_argument(
+        "--grad_accum_steps",
+        type=int,
+        default=1,
+        help="Gradient accumulation: effective batch = "
+        "batch_size × world_size × grad_accum_steps. "
+        "DDP all-reduce is throttled to the last micro-step.",
+    )
     parser.add_argument(
         "--find_unused_parameters",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Enable DDP unused-parameter detection for ablations with disabled heads.",
     )
-    parser.add_argument("--crop_schedule", default=None,
-                        help="Mixed-crop schedule (optional). YAML list of phases: "
-                             "[{until: <step>, weights: {<L>: <prob>, ...}}, ...].")
+    parser.add_argument(
+        "--crop_schedule",
+        default=None,
+        help="Mixed-crop schedule (optional). YAML list of phases: "
+        "[{until: <step>, weights: {<L>: <prob>, ...}}, ...].",
+    )
     # Geometric / auxiliary loss weights
-    parser.add_argument("--w_bond", type=float, default=0.0,
-                        help="Weight for backbone + Cβ bond-length loss (0 disables).")
-    parser.add_argument("--w_clash", type=float, default=0.0,
-                        help="Weight for sampled all-atom steric clash loss.")
-    parser.add_argument("--w_ca_clash", type=float, default=0.0,
-                        help="Weight for C-alpha steric clash loss.")
-    parser.add_argument("--w_distogram", type=float, default=0.0,
-                        help="Auxiliary distogram CE loss (binned Cα-Cα distance). "
-                             "AF2/AF3-style aux supervision; helps fold geometry.")
-    parser.add_argument("--alpha_mode", default="ramp",
-                        help="lDDT weight mode: 'const' (α=1) or 'ramp' "
-                             "(α = 1 + 8·ReLU(t-0.5).mean → strongest at clean end).")
-    parser.add_argument("--reset_optimizer", action="store_true", default=False,
-                        help="On --resume, keep model+ema weights but re-initialize "
-                             "optimizer and scheduler with current args (lr/warmup/"
-                             "total_steps).")
-    parser.add_argument("--start_step", type=int, default=0,
-                        help="Override starting step counter when resetting optimizer/scheduler.")
+    parser.add_argument(
+        "--w_bond",
+        type=float,
+        default=0.0,
+        help="Weight for backbone + Cβ bond-length loss (0 disables).",
+    )
+    parser.add_argument(
+        "--w_clash", type=float, default=0.0, help="Weight for sampled all-atom steric clash loss."
+    )
+    parser.add_argument(
+        "--w_ca_clash", type=float, default=0.0, help="Weight for C-alpha steric clash loss."
+    )
+    parser.add_argument(
+        "--w_ost_clash",
+        type=float,
+        default=0.0,
+        help="Weight for the atom-normalized OpenStructure-aligned clash surrogate.",
+    )
+    parser.add_argument(
+        "--ost_clash_mode",
+        choices=("huber", "softplus"),
+        default="huber",
+    )
+    parser.add_argument("--ost_clash_margin_A", type=float, default=0.1)
+    parser.add_argument("--ost_clash_huber_A", type=float, default=0.25)
+    parser.add_argument("--ost_clash_softplus_tau_A", type=float, default=0.05)
+    parser.add_argument("--ost_clash_softplus_halo", type=float, default=6.0)
+    parser.add_argument("--ost_clash_pair_chunk_size", type=int, default=1024)
+    parser.add_argument("--w_covalent_guard", type=float, default=0.0)
+    parser.add_argument("--covalent_guard_tolerance_z", type=float, default=3.0)
+    parser.add_argument("--w_peptide_planarity_guard", type=float, default=0.0)
+    parser.add_argument("--geo_t_start", type=float, default=0.55)
+    parser.add_argument("--geo_t_ramp_end", type=float, default=0.65)
+    parser.add_argument("--geo_t_taper_start", type=float, default=0.95)
+    parser.add_argument("--geo_t_end", type=float, default=0.98)
+    parser.add_argument("--geo_jacobian_floor", type=float, default=0.1)
+    parser.add_argument(
+        "--geo_max_examples_per_batch",
+        type=int,
+        default=0,
+        help="Bound costly geometry examples per rank/microbatch (0 means all).",
+    )
+    parser.add_argument(
+        "--w_distogram",
+        type=float,
+        default=0.0,
+        help="Auxiliary distogram CE loss (binned Cα-Cα distance). "
+        "AF2/AF3-style aux supervision; helps fold geometry.",
+    )
+    parser.add_argument(
+        "--alpha_mode",
+        default="ramp",
+        help="lDDT weight mode: 'const' (α=1) or 'ramp' "
+        "(α = 1 + 8·ReLU(t-0.5).mean → strongest at clean end).",
+    )
+    parser.add_argument(
+        "--reset_optimizer",
+        action="store_true",
+        default=False,
+        help="On --resume, keep model+ema weights but re-initialize "
+        "optimizer and scheduler with current args (lr/warmup/"
+        "total_steps).",
+    )
+    parser.add_argument(
+        "--start_step",
+        type=int,
+        default=0,
+        help="Override starting step counter when resetting optimizer/scheduler.",
+    )
+    parser.add_argument(
+        "--initialize_model_from_ema",
+        action="store_true",
+        default=False,
+        help="With --reset_optimizer, initialize both train model and new EMA from checkpoint EMA.",
+    )
+    parser.add_argument(
+        "--strict_resume",
+        action="store_true",
+        default=False,
+        help="Fail on missing or unexpected model/EMA checkpoint keys.",
+    )
+    parser.add_argument(
+        "--expected_resume_step",
+        type=int,
+        default=None,
+        help="Fail unless the loaded checkpoint has this exact optimizer step.",
+    )
     # Model
     parser.add_argument("--d_res", type=int, default=256)
     parser.add_argument("--d_state", type=int, default=64)
@@ -93,8 +201,12 @@ def parse_args(argv=None):
     parser.add_argument("--expand", type=int, default=2)
     parser.add_argument("--n_trunk", type=int, default=6)
     parser.add_argument("--d_res_pos", type=int, default=64)
-    parser.add_argument("--d_res_type", type=int, default=32,
-                        help="Residue-type embedding dim fed to trunk (sequence signal)")
+    parser.add_argument(
+        "--d_res_type",
+        type=int,
+        default=32,
+        help="Residue-type embedding dim fed to trunk (sequence signal)",
+    )
     # PLM
     parser.add_argument("--use_plm", action="store_true", default=False)
     parser.add_argument("--d_plm", type=int, default=1536)
@@ -120,15 +232,31 @@ def parse_args(argv=None):
     parser.add_argument("--trunk_attn_layers", type=int, nargs="*", default=None)
     parser.add_argument("--trunk_attn_every", type=int, default=None)
     parser.add_argument("--n_attn_heads", type=int, default=16)
-    parser.add_argument("--trunk_time_film", action=argparse.BooleanOptionalAction, default=False,
-                        help="Inject FM time embedding before every residue trunk block.")
-    parser.add_argument("--trunk_adaln_zero", action=argparse.BooleanOptionalAction, default=False,
-                        help="Use AdaLN-Zero time-conditioned scale/shift/gates inside "
-                             "each residue trunk residual branch.")
-    parser.add_argument("--self_conditioning", action=argparse.BooleanOptionalAction, default=False,
-                        help="Feed a detached x0 estimate back into the coordinate encoder.")
-    parser.add_argument("--self_condition_prob", type=float, default=0.0,
-                        help="Training probability of computing and using self-conditioning.")
+    parser.add_argument(
+        "--trunk_time_film",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Inject FM time embedding before every residue trunk block.",
+    )
+    parser.add_argument(
+        "--trunk_adaln_zero",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use AdaLN-Zero time-conditioned scale/shift/gates inside "
+        "each residue trunk residual branch.",
+    )
+    parser.add_argument(
+        "--self_conditioning",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Feed a detached x0 estimate back into the coordinate encoder.",
+    )
+    parser.add_argument(
+        "--self_condition_prob",
+        type=float,
+        default=0.0,
+        help="Training probability of computing and using self-conditioning.",
+    )
     # Weight-tie BiMamba fwd/bwd (one shared SSM both directions) — halves trunk SSM params.
     parser.add_argument("--bimamba_share", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--n_pair_heads", type=int, default=4)
@@ -181,10 +309,13 @@ def parse_args(argv=None):
     # extra monomer training data. Builds a cached chain index on first run.
     parser.add_argument("--extract_monomer_chains", action="store_true", default=False)
     parser.add_argument("--metadata_path", default="data/splits/metadata.tsv")
-    parser.add_argument("--length_balance_mode", default="power",
-                        choices=["power", "linear_clip"])
-    parser.add_argument("--length_balance_exponent", type=float, default=0.5,
-                        help="Used when mode=power. w = (L/200)^exponent clipped.")
+    parser.add_argument("--length_balance_mode", default="power", choices=["power", "linear_clip"])
+    parser.add_argument(
+        "--length_balance_exponent",
+        type=float,
+        default=0.5,
+        help="Used when mode=power. w = (L/200)^exponent clipped.",
+    )
     parser.add_argument("--length_balance_clip_min", type=float, default=1.0)
     parser.add_argument("--length_balance_clip_max", type=float, default=1.5)
     # W&B
@@ -196,6 +327,28 @@ def parse_args(argv=None):
 
     parser.set_defaults(**cfg)
     args = parser.parse_args(argv)
+
+    if args.max_val_batches < 0:
+        parser.error("--max_val_batches must be non-negative")
+    if args.geo_max_examples_per_batch < 0:
+        parser.error("--geo_max_examples_per_batch must be non-negative")
+    if not (
+        0.0
+        <= args.geo_t_start
+        < args.geo_t_ramp_end
+        <= args.geo_t_taper_start
+        < args.geo_t_end
+        <= 1.0
+    ):
+        parser.error(
+            "geometry time bounds must satisfy 0 <= start < ramp_end <= taper_start < end <= 1"
+        )
+    if not (0.0 < args.geo_jacobian_floor <= 1.0):
+        parser.error("--geo_jacobian_floor must be in (0, 1]")
+    if args.initialize_model_from_ema and not (args.resume and args.reset_optimizer):
+        parser.error("--initialize_model_from_ema requires --resume and --reset_optimizer")
+    if args.expected_resume_step is not None and not args.resume:
+        parser.error("--expected_resume_step requires --resume")
 
     if args.out_dir is None:
         job_id = os.environ.get("SLURM_JOB_ID", None)

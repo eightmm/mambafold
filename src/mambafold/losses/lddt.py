@@ -31,9 +31,22 @@ def soft_lddt_ca_loss(
     pred_ca = pred_coords[:, :, CA_ATOM_ID, :]  # [B, L, 3]
     true_ca = true_coords[:, :, CA_ATOM_ID, :]  # [B, L, 3]
 
-    # Pairwise distances
-    pred_dist = torch.linalg.norm(pred_ca.unsqueeze(2) - pred_ca.unsqueeze(1), dim=-1)  # [B, L, L]
-    true_dist = torch.linalg.norm(true_ca.unsqueeze(2) - true_ca.unsqueeze(1), dim=-1)  # [B, L, L]
+    # Pairwise distances.  ``unsqueeze`` subtraction materializes [B, L, L, 3]
+    # before reducing it, which adds a 120 MiB transient at B=10, L=1024 and
+    # can OOM once AdamW state exists.  The direct cdist kernel computes the
+    # same Euclidean distances without that four-dimensional temporary.
+    pred_dist = torch.cdist(
+        pred_ca,
+        pred_ca,
+        p=2.0,
+        compute_mode="donot_use_mm_for_euclid_dist",
+    )  # [B, L, L]
+    true_dist = torch.cdist(
+        true_ca,
+        true_ca,
+        p=2.0,
+        compute_mode="donot_use_mm_for_euclid_dist",
+    )  # [B, L, L]
 
     # Pair mask: both residues valid, within cutoff, not self
     pair_mask = ca_mask.unsqueeze(2) & ca_mask.unsqueeze(1)  # [B, L, L]

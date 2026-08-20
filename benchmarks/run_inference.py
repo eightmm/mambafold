@@ -22,6 +22,7 @@ import argparse
 import json
 import sys
 import time
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
@@ -31,97 +32,68 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "scripts"))
 
-from mambafold.data.constants import CA_ATOM_ID, COORD_SCALE, ID_TO_AA, RESIDUE_ATOMS
+from mambafold.data.constants import CA_ATOM_ID, COORD_SCALE
 from mambafold.data.dataset import RCSBDataset
 from mambafold.data.transforms import center_and_scale
 from mambafold.data.types import ProteinBatch
-from mambafold.sampling import sample
+from mambafold.sampling import GeometryGuidanceConfig, sample
+from mambafold.structure_io import write_mmcif, write_pdb
 from mambafold.train.distributed import enable_cuda_perf_flags
 from mambafold.train.trainer import load_from_checkpoint
 from mambafold.utils.geometry import kabsch_align
 
-# A..Z then a..z then 0..9
-_CHAIN_LETTERS = (
-    [chr(c) for c in range(ord("A"), ord("Z") + 1)]
-    + [chr(c) for c in range(ord("a"), ord("z") + 1)]
-    + [chr(c) for c in range(ord("0"), ord("9") + 1)]
-)
-
 
 def save_pdb(coords_aa, res_type_ids, atom_mask, b_factors, chain_id, out_path):
-    """Write all-atom PDB for a single-chain prediction.
-
-    Args:
-        coords_aa:    [L, A, 3] coords in Å.
-        res_type_ids: [L] int residue indices (AA_TO_ID values).
-        atom_mask:    [L, A] bool — atom slots to emit.
-        b_factors:    [L, A] float — written into the B-factor column.
-        chain_id:     [L] int — per-residue chain index (0..n_chains-1).
-        out_path:     Path.
-    """
-    lines, serial = [], 1
-    L = coords_aa.shape[0]
-    # Group residues by chain in input order, emit TER between chains.
-    boundaries = [0]
-    for i in range(1, L):
-        if chain_id[i] != chain_id[i - 1]:
-            boundaries.append(i)
-    boundaries.append(L)
-
-    for bi in range(len(boundaries) - 1):
-        a, b = boundaries[bi], boundaries[bi + 1]
-        cid_int = int(chain_id[a])
-        if cid_int >= len(_CHAIN_LETTERS):
-            cid_int = cid_int % len(_CHAIN_LETTERS)  # paranoid wrap; >62 chains is exotic
-        ch_letter = _CHAIN_LETTERS[cid_int]
-        # Per-chain residue numbering starts at 1 (PDB convention)
-        for r_local, r in enumerate(range(a, b), start=1):
-            res_id = int(res_type_ids[r])
-            res_name = ID_TO_AA.get(res_id, "UNK")
-            atoms = RESIDUE_ATOMS.get(res_name, RESIDUE_ATOMS["UNK"])
-            for slot, atom_name in enumerate(atoms):
-                if slot >= atom_mask.shape[1] or not atom_mask[r, slot]:
-                    continue
-                x, y, z = (float(coords_aa[r, slot, i]) for i in range(3))
-                b_fac = max(-99.99, min(999.99, float(b_factors[r, slot])))
-                element = atom_name[0]
-                an = atom_name if len(atom_name) >= 4 else f" {atom_name:<3s}"
-                lines.append(
-                    f"ATOM  {serial:>5d} {an:<4s} {res_name:>3s} {ch_letter}"
-                    f"{r_local:>4d}    {x:8.3f}{y:8.3f}{z:8.3f}  1.00{b_fac:6.2f}"
-                    f"          {element:>2s}\n"
-                )
-                serial += 1
-        # TER record marks the end of a chain
-        lines.append(f"TER   {serial:>5d}      {res_name:>3s} {ch_letter}{r_local:>4d}\n")
-        serial += 1
-    lines.append("END\n")
-    Path(out_path).write_text("".join(lines))
+    """Backward-compatible wrapper used by benchmark helpers."""
+    write_pdb(coords_aa, res_type_ids, atom_mask, b_factors, chain_id, out_path)
 
 
-def make_batch(x, ex, t_cur, device):
+def save_cif(coords_aa, res_type_ids, atom_mask, b_factors, chain_id, out_path, entry_id):
+    """Write the same atom slots as PDBx/mmCIF."""
+    write_mmcif(
+        coords_aa,
+        res_type_ids,
+        atom_mask,
+        b_factors,
+        chain_id,
+        out_path,
+        entry_id=entry_id,
+    )
+
+
+def prepare_static_batch(ex, device):
+    """Move target features to ``device`` once for the full sampling trajectory."""
     L = ex.seq_len
-    return ProteinBatch(
-        res_type=ex.res_type.unsqueeze(0).to(device),
-        res_seq_nums=ex.res_seq_nums.unsqueeze(0).to(device),
-        atom_type=ex.atom_type.unsqueeze(0).to(device),
-        pair_type=ex.pair_type.unsqueeze(0).to(device),
-        res_mask=torch.ones(1, L, dtype=torch.bool, device=device),
-        atom_mask=ex.atom_mask.unsqueeze(0).to(device),
-        valid_mask=(ex.atom_mask & ex.observed_mask).unsqueeze(0).to(device),
-        ca_mask=(ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID])
-        .unsqueeze(0)
-        .to(device),
-        chain_id=ex.chain_id.unsqueeze(0).to(device),
-        entity_id=ex.entity_id.unsqueeze(0).to(device),
-        sym_id=ex.sym_id.unsqueeze(0).to(device),
-        is_nterm=ex.is_nterm.unsqueeze(0).to(device),
-        is_cterm=ex.is_cterm.unsqueeze(0).to(device),
-        x_clean=ex.coords.unsqueeze(0).to(device),
+    coords = ex.coords.unsqueeze(0)
+    batch = ProteinBatch(
+        res_type=ex.res_type.unsqueeze(0),
+        res_seq_nums=ex.res_seq_nums.unsqueeze(0),
+        atom_type=ex.atom_type.unsqueeze(0),
+        pair_type=ex.pair_type.unsqueeze(0),
+        res_mask=torch.ones(1, L, dtype=torch.bool),
+        atom_mask=ex.atom_mask.unsqueeze(0),
+        valid_mask=(ex.atom_mask & ex.observed_mask).unsqueeze(0),
+        ca_mask=(ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID]).unsqueeze(0),
+        chain_id=ex.chain_id.unsqueeze(0),
+        entity_id=ex.entity_id.unsqueeze(0),
+        sym_id=ex.sym_id.unsqueeze(0),
+        is_nterm=ex.is_nterm.unsqueeze(0),
+        is_cterm=ex.is_cterm.unsqueeze(0),
+        x_clean=coords,
+        x_t=coords,
+        eps=torch.zeros_like(coords),
+        t=torch.zeros(1, 1, 1, 1),
+        esm=ex.esm.unsqueeze(0) if ex.esm is not None else None,
+    )
+    return batch.to(torch.device(device))
+
+
+def make_sampling_batch(static_batch, x, t_cur):
+    """Reuse static GPU features while replacing only coordinates and time."""
+    return replace(
+        static_batch,
         x_t=x.unsqueeze(0),
-        eps=torch.zeros_like(x).unsqueeze(0),
-        t=torch.tensor([[[[float(t_cur)]]]]).to(device),
-        esm=ex.esm.unsqueeze(0).to(device) if ex.esm is not None else None,
+        t=static_batch.t.new_full(static_batch.t.shape, float(t_cur)),
     )
 
 
@@ -142,6 +114,12 @@ def main():
     enable_cuda_perf_flags()
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", required=True)
+    p.add_argument(
+        "--ckpt_provenance",
+        default=None,
+        help="Stable checkpoint path recorded in the manifest when --ckpt is a "
+        "node-local staged copy",
+    )
     p.add_argument("--ids", required=True, help="text file of PDB IDs, one per line")
     p.add_argument("--out", required=True)
     p.add_argument("--data_dir", default="data/rcsb")
@@ -183,6 +161,77 @@ def main():
         help="Use SimpleFold log timesteps for SDE sampling",
     )
     p.add_argument(
+        "--geometry_guidance_scale",
+        type=float,
+        default=0.0,
+        help="GT-free geometry guidance strength; 0 keeps legacy sampling exactly",
+    )
+    p.add_argument(
+        "--geometry_guidance_preset",
+        choices=("bond_cleanup", "stereochemical", "self_avoidance"),
+        default="bond_cleanup",
+        help="bond_cleanup preserves the original three-term guidance; "
+        "stereochemical enables topology, planarity, chirality, Ramachandran, "
+        "and atom-radius clash barriers; self_avoidance separates an earlier "
+        "residue-coherent nonlocal steric channel from late local cleanup",
+    )
+    p.add_argument(
+        "--geometry_guidance_start",
+        type=float,
+        default=None,
+        help="Apply local geometry guidance only after this flow time "
+        "(default: 0.5, or 0.65 for self_avoidance)",
+    )
+    p.add_argument(
+        "--geometry_guidance_every",
+        type=int,
+        default=None,
+        help="Evaluate local geometry guidance every N solver steps "
+        "(default: 1, or 2 for self_avoidance)",
+    )
+    p.add_argument(
+        "--steric_guidance_scale",
+        type=float,
+        default=0.0,
+        help="Independent nonlocal C-alpha self-avoidance strength",
+    )
+    p.add_argument(
+        "--steric_guidance_start",
+        type=float,
+        default=0.35,
+        help="Flow time at which the self-avoidance channel starts",
+    )
+    p.add_argument(
+        "--steric_guidance_ramp_end",
+        type=float,
+        default=0.55,
+        help="Flow time at which self-avoidance reaches full strength",
+    )
+    p.add_argument(
+        "--steric_guidance_every",
+        type=int,
+        default=1,
+        help="Evaluate self-avoidance every N solver steps",
+    )
+    p.add_argument(
+        "--steric_ca_min_dist_A",
+        type=float,
+        default=3.6,
+        help="Nonlocal C-alpha excluded-volume floor in Angstrom",
+    )
+    p.add_argument(
+        "--steric_ca_seq_sep",
+        type=int,
+        default=12,
+        help="Ignore same-chain C-alpha pairs at or below this sequence separation",
+    )
+    p.add_argument(
+        "--steric_smoothing_radius",
+        type=int,
+        default=4,
+        help="Gaussian residue-force smoothing radius (0 disables smoothing)",
+    )
+    p.add_argument(
         "--n_seeds",
         type=int,
         default=1,
@@ -196,9 +245,59 @@ def main():
         default=0,
         help="Sampling seeds = [seed_offset, seed_offset+1, ...]",
     )
+    p.add_argument(
+        "--output_format",
+        choices=("pdb", "cif", "both"),
+        default="pdb",
+        help="Structure output format (default preserves the legacy PDB-only runner)",
+    )
     p.add_argument("--use_ema", action="store_true", default=True)
     p.add_argument("--no_ema", dest="use_ema", action="store_false")
     args = p.parse_args()
+
+    local_start = args.geometry_guidance_start
+    if local_start is None:
+        local_start = 0.65 if args.geometry_guidance_preset == "self_avoidance" else 0.5
+    local_every = args.geometry_guidance_every
+    if local_every is None:
+        local_every = 2 if args.geometry_guidance_preset == "self_avoidance" else 1
+
+    if args.geometry_guidance_preset == "self_avoidance":
+        geometry_guidance = GeometryGuidanceConfig.self_avoidance(
+            local_scale=args.geometry_guidance_scale,
+            steric_scale=args.steric_guidance_scale,
+            local_start=local_start,
+            local_every_n_steps=local_every,
+            steric_start=args.steric_guidance_start,
+            steric_ramp_end=args.steric_guidance_ramp_end,
+            steric_every_n_steps=args.steric_guidance_every,
+            steric_smoothing_radius=args.steric_smoothing_radius,
+        )
+        geometry_guidance = replace(
+            geometry_guidance,
+            steric_ca_min_dist_A=args.steric_ca_min_dist_A,
+            steric_ca_seq_sep=args.steric_ca_seq_sep,
+        )
+    elif args.geometry_guidance_preset == "stereochemical":
+        if args.steric_guidance_scale != 0.0:
+            p.error("--steric_guidance_scale requires --geometry_guidance_preset self_avoidance")
+        geometry_guidance = GeometryGuidanceConfig.stereochemical(
+            scale=args.geometry_guidance_scale,
+            start=local_start,
+            every_n_steps=local_every,
+        )
+    else:
+        if args.steric_guidance_scale != 0.0:
+            p.error("--steric_guidance_scale requires --geometry_guidance_preset self_avoidance")
+        geometry_guidance = GeometryGuidanceConfig(
+            scale=args.geometry_guidance_scale,
+            start=local_start,
+            every_n_steps=local_every,
+        )
+    try:
+        geometry_guidance.validate()
+    except ValueError as exc:
+        p.error(str(exc))
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     out_dir = Path(args.out)
@@ -211,7 +310,9 @@ def main():
     print(
         f"[infer] direct all-atom sampler={args.sampler} "
         f"(n_steps={args.n_steps}, tau={args.sde_tau}, eps={args.sde_eps}, "
-        f"log_timesteps={args.sde_log_timesteps})"
+        f"log_timesteps={args.sde_log_timesteps}, "
+        f"geometry_guidance={geometry_guidance.scale}, "
+        f"steric_guidance={geometry_guidance.steric_scale})"
     )
 
     # Auto-fill --esm_dir from the ckpt's saved args when the ckpt was
@@ -273,9 +374,21 @@ def main():
         # B-factor: zero (no per-atom pLDDT calc here — scoring step computes lDDT)
         b_zero = np.zeros_like(aa_mask, dtype=np.float32)
 
-        # GT written once
-        save_pdb(true_aa, res_type, aa_mask, b_zero, chain_id_np, out_dir / f"{pid}_gt.pdb")
+        # GT written once in the requested representation(s).
+        if args.output_format in ("pdb", "both"):
+            save_pdb(true_aa, res_type, aa_mask, b_zero, chain_id_np, out_dir / f"{pid}_gt.pdb")
+        if args.output_format in ("cif", "both"):
+            save_cif(
+                true_aa,
+                res_type,
+                aa_mask,
+                b_zero,
+                chain_id_np,
+                out_dir / f"{pid}_gt.cif",
+                f"{pid}_gt",
+            )
 
+        static_batch = prepare_static_batch(ex_c, device)
         n_ok = 0
         seeds = list(range(args.seed_offset, args.seed_offset + args.n_seeds))
         for si, sd in enumerate(seeds):
@@ -284,7 +397,7 @@ def main():
                     _, pred_aa, _, _, conf = sample(
                         model,
                         ex,
-                        lambda x, ti: make_batch(x, ex_c, ti, device),
+                        lambda x, ti: make_sampling_batch(static_batch, x, ti),
                         n_steps=args.n_steps,
                         seed=sd,
                         device=device,
@@ -293,6 +406,8 @@ def main():
                         sde_eps=args.sde_eps,
                         sde_w_cutoff=args.sde_w_cutoff,
                         sde_log_timesteps=args.sde_log_timesteps,
+                        record_trajectory=False,
+                        geometry_guidance=geometry_guidance,
                     )
             except torch.cuda.OutOfMemoryError:
                 print(f"[oom] {pid}: L={L} chains={n_chains} seed={sd}")
@@ -309,23 +424,46 @@ def main():
                 * atom_mask_np.astype(np.float32)
             )
             pred_aa_aligned = kabsch_align_to_gt(pred_aa, true_aa, aa_mask)
-            seed_path = out_dir / f"{pid}_pred_seed{si}.pdb"
-            save_pdb(pred_aa_aligned, res_type, atom_mask_np, b_pred, chain_id_np, seed_path)
-            # First successful seed also written as the canonical "<pid>_pred.pdb"
-            if n_ok == 0:
-                save_pdb(
+            if args.output_format in ("pdb", "both"):
+                seed_path = out_dir / f"{pid}_pred_seed{si}.pdb"
+                save_pdb(pred_aa_aligned, res_type, atom_mask_np, b_pred, chain_id_np, seed_path)
+            if args.output_format in ("cif", "both"):
+                save_cif(
                     pred_aa_aligned,
                     res_type,
                     atom_mask_np,
                     b_pred,
                     chain_id_np,
-                    out_dir / f"{pid}_pred.pdb",
+                    out_dir / f"{pid}_pred_seed{si}.cif",
+                    f"{pid}_pred_seed{si}",
                 )
+            # First successful seed also written as the canonical "<pid>_pred.pdb"
+            if n_ok == 0:
+                if args.output_format in ("pdb", "both"):
+                    save_pdb(
+                        pred_aa_aligned,
+                        res_type,
+                        atom_mask_np,
+                        b_pred,
+                        chain_id_np,
+                        out_dir / f"{pid}_pred.pdb",
+                    )
+                if args.output_format in ("cif", "both"):
+                    save_cif(
+                        pred_aa_aligned,
+                        res_type,
+                        atom_mask_np,
+                        b_pred,
+                        chain_id_np,
+                        out_dir / f"{pid}_pred.cif",
+                        f"{pid}_pred",
+                    )
             n_ok += 1
 
         if n_ok == 0:
             # All seeds failed → drop the GT too so the scorer doesn't see a half-pair
-            (out_dir / f"{pid}_gt.pdb").unlink(missing_ok=True)
+            for suffix in ("pdb", "cif"):
+                (out_dir / f"{pid}_gt.{suffix}").unlink(missing_ok=True)
             continue
 
         summary_rows.append({"pdb_id": pid, "L": int(L), "n_chains": n_chains, "n_seeds_ok": n_ok})
@@ -337,7 +475,8 @@ def main():
         )
 
     manifest = {
-        "ckpt": str(args.ckpt),
+        "ckpt": str(args.ckpt_provenance or args.ckpt),
+        "checkpoint_staged": args.ckpt_provenance is not None,
         "ids_file": str(args.ids),
         "n_steps": args.n_steps,
         "sampler": args.sampler,
@@ -345,6 +484,9 @@ def main():
         "sde_eps": args.sde_eps,
         "sde_w_cutoff": args.sde_w_cutoff,
         "sde_log_timesteps": args.sde_log_timesteps,
+        "geometry_guidance_preset": args.geometry_guidance_preset,
+        "geometry_guidance": asdict(geometry_guidance),
+        "output_format": args.output_format,
         "max_length": args.max_length,
         "use_ema": args.use_ema,
         "single_chain_only": True,

@@ -1,9 +1,6 @@
-# MambaFold Ada mainline conditioned on pinned sequence-only ESMC-6B embeddings.
-# This config is intentionally checkpoint-incompatible with the ESM3 variant:
-# ESMC-6B emits 2560-dimensional embeddings instead of 1536.
-# d_state=64 keeps the official Mamba-3 MIMO backward kernel below the RTX
-# 6000 Ada per-block shared-memory limit; the former d_state=128 model remains
-# available through its ESM3 config/checkpoint and is not resumed here.
+# Geometry fine-tune pilot initialized from the completed step-170k ESMC-6B
+# mainline EMA.  Architecture, data, batch, and sampler contracts remain fixed;
+# only the optimizer schedule and geometry supervision are changed.
 
 data_dir:      data/rcsb_boltz_official_full
 val_data_dir:  data/rcsb_boltz_official_full
@@ -19,9 +16,6 @@ train_sources:
     file_list: null
     esm_dir: data/afdb_swissprot_esmc6b
 max_length: 1024
-# RTX 6000 Ada calibration: 4 ranks, 9 examples/GPU. The L=1024 gate includes
-# initialized AdamW state and all 13 no_sync accumulation micro-steps:
-# 43.469 GiB allocated, 43.699/47.372 GiB reserved per GPU.
 batch_size: 9
 num_workers: 16
 prefetch_factor: 1
@@ -41,20 +35,24 @@ length_bucketing: true
 crop_schedule:
   - weights: {1024: 1.0}
 
-out_dir: outputs/train/direct_puremamba_attn6_geo_adaln_sf360_esmc6b_ada_dstate64_gpu4_v4
+out_dir: outputs/train/direct_puremamba_attn6_geo_adaln_sf360_esmc6b_ada_dstate64_gpu8_geoft_v1
 resume: null
 
-total_steps: 170_000
-lr: 1.0e-4
-warmup_steps: 5_000
+# Bounded pilot: fresh low-LR optimizer/scheduler over the step-170k EMA.
+total_steps: 2_000
+lr: 1.0e-5
+warmup_steps: 100
 grad_clip: 1.0
 t_schedule: logit_normal
 ema_decay: 0.999
 log_interval: 50
-ckpt_interval: 10_000
-eval_interval: 5_000
+ckpt_interval: 250
+keep_last_checkpoints: 3
+keep_checkpoint_steps: [250, 500, 1_000, 2_000]
+eval_interval: 500
+max_val_batches: 16
 seed: 0
-grad_accum_steps: 13
+grad_accum_steps: 7
 find_unused_parameters: true
 
 d_res: 1024
@@ -85,12 +83,15 @@ pair_use_cueq: false
 d_atom: 256
 n_atom_layers: 2
 
+# Preserve the learned fold objective and existing local terms.  The legacy
+# sampled clash term is disabled; the new topology-aware OpenStructure-aligned
+# channel supplies the steric signal.
 w_fm:            1.0
 w_lddt_atom:     1.0
 w_lddt_ca:       1.0
 w_drmsd:         0.75
 w_bond:          0.02
-w_clash:         0.01
+w_clash:         0.0
 w_ca_clash:      0.005
 w_distogram:     0.0
 w_contact:       0.0
@@ -100,6 +101,27 @@ w_ca_angle:      0.05
 w_ca_self_clash: 0.05
 w_chirality:     0.2
 w_chirality_atom: 0.2
+
+w_ost_clash: 0.5
+ost_clash_mode: huber
+ost_clash_margin_A: 0.10
+ost_clash_huber_A: 0.25
+ost_clash_softplus_tau_A: 0.05
+ost_clash_softplus_halo: 6
+ost_clash_pair_chunk_size: 1024
+w_covalent_guard: 0.25
+covalent_guard_tolerance_z: 3.0
+w_peptide_planarity_guard: 0.05
+
+# Smoothly activate geometry where x-hat is informative, taper before the
+# reconstruction Jacobian becomes singular, and cap per-step compute.
+geo_t_start: 0.55
+geo_t_ramp_end: 0.65
+geo_t_taper_start: 0.95
+geo_t_end: 0.98
+geo_jacobian_floor: 0.10
+geo_max_examples_per_batch: 2
+
 alpha_mode: ramp
 max_lddt_atoms:  2048
 max_clash_atoms: 2048
@@ -109,7 +131,7 @@ d_plm: 2560
 esm_dir: data/rcsb_esmc6b_official_full
 
 wandb_project: mambafold
-wandb_name: direct_puremamba_attn6_geo_adaln_sf360_esmc6b_ada_dstate64_gpu4_v4
-wandb_tags: [direct_allatom, pure_mamba, attn_every_6, small_geometry, adaln_zero, mainline, single_chain, L_1024, esmc6b, ada, dstate64, gpu4, batch468, expandable_segments, memory_efficient_lddt, from_scratch]
+wandb_name: direct_puremamba_attn6_geo_adaln_sf360_esmc6b_ada_dstate64_gpu8_geoft_v1
+wandb_tags: [direct_allatom, pure_mamba, attn_every_6, small_geometry, adaln_zero, single_chain, L_1024, esmc6b, ada, dstate64, gpu8, batch504, geometry_finetune, ost_clash, source_170k, ema_init, pilot_2k]
 wandb_offline: false
 no_wandb: false

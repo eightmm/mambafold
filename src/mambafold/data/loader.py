@@ -66,16 +66,30 @@ class MixedRCSBDataset:
         return "MixedRCSBDataset(" + "; ".join(parts) + ")"
 
 
-def inf_loader(loader, sampler=None):
+def inf_loader(loader, sampler=None, *, start_epoch: int = 0, start_batch: int = 0):
     """DataLoader를 무한 반복하는 제너레이터.
 
     DistributedSampler 사용 시 epoch마다 set_epoch()을 호출해 셔플링을 보장함.
+    Resume can restore the deterministic sampler epoch and skip the already
+    consumed batches from the first resumed epoch.
     """
-    epoch = 0
+    if start_epoch < 0 or start_batch < 0:
+        raise ValueError("start_epoch and start_batch must be non-negative")
+    epoch = start_epoch
     while True:
+        resume_batch = start_batch if epoch == start_epoch else 0
+        sampler_fast_forward = sampler is not None and hasattr(sampler, "set_start_batch")
         if sampler is not None:
             sampler.set_epoch(epoch)
-        yield from loader
+            if sampler_fast_forward:
+                # Skip at the batch-index source.  Skipping after DataLoader
+                # iteration would still read, decompress, collate, and discard
+                # every previously consumed sample.
+                sampler.set_start_batch(resume_batch)
+        for batch_idx, batch in enumerate(loader):
+            if not sampler_fast_forward and batch_idx < resume_batch:
+                continue
+            yield batch
         epoch += 1
 
 
@@ -182,6 +196,9 @@ def build_dataloaders(args, is_dist: bool):
     single_chain_only = bool(getattr(args, "single_chain_only", False))
     num_workers = int(getattr(args, "num_workers", 0))
     loader_timeout = float(getattr(args, "loader_timeout", 0.0)) if num_workers else 0.0
+    prefetch_factor = int(getattr(args, "prefetch_factor", 1))
+    if num_workers > 0 and prefetch_factor < 1:
+        raise ValueError(f"prefetch_factor must be >= 1, got {prefetch_factor}")
 
     # Fail loud if esm_dir is configured but missing/empty. The model also
     # fails if use_plm=True and a batch arrives without ESM features.
@@ -275,16 +292,32 @@ def build_dataloaders(args, is_dist: bool):
 
     if batch_sampler is not None:
         # batch_sampler is mutually exclusive with batch_size/shuffle/sampler/drop_last.
+        worker_kwargs = (
+            {
+                "persistent_workers": True,
+                "prefetch_factor": prefetch_factor,
+            }
+            if num_workers > 0
+            else {}
+        )
         loader = DataLoader(
             dataset,
             batch_sampler=batch_sampler,
             collate_fn=collator,
             num_workers=num_workers,
             pin_memory=True,
-            persistent_workers=(num_workers > 0),
             timeout=loader_timeout,
+            **worker_kwargs,
         )
     else:
+        worker_kwargs = (
+            {
+                "persistent_workers": True,
+                "prefetch_factor": prefetch_factor,
+            }
+            if num_workers > 0
+            else {}
+        )
         loader = DataLoader(
             dataset,
             batch_size=args.batch_size,
@@ -293,9 +326,9 @@ def build_dataloaders(args, is_dist: bool):
             collate_fn=collator,
             num_workers=num_workers,
             pin_memory=True,
-            persistent_workers=(num_workers > 0),
             timeout=loader_timeout,
             drop_last=True,
+            **worker_kwargs,
         )
 
     val_loader = None

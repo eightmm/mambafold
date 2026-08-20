@@ -26,6 +26,7 @@ from mambafold.data.dataset import RCSBDataset
 
 _DEFAULT_CACHE_DIR = Path(".cache/length_cache")
 _ESM_CACHE_SCHEMA = 2  # sequence-addressed cache with occurrence fallback
+_CHAIN_VALIDITY_SCHEMA = 3  # observed-atom-valid crop is required
 
 # ── Worker (one probe dataset per process; built without scanning files) ─────
 _PROBE: RCSBDataset | None = None
@@ -63,6 +64,7 @@ def _dataset_cfg(dataset: RCSBDataset) -> dict:
         "min_obs_ratio": dataset.min_obs_ratio,
         "esm_dir": str(dataset.esm_dir) if dataset.esm_dir else None,
         "esm_cache_schema": _ESM_CACHE_SCHEMA,
+        "chain_validity_schema": _CHAIN_VALIDITY_SCHEMA,
         "single_chain_only": dataset.single_chain_only,
     }
 
@@ -79,10 +81,7 @@ def _cache_path(dataset: RCSBDataset, cache_dir: Path) -> Path:
         f"len_{name}_L{cfg['max_length']}_sc{int(cfg['single_chain_only'])}_"
         f"{h.hexdigest()[:12]}.json"
     )
-    return (
-        cache_dir
-        / cache_name
-    )
+    return cache_dir / cache_name
 
 
 def build_length_cache(
