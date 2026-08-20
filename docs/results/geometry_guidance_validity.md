@@ -1,4 +1,10 @@
-# Geometry-guided inference validity
+# Archived geometry-guidance validity experiment
+
+> **Archive only.** This mixed ESM3/ESMC step-119.5k CASP14 experiment is
+> retained as engineering evidence for a guidance prototype. It is not an
+> active cross-model comparison, does not validate the step-170k preview or
+> the ongoing geometry fine-tune, and must not be used as a final model claim.
+> The active track is ESMC-6B only; CASP14 remains a development set.
 
 Snapshot: 2026-08-13 (Asia/Seoul)
 
@@ -19,9 +25,9 @@ untouched confirmatory evaluation.
 - Dataset: 69 CASP14 whole-chain targets. T1061 was excluded because an earlier
   exploratory run on that target selected the guidance scale.
 - Checkpoints: frozen MambaFold-ESM3 step 120,000 and provisional
-  MambaFold-ESMC-6B step 119,500 EMA weights from the active training program.
+  MambaFold-ESMC-6B step 119,500 EMA weights from the then-active training program.
 - Controlled inference: fresh guided-off and guided-on predictions used the
-  same current runner, H100 device class, precomputed ESM feature directories,
+  same runner, H100 device class, precomputed ESM feature directories,
   seed 0, 500-step SDE, logarithmic time grid, tau 0.01, epsilon 0.01, and
   diffusion cutoff 0.99. The two conditions differ only in guidance scale.
 - Independent change: geometry-guidance scale 0.1, active from flow time 0.5
@@ -76,7 +82,7 @@ the equal-target means used by the pre-registered decision.
 
 ## Interpretation
 
-The current guidance differentiates a lightweight energy over the predicted
+The tested guidance differentiates a lightweight energy over the predicted
 clean structure and adds its normalized gradient late in SDE sampling. Its
 terms constrain first-shell bond lengths, a C-alpha virtual-angle floor, and a
 C-alpha-only clash penalty. The experiment shows that this is enough to repair

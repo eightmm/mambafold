@@ -8,7 +8,7 @@
 | `x_t` | corrupted coords, model input |
 | `eps` | sampled noise |
 | `t` | interpolation time |
-| `esm` | optional ESM3 conditioning |
+| `esm` | pinned ESMC-6B residue conditioning (required by the active model) |
 
 Current corruption:
 

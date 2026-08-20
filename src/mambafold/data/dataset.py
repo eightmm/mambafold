@@ -493,7 +493,7 @@ class RCSBDataset(Dataset):
         if only_chain_origin is None and self.single_chain_only and chain_id_next != 1:
             return None
 
-        # ESM precompute may intentionally cap very long chains (default 2048).
+        # ESM precompute may intentionally cap very long chains.
         # When PLM features are requested, only sample residues whose chain-local
         # index has a corresponding ESM row. Otherwise a random tail crop from a
         # very long chain would make the whole batch lose PLM conditioning.

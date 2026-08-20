@@ -5,8 +5,8 @@
 #   bash scripts/train.sh [extra train.py args ...]
 #
 # Environment:
-#   CUDA_VISIBLE_DEVICES   GPU selection (default: all visible). e.g. "0,1,2,3"
-#   CONFIG                 YAML config (default: configs/direct_allatom_360m.yaml)
+#   CUDA_VISIBLE_DEVICES   GPU selection (default: all visible). e.g. "0,1,2,3,4,5,6,7"
+#   CONFIG                 YAML config (default: active ESMC-6B 8-GPU config)
 #   RESUME                 Checkpoint path to resume from (optional)
 #   OUT_DIR                Output dir (default: outputs/train/<timestamp>)
 #   NNODES                 torchrun node count (default: SLURM_NNODES or 1)
@@ -15,12 +15,12 @@
 #   MASTER_PORT            DDP rendezvous port (default: 29500)
 #
 # Examples:
-#   # 4-GPU pretrain on GPUs 0-3
-#   CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh
+#   # Active 8-GPU ESMC-6B training on GPUs 0-7
+#   CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash scripts/train.sh
 #
 #   # Resume current run
 #   RESUME=outputs/train/prev/ckpt_latest.pt \
-#     CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh
+#     CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash scripts/train.sh
 #
 #   # Single-GPU smoke test
 #   CUDA_VISIBLE_DEVICES=0 bash scripts/train.sh --total_steps 100
@@ -82,7 +82,7 @@ export NCCL_TIMEOUT=${NCCL_TIMEOUT:-1800000}
 export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
 
 # ── Config / output ───────────────────────────────────────────────────────────
-CONFIG="${CONFIG:-configs/direct_allatom_360m.yaml}"
+CONFIG="${CONFIG:-configs/direct_allatom_puremamba_attn6_geo_adaln_sf360_esmc6b_gpu8.yaml}"
 OUT_DIR="${OUT_DIR:-outputs/train/$(date +%Y%m%d_%H%M%S)}"
 MASTER_PORT="${MASTER_PORT:-29500}"
 mkdir -p "$OUT_DIR"

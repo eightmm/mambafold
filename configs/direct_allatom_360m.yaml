@@ -1,3 +1,6 @@
+# LEGACY ESM3 CONFIG: retained only for historical reproducibility.
+# Active training uses
+# configs/direct_allatom_puremamba_attn6_geo_adaln_sf360_esmc6b_gpu8.yaml.
 # MambaFold - direct all-atom scratch, ~390M scale (d_state=128 for long-range).
 #
 # Purpose:

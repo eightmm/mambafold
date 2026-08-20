@@ -1,13 +1,19 @@
-# External benchmark snapshot
+# Archived external benchmark snapshot (legacy ESM3/OmegaFold)
+
+> **Archive only; not an active comparison.** This 2026-08-13 snapshot is
+> preserved as historical numerical evidence for runners that included the
+> frozen ESM3 artifact and an OOM-limited OmegaFold attempt. Active MambaFold
+> development and reporting use ESMC-6B only. OmegaFold is excluded from the
+> active comparator roster because it did not complete the full target sets.
+> Do not copy the common-subset rankings below into current results.
 
 Snapshot: 2026-08-13 (Asia/Seoul)
 
-> Dataset-by-dataset completion, including the completed MambaFold-ESMC-6B
-> step-119,500 inference snapshot, is reported in
+> Current dataset roles and ESMC-only reporting are in
 > [`external_dataset_results.md`](external_dataset_results.md). This document
-> retains the detailed ESM3-focused accuracy and speed analysis. The ESM3
-> artifact is frozen; the ESMC-6B snapshot is a provisional result from an
-> active training program, not a final model.
+> retains the detailed legacy ESM3-focused accuracy and speed analysis. The
+> ESM3 artifact is frozen; the ESMC-6B step-119,500 snapshot recorded below was
+> provisional and has been superseded by the step-170k preview.
 
 ## Scope
 
@@ -88,7 +94,7 @@ it is not an architecture-wide maximum length claim.
 
 ## Runtime interpretation and optimization headroom
 
-The MambaFold-ESM3 timing above is the measured cost of the current profiled
+The MambaFold-ESM3 timing above is the measured cost of the then-profiled
 500-step runner, not an optimized steady-state lower bound.
 
 | Runtime subset | N | MambaFold-ESM3 120k | SimpleFold-360M | Mean-time ratio |
@@ -100,13 +106,13 @@ The seed-0 MambaFold logs contain 173 TileLang forward-kernel compilation
 events. They took 10.49 seconds on average (10-second median; 9--14-second
 range) and affected 152/462 targets, including 122/416 targets in the common
 subset. Removing those targets narrows the mean gap, but a 2.13x gap remains;
-JIT compilation therefore explains only part of the current runtime. The
+JIT compilation therefore explains only part of the recorded runtime. The
 length dependence is also different: on the single longest sequence
 (`L=881`), MambaFold took 25.80 seconds and SimpleFold took 30.46 seconds on the
 same RTX 6000 Ada. This one target is diagnostic evidence, not a throughput
 claim.
 
-The current frozen-ESM3 profiling wrapper also has avoidable runner overhead:
+The legacy frozen-ESM3 profiling wrapper also has avoidable runner overhead:
 
 - it leaves `record_trajectory=True`, copying a C-alpha trajectory from GPU to
   CPU at every one of the 500 sampling steps;
@@ -135,7 +141,7 @@ step 88,500 on CASP14 T1061 (`L=881`):
 | ODE / uniform | 100 | 7.23 | 0.403 | 0.672 | 0.330 | 0.656 | 18.158 |
 | SDE / logarithmic | 100 | 8.21 | 0.019 | 0.087 | 0.008 | 0.104 | 98.628 |
 
-Uniform 100-step SDE is the current fast-preset candidate: it was 5.7x faster
+Uniform 100-step SDE was the snapshot's fast-preset candidate: it was 5.7x faster
 than 500-step logarithmic SDE on this target while retaining similar global
 scores. The collapse of 100-step logarithmic SDE shows that the time schedule,
 not only the step count, is critical. A complete CASP14 sweep is required before
@@ -262,7 +268,7 @@ rather than a cross-model calibration benchmark.
 | OmegaFold model 2 | range 11.30--98.62 | 0.947 |
 
 The MambaFold ESM3 training contract has `w_conf=0.0`; its confidence head was
-not trained. The active ESMC baseline also has `w_conf=0.0`. Consequently,
+not trained. The step-119.5k ESMC snapshot also has `w_conf=0.0`. Consequently,
 MambaFold B-factors from these runs must **not** be reported as calibrated
 pLDDT. The observed negative rank correlation is consistent with that contract.
 
@@ -296,7 +302,7 @@ all-atom lDDT by −0.003, and backbone lDDT by −0.004. The higher mean RMSD
 of severe failures remain important even when the average bounded scores
 change little.
 
-Step 88,500 is the latest **fully scored** ESMC checkpoint. Step 119,500
+At the snapshot date, step 88,500 was the latest **fully scored** ESMC checkpoint. Step 119,500
 external inference is complete but has not yet been reference-scored. The
 ESMC result is an interim research result rather than a released model. ESM3
 and ESMC are not conditioning-equivalent: ESM3 has

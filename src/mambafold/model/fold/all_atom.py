@@ -71,7 +71,8 @@ class TimeEmbedding(nn.Module):
 class MambaFoldAllAtom(nn.Module):
     """Direct all-atom flow matching model.
 
-    Param target: ~225M (most of it in the Mamba trunk; pair stack ~3-5M).
+    The active ESMC-6B configuration overrides these generic constructor
+    defaults with an 18-block pair-free trunk and about 404.9M parameters.
 
     Args:
         d_res: Residue token dim. Default 1024.

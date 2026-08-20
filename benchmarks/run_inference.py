@@ -126,7 +126,8 @@ def main():
     p.add_argument(
         "--esm_dir",
         default=None,
-        help="optional ESM dir (must match training: leave unset for no-ESM models)",
+        help="ESM cache directory. For PLM-conditioned checkpoints this must be "
+        "provided here or recorded explicitly in the checkpoint config.",
     )
     p.add_argument("--max_length", type=int, default=2048)
     p.add_argument("--n_steps", type=int, default=50, help="Sampler integration steps")
@@ -315,17 +316,20 @@ def main():
         f"steric_guidance={geometry_guidance.steric_scale})"
     )
 
-    # Auto-fill --esm_dir from the ckpt's saved args when the ckpt was
-    # trained with use_plm=True. This avoids silent "batch.esm is None"
-    # failures when callers forget
-    # to forward --esm_dir explicitly. Explicit --esm_dir takes priority.
+    # Auto-fill --esm_dir only from an explicit checkpoint value. Never guess a
+    # legacy cache path: ESM3 and ESMC caches are not interchangeable.
     if args.esm_dir is None:
         ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)
         ck_args = ck.get("args", {})
         if not isinstance(ck_args, dict):
             ck_args = vars(ck_args)
         if ck_args.get("use_plm", False):
-            args.esm_dir = ck_args.get("esm_dir") or "data/rcsb_esm"
+            args.esm_dir = ck_args.get("esm_dir")
+            if not args.esm_dir:
+                p.error(
+                    "checkpoint uses PLM conditioning but does not record esm_dir; "
+                    "pass --esm_dir explicitly"
+                )
             print(f"[esm] auto-detected from ckpt: esm_dir={args.esm_dir}")
         del ck
 

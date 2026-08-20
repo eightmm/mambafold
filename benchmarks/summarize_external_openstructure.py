@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build full-five and common-six accuracy tables from external scores."""
+"""Build the active four-model accuracy tables from external scores."""
 
 from __future__ import annotations
 
@@ -12,18 +12,16 @@ from typing import Any
 
 METRICS = ("oligo_gdtts", "oligo_gdtha", "tm_score", "lddt", "bb_lddt", "rmsd")
 MODELS = (
-    ("mambafold_esm3_step120000", "MambaFold-ESM3, step 120,000"),
-    ("mambafold_esmc6b_step119500", "MambaFold-ESMC-6B, step 119,500"),
+    ("mambafold_esmc6b_step170000", "MambaFold-ESMC-6B, step 170,000 preview"),
     ("simplefold_360m", "SimpleFold-360M"),
-    ("esmfold_v1_6000ada", "ESMFold v1"),
-    ("dplm2_bit_650m_6000ada", "DPLM-2 Bit 650M"),
-    ("omegafold_model2_cycle1", "OmegaFold model 2"),
+    ("esmfold_v1", "ESMFold v1"),
+    ("dplm2_bit_650m", "DPLM-2 Bit 650M"),
 )
 DATASETS = (
-    ("casp15", "CASP15 strict single-chain"),
     ("casp16", "CASP16 strict single-chain"),
-    ("cameo22", "CAMEO22"),
+    ("casp15", "CASP15 strict single-chain"),
 )
+INCOMPARABLE_METRICS = {"dplm2_bit_650m": {"lddt"}}
 
 
 def aggregate(rows: dict[str, dict[str, Any]], target_ids: set[str]) -> dict[str, Any]:
@@ -43,29 +41,23 @@ def render_table(rows: list[dict[str, Any]]) -> list[str]:
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
+        values = {
+            metric: "NA" if row[metric] is None else f"{float(row[metric]):.3f}"
+            for metric in METRICS
+        }
         lines.append(
-            "| {label} | {n} | {oligo_gdtts:.3f} | {oligo_gdtha:.3f} | "
-            "{tm_score:.3f} | {lddt:.3f} | {bb_lddt:.3f} | {rmsd:.3f} |".format(**row)
+            f"| {row['label']} | {row['n']} | {values['oligo_gdtts']} | "
+            f"{values['oligo_gdtha']} | {values['tm_score']} | {values['lddt']} | "
+            f"{values['bb_lddt']} | {values['rmsd']} |"
         )
     return lines
 
 
-def main() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--score-root",
-        type=Path,
-        default=repo_root / "outputs/eval/external_compare_v1_20260812/scores/external_accuracy_v2",
-    )
-    parser.add_argument("--output-json", type=Path, required=True)
-    parser.add_argument("--output-md", type=Path, required=True)
-    args = parser.parse_args()
-
+def build_report(score_root: Path) -> tuple[dict[str, Any], str]:
     output: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now().astimezone().isoformat(),
-        "score_root": str(args.score_root.resolve()),
+        "score_root": str(score_root.resolve()),
         "datasets": {},
     }
     md = [
@@ -79,49 +71,60 @@ def main() -> None:
         summaries: dict[str, dict[str, Any]] = {}
         rows_by_model: dict[str, dict[str, dict[str, Any]]] = {}
         for model, _ in MODELS:
-            summary_path = args.score_root / dataset / model / "summary.json"
+            summary_path = score_root / dataset / model / "summary.json"
             if not summary_path.is_file():
                 raise SystemExit(f"Missing score summary: {summary_path}")
             summary = json.loads(summary_path.read_text())
-            if not summary["evaluation_complete_for_available_predictions"]:
+            complete = summary.get(
+                "evaluation_complete",
+                summary.get("evaluation_complete_for_available_predictions", False),
+            )
+            if not complete:
                 raise SystemExit(f"Incomplete score summary: {summary_path}")
             summaries[model] = summary
             rows_by_model[model] = {row["target_id"]: row for row in summary["target_rows"]}
 
-        full_models = [model for model, _ in MODELS[:-1]]
-        full_targets = set.intersection(*(set(rows_by_model[model]) for model in full_models))
-        expected_count = summaries[full_models[0]]["expected_target_count"]
-        if len(full_targets) != expected_count:
+        active_models = [model for model, _ in MODELS]
+        expected_counts = {
+            int(summaries[model]["expected_target_count"]) for model in active_models
+        }
+        if len(expected_counts) != 1:
             raise SystemExit(
-                f"{dataset}: full-five intersection is {len(full_targets)}, "
-                f"expected {expected_count}"
+                f"{dataset}: inconsistent expected target counts: {sorted(expected_counts)}"
             )
-        common_targets = set.intersection(*(set(rows_by_model[model]) for model, _ in MODELS))
+        expected_count = expected_counts.pop()
+        full_targets = set(rows_by_model[active_models[0]])
+        for model in active_models:
+            model_targets = set(rows_by_model[model])
+            if len(model_targets) != expected_count:
+                raise SystemExit(
+                    f"{dataset}/{model}: scored {len(model_targets)} targets, "
+                    f"expected {expected_count}"
+                )
+            if model_targets != full_targets:
+                missing = sorted(full_targets - model_targets)
+                extra = sorted(model_targets - full_targets)
+                raise SystemExit(
+                    f"{dataset}/{model}: target set mismatch: missing={missing}, extra={extra}"
+                )
 
         full_rows = []
-        common_rows = []
         for model, label in MODELS:
-            if model in full_models:
-                full_rows.append(
-                    {
-                        "model": model,
-                        "label": label,
-                        **aggregate(rows_by_model[model], full_targets),
-                    }
-                )
-            common_rows.append(
+            aggregates = aggregate(rows_by_model[model], full_targets)
+            for metric in INCOMPARABLE_METRICS.get(model, set()):
+                aggregates[metric] = None
+            full_rows.append(
                 {
                     "model": model,
                     "label": label,
-                    **aggregate(rows_by_model[model], common_targets),
+                    **aggregates,
                 }
             )
 
         output["datasets"][dataset] = {
             "label": dataset_label,
-            "aggregation": summaries[full_models[0]]["aggregation"],
-            "full_five": {"target_ids": sorted(full_targets), "rows": full_rows},
-            "common_six": {"target_ids": sorted(common_targets), "rows": common_rows},
+            "aggregation": summaries[active_models[0]]["aggregation"],
+            "full_comparison": {"target_ids": sorted(full_targets), "rows": full_rows},
         }
 
         md.extend((f"## {dataset_label}", ""))
@@ -137,10 +140,8 @@ def main() -> None:
             md.extend(("Official whole-chain references are used.", ""))
         else:
             md.extend(("Frozen state-1 references are used.", ""))
-        md.extend((f"### Full five-model set (N={len(full_targets)})", ""))
+        md.extend((f"### Full four-model comparison (N={len(full_targets)})", ""))
         md.extend(render_table(full_rows))
-        md.extend(("", f"### All-six common set (N={len(common_targets)})", ""))
-        md.extend(render_table(common_rows))
         md.append("")
 
     md.extend(
@@ -151,10 +152,26 @@ def main() -> None:
             "",
         )
     )
+    return output, "\n".join(md)
+
+
+def main() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--score-root",
+        type=Path,
+        default=repo_root / "outputs/eval/external_compare_esmc6b/scores/external_accuracy_v2",
+    )
+    parser.add_argument("--output-json", type=Path, required=True)
+    parser.add_argument("--output-md", type=Path, required=True)
+    args = parser.parse_args()
+
+    output, markdown = build_report(args.score_root)
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.output_md.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(json.dumps(output, indent=2) + "\n")
-    args.output_md.write_text("\n".join(md))
+    args.output_md.write_text(markdown)
     print(args.output_json)
     print(args.output_md)
 

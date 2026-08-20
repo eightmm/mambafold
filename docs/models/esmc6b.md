@@ -1,16 +1,16 @@
 # MambaFold ESMC-6B track
 
-This is the active successor to the ESM3 legacy baseline.  It uses the pinned
+This is the sole active MambaFold research and release track. It uses the pinned
 sequence-only `biohub/ESMC-6B` revision
 `45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a` and 2,560-dimensional residue
-embeddings.  The different embedding width makes ESMC-6B checkpoints
+embeddings. The different embedding width makes ESMC-6B checkpoints
 incompatible with ESM3 checkpoints.
 
 ## Current contract
 
 | Field | Value |
 | --- | --- |
-| Configuration | `configs/direct_allatom_puremamba_attn6_geo_adaln_sf360_esmc6b.yaml` |
+| Configuration | `configs/direct_allatom_puremamba_attn6_geo_adaln_sf360_esmc6b_gpu8.yaml` |
 | PLM | sequence-only ESMC-6B, pinned revision above |
 | Training data | official Boltz-style processed RCSB plus AFDB SwissProt, with single-chain extraction |
 | Cache identity | SHA-256 of canonical amino-acid sequence; repeated sequences share one embedding cache entry |
@@ -29,9 +29,9 @@ EMA state is distributed as a verified, deliberately provisional preview in
 50,000-step geometry fine-tuning experiment initialized from that EMA remains
 in progress, so step 170,000 is not a final model selection.
 
-The step-170,000 EMA was evaluated on all 70 fixed CASP14 whole-chain targets
-with seed 0, 500-step SDE sampling, and OpenStructure 2.9.1. T1044 is excluded
-because it exceeds the 1,024-residue model limit.
+The step-170,000 EMA was evaluated on the fixed 70-target CASP14 whole-chain
+set with seed 0, 500-step SDE sampling, and OpenStructure 2.9.1. That set
+excludes T1044 because it exceeds the 1,024-residue model limit.
 
 | Checkpoint | GDT-TS ↑ | GDT-HA ↑ | TM-score ↑ | all-atom lDDT ↑ | backbone lDDT ↑ | RMSD (Å) ↓ |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -44,11 +44,16 @@ All values are 70-target means from `ost compare-structures` with
 --tm-score`. The machine-readable interim record is
 [`../results/esmc6b_casp14_interim.json`](../results/esmc6b_casp14_interim.json).
 
-These remain interim research results, not a frozen final model. The
+These remain interim research results, not a frozen final model. CASP14 also
+contains six exact matches to the coordinate-training corpus
+(`T1029`, `T1030`, `T1034`, `T1065s2`, `T1082`, and `T1092`). The
 step-170,000 inference-only EMA is distributed as a preview, while its source
 training state and the ongoing geometry fine-tune are not. ESMC-6B pretraining
 postdates CASP14; accordingly, CASP14 is retrospective engineering evidence
 and must not be described as a temporally clean blind test.
+
+New model comparisons use only ESMC-6B. The frozen ESM3 directory is retained
+for historical reproduction and is not an active baseline.
 
 ## Reproduction entrypoints
 

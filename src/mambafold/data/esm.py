@@ -1,7 +1,7 @@
 """Standalone ESM embedding extractor (not part of model weights).
 
 Usage:
-    embedder = ESMEmbedder("esm3-open")
+    embedder = ESMEmbedder("esmc-6b")
     # In collator or inference:
     esm_out = embedder(sequences, max_length=384)  # [B, max_length, d_esm]
 """
@@ -56,12 +56,7 @@ def _esmc_6b_snapshot_dir() -> Path:
         else:
             hf_home = Path(os.environ.get("HF_HOME", "~/.cache/huggingface")).expanduser()
             cache_root = hf_home / "hub"
-        snapshot = (
-            cache_root
-            / "models--biohub--ESMC-6B"
-            / "snapshots"
-            / ESMC_6B_REVISION
-        )
+        snapshot = cache_root / "models--biohub--ESMC-6B" / "snapshots" / ESMC_6B_REVISION
 
     required = ("config.json", "model.safetensors.index.json", "tokenizer.json")
     missing = [name for name in required if not (snapshot / name).is_file()]
@@ -151,7 +146,17 @@ class ESMEmbedder:
     Not an nn.Module — ESM weights are never part of the training model.
     """
 
-    def __init__(self, model_name: str = "esm3-open", device: str = "cuda"):
+    def __init__(self, model_name: str = ESMC_6B_MODEL_NAME, device: str = "cuda"):
+        model_name = model_name.strip()
+        model_key = model_name.lower()
+        if not (
+            model_key in {ESMC_6B_MODEL_NAME, ESMC_6B_REPO_ID.lower()}
+            or model_key.startswith(("esmc", "esm3"))
+        ):
+            raise ValueError(
+                "Unsupported ESM model name. Use an explicit 'esmc*' or 'esm3*' "
+                f"model name, got {model_name!r}."
+            )
         self.model_name = model_name
         self.device = torch.device(device)
         self._client = None
@@ -160,7 +165,9 @@ class ESMEmbedder:
 
     @torch.no_grad()
     def __call__(
-        self, sequences: list[str], max_length: int | None = None,
+        self,
+        sequences: list[str],
+        max_length: int | None = None,
     ) -> Tensor:
         """Extract ESM embeddings for a list of protein sequences.
 
@@ -225,16 +232,19 @@ class ESMEmbedder:
         if self._client is not None:
             return self._client
         name = self.model_name
-        if name.lower() in {ESMC_6B_MODEL_NAME, ESMC_6B_REPO_ID.lower()}:
+        model_key = name.lower()
+        if model_key in {ESMC_6B_MODEL_NAME, ESMC_6B_REPO_ID.lower()}:
             self._client = _load_esmc_6b(self.device)
-        elif name.startswith("esmc"):
+        elif model_key.startswith("esmc"):
             api = self._get_api()
             _, ESMC, _, _ = api
             self._client = ESMC.from_pretrained(name).to(self.device)
-        else:
+        elif model_key.startswith("esm3"):
             api = self._get_api()
             ESM3, _, _, _ = api
             self._client = ESM3.from_pretrained(name).to(self.device)
+        else:  # Defensive: __init__ rejects every other model family.
+            raise AssertionError(f"Unreachable ESM model family: {name!r}")
         self._client.eval()
         for p in self._client.parameters():
             p.requires_grad_(False)

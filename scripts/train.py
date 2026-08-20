@@ -2,15 +2,15 @@
 """MambaFold — full training script (single/multi-GPU DDP).
 
 Preferred launcher (sets NETRC / NCCL / CUDA_VISIBLE_DEVICES for you):
-    CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh
+    CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash scripts/train.sh
 
 Direct torchrun (equivalent):
-    PYTHONPATH=src torchrun --nproc_per_node=4 scripts/train.py \
-        --config configs/direct_allatom_360m.yaml
+    PYTHONPATH=src torchrun --nproc_per_node=8 scripts/train.py \
+        --config configs/direct_allatom_puremamba_attn6_geo_adaln_sf360_esmc6b_gpu8.yaml
 
 Resume:
     RESUME=outputs/train/run1/ckpt_latest.pt \
-        CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh
+        CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash scripts/train.sh
 """
 
 import json

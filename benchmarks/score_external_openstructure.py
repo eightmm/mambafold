@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -24,14 +25,22 @@ from pathlib import Path
 from typing import Any
 
 METRICS = ("oligo_gdtts", "oligo_gdtha", "tm_score", "lddt", "bb_lddt", "rmsd")
-MODEL_NAMES = (
-    "mambafold_esm3_step120000",
-    "mambafold_esmc6b_step119500",
-    "simplefold_360m",
-    "esmfold_v1_6000ada",
-    "dplm2_bit_650m_6000ada",
-    "omegafold_model2_cycle1",
+COMPARE_STRUCTURE_ARGS = (
+    "--fault-tolerant",
+    "--min-pep-length",
+    "4",
+    "--lddt",
+    "--bb-lddt",
+    "--rigid-scores",
+    "--tm-score",
 )
+MODEL_NAMES = (
+    "mambafold_esmc6b_step170000",
+    "simplefold_360m",
+    "esmfold_v1",
+    "dplm2_bit_650m",
+)
+DEFAULT_CASP14_REFERENCE_SUBDIR = Path("references/casp14_full70")
 
 
 @dataclass(frozen=True)
@@ -49,6 +58,37 @@ def read_tsv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle, delimiter="\t"))
 
 
+def read_target_filter(path: Path) -> tuple[set[str], dict[str, Any]]:
+    identifiers = [
+        line.split("#", 1)[0].strip().lower()
+        for line in path.read_text().splitlines()
+        if line.split("#", 1)[0].strip()
+    ]
+    if not identifiers:
+        raise SystemExit(f"Target filter is empty: {path}")
+    if len(identifiers) != len(set(identifiers)):
+        raise SystemExit(f"Target filter contains duplicate IDs: {path}")
+    return set(identifiers), {
+        "filename": path.name,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "target_ids": sorted(identifiers),
+    }
+
+
+def apply_target_filter(
+    references: list[Reference], path: Path, dataset: str
+) -> tuple[list[Reference], dict[str, Any]]:
+    requested_ids, metadata = read_target_filter(path)
+    reference_ids = {reference.target_id.lower() for reference in references}
+    unknown_ids = sorted(requested_ids - reference_ids)
+    if unknown_ids:
+        raise SystemExit(f"Target filter contains IDs absent from {dataset}: {unknown_ids}")
+    selected = [
+        reference for reference in references if reference.target_id.lower() in requested_ids
+    ]
+    return selected, metadata
+
+
 def load_mapping(evaluation_root: Path, dataset_key: str) -> dict[str, dict[str, Any]]:
     manifest = json.loads((evaluation_root / "inputs/manifest.json").read_text())
     rows = [row for row in manifest["mapping"] if row["dataset"] == dataset_key]
@@ -58,13 +98,25 @@ def load_mapping(evaluation_root: Path, dataset_key: str) -> dict[str, dict[str,
     return mapping
 
 
-def load_references(repo_root: Path, evaluation_root: Path, dataset: str) -> list[Reference]:
+def load_references(
+    repo_root: Path,
+    evaluation_root: Path,
+    dataset: str,
+    *,
+    casp14_reference_dir: Path | None = None,
+) -> list[Reference]:
     if dataset == "casp14":
         mapping = load_mapping(evaluation_root, "casp14_70")
-        pair_root = evaluation_root / "scores/casp14_full70/pairs/mambafold_esm3_step120000"
+        reference_root = casp14_reference_dir or evaluation_root / DEFAULT_CASP14_REFERENCE_SUBDIR
+        if not reference_root.is_dir():
+            raise SystemExit(
+                "Missing model-independent CASP14 reference directory: "
+                f"{reference_root}. Populate it with <target>_gt.pdb files or pass "
+                "--casp14-reference-dir."
+            )
         references = []
         for fasta_id, mapping_row in sorted(mapping.items()):
-            reference_path = pair_root / f"{fasta_id}_gt.pdb"
+            reference_path = reference_root / f"{fasta_id}_gt.pdb"
             if not reference_path.is_file():
                 raise SystemExit(f"Missing frozen CASP14 reference PDB: {reference_path}")
             references.append(
@@ -233,7 +285,33 @@ def valid_result(path: Path) -> dict[str, Any] | None:
     return result
 
 
-def summarize(values: list[float]) -> dict[str, float | int]:
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def valid_cached_result(
+    result_path: Path,
+    identity_path: Path,
+    expected_identity: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return a score only when it was produced for these exact inputs."""
+    result = valid_result(result_path)
+    if result is None or not identity_path.is_file():
+        return None
+    try:
+        recorded_identity = json.loads(identity_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    return result if recorded_identity == expected_identity else None
+
+
+def summarize(values: list[float]) -> dict[str, float | int | None]:
+    if not values:
+        return {"n": 0, "mean": None, "median": None, "min": None, "max": None}
     return {
         "n": len(values),
         "mean": statistics.fmean(values),
@@ -256,11 +334,26 @@ def score(args: argparse.Namespace) -> int:
     repo_root = args.repo_root.resolve()
     evaluation_root = args.evaluation_root.resolve()
     out_dir = args.out_dir.resolve()
-    references = load_references(repo_root, evaluation_root, args.dataset)
+    casp14_reference_dir = getattr(args, "casp14_reference_dir", None)
+    if casp14_reference_dir is not None:
+        casp14_reference_dir = casp14_reference_dir.expanduser().resolve()
+    references = load_references(
+        repo_root,
+        evaluation_root,
+        args.dataset,
+        casp14_reference_dir=casp14_reference_dir,
+    )
+    target_filter = None
+    target_ids_path = getattr(args, "target_ids", None)
+    if target_ids_path is not None:
+        references, target_filter = apply_target_filter(references, target_ids_path, args.dataset)
     predictions = prediction_index(evaluation_root, args.model)
     ost = args.ost.resolve()
     if not ost.is_file():
         raise SystemExit(f"OpenStructure executable not found: {ost}")
+    version = subprocess.run(
+        [str(ost), "--version"], check=True, capture_output=True, text=True
+    ).stdout.strip()
 
     expected_target_ids = sorted({reference.target_id for reference in references})
     available_target_ids = sorted(
@@ -281,6 +374,8 @@ def score(args: argparse.Namespace) -> int:
         reference_input = inputs_dir / f"{pair_id}_gt.pdb"
         prediction_stage = stage_pdb(predictions[reference.canonical_id], prediction_input)
         reference_stage = stage_pdb(reference.path, reference_input)
+        prediction_sha256 = file_sha256(prediction_input)
+        reference_sha256 = file_sha256(reference_input)
         chain_normalization_count += int(prediction_stage["normalized"])
         chain_normalization_count += int(reference_stage["normalized"])
         manifest_rows.append(
@@ -294,15 +389,18 @@ def score(args: argparse.Namespace) -> int:
                 "reference_source": str(reference.path.resolve()),
                 "prediction_input": str(prediction_input),
                 "reference_input": str(reference_input),
+                "prediction_sha256": prediction_sha256,
+                "reference_sha256": reference_sha256,
                 "prediction_chain_stage": prediction_stage,
                 "reference_chain_stage": reference_stage,
             }
         )
 
     input_manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "dataset": args.dataset,
         "model": args.model,
+        "target_filter": target_filter,
         "expected_target_count": len(expected_target_ids),
         "available_prediction_target_count": len(available_target_ids),
         "reference_pair_count": len(manifest_rows),
@@ -319,10 +417,24 @@ def score(args: argparse.Namespace) -> int:
     for index, row in enumerate(manifest_rows, start=1):
         pair_id = row["pair_id"]
         output = raw_dir / f"{pair_id}.json"
-        result = valid_result(output)
+        identity_path = raw_dir / f"{pair_id}.inputs.json"
+        expected_identity = {
+            "schema_version": 1,
+            "dataset": args.dataset,
+            "model": args.model,
+            "pair_id": pair_id,
+            "canonical_id": row["canonical_id"],
+            "prediction_sha256": row["prediction_sha256"],
+            "reference_sha256": row["reference_sha256"],
+            "openstructure_version": version,
+            "compare_structure_args": list(COMPARE_STRUCTURE_ARGS),
+        }
+        result = valid_cached_result(output, identity_path, expected_identity)
         if result is None:
             if output.exists():
                 output.unlink()
+            if identity_path.exists():
+                identity_path.unlink()
             command = [
                 str(ost),
                 "compare-structures",
@@ -332,13 +444,7 @@ def score(args: argparse.Namespace) -> int:
                 row["reference_input"],
                 "-o",
                 str(output),
-                "--fault-tolerant",
-                "--min-pep-length",
-                "4",
-                "--lddt",
-                "--bb-lddt",
-                "--rigid-scores",
-                "--tm-score",
+                *COMPARE_STRUCTURE_ARGS,
             ]
             print(f"[{index}/{len(manifest_rows)}] SCORE {pair_id}", flush=True)
             completed = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -354,6 +460,7 @@ def score(args: argparse.Namespace) -> int:
                     }
                 )
                 continue
+            identity_path.write_text(json.dumps(expected_identity, indent=2) + "\n")
         else:
             print(f"[{index}/{len(manifest_rows)}] RESUME {pair_id}", flush=True)
 
@@ -394,14 +501,13 @@ def score(args: argparse.Namespace) -> int:
             )
         target_rows.append(target_row)
 
-    version = subprocess.run(
-        [str(ost), "--version"], check=True, capture_output=True, text=True
-    ).stdout.strip()
+    evaluation_complete = not failures and len(target_rows) == len(expected_target_ids)
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now().astimezone().isoformat(),
         "dataset": args.dataset,
         "model": args.model,
+        "target_filter": target_filter,
         "aggregation": (
             "mapped-residue-weighted domain/EU mean within target, then unweighted target mean"
             if args.dataset == "casp15"
@@ -419,6 +525,7 @@ def score(args: argparse.Namespace) -> int:
         "evaluation_complete_for_available_predictions": (
             not failures and len(target_rows) == len(available_target_ids)
         ),
+        "evaluation_complete": evaluation_complete,
         "openstructure": {
             "version": version,
             "executable": str(ost),
@@ -451,7 +558,7 @@ def score(args: argparse.Namespace) -> int:
         ),
         flush=True,
     )
-    return 0 if summary["evaluation_complete_for_available_predictions"] else 1
+    return 0 if evaluation_complete else 1
 
 
 def main() -> None:
@@ -465,9 +572,25 @@ def main() -> None:
     parser.add_argument(
         "--evaluation-root",
         type=Path,
-        default=repo_root / "outputs/eval/external_compare_v1_20260812",
+        default=repo_root / "outputs/eval/external_compare_esmc6b",
+    )
+    parser.add_argument(
+        "--casp14-reference-dir",
+        type=Path,
+        help=(
+            "directory containing <target>_gt.pdb CASP14 references "
+            "(default: EVALUATION_ROOT/references/casp14_full70)"
+        ),
     )
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument(
+        "--target-ids",
+        type=Path,
+        help=(
+            "optional exact/homology-clean target ID file; filtered IDs become "
+            "the complete expected evaluation set"
+        ),
+    )
     parser.add_argument(
         "--ost",
         type=Path,

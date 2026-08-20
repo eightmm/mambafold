@@ -2,7 +2,7 @@
 # Sequential direct all-atom architecture ablations.
 #
 # Run when GPUs are free:
-#   CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/run_selfcond_ablation_queue.sh
+#   CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash scripts/run_selfcond_ablation_queue.sh
 #
 # Hypotheses:
 #   1. Self-conditioning improves CASP14 TM/GDT/lDDT at matched steps.
@@ -12,10 +12,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CONFIG=${CONFIG:-configs/direct_allatom_puremamba_attn6_geo_adaln_sf360.yaml}
+CONFIG=${CONFIG:-configs/direct_allatom_puremamba_attn6_geo_adaln_sf360_esmc6b_gpu8.yaml}
 BASE_PORT=${BASE_PORT:-29710}
 STEPS=${STEPS:-50000}
-GPUS=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+GPUS=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 
 run_train() {
     local name="$1"
@@ -34,15 +34,15 @@ run_train() {
         "$@"
 }
 
-run_train direct_puremamba_sf360_selfcond_50k "$BASE_PORT" \
+run_train direct_puremamba_sf360_esmc6b_selfcond_50k "$BASE_PORT" \
     --self_conditioning \
     --self_condition_prob 0.5 \
-    --wandb_tags direct_allatom pure_mamba attn_every_6 adaln_zero self_conditioning ablation
+    --wandb_tags direct_allatom pure_mamba attn_every_6 adaln_zero esmc6b self_conditioning ablation
 
-run_train direct_puremamba_sf360_selfcond_pairaux_50k "$((BASE_PORT + 1))" \
+run_train direct_puremamba_sf360_esmc6b_selfcond_pairaux_50k "$((BASE_PORT + 1))" \
     --self_conditioning \
     --self_condition_prob 0.5 \
     --pairfree_aux_heads \
     --w_distogram 0.2 \
     --w_contact 0.1 \
-    --wandb_tags direct_allatom pure_mamba attn_every_6 adaln_zero self_conditioning pairfree_aux ablation
+    --wandb_tags direct_allatom pure_mamba attn_every_6 adaln_zero esmc6b self_conditioning pairfree_aux ablation

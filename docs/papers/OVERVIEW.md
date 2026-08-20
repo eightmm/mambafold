@@ -1,31 +1,44 @@
-# Paper Overview
+# Reference overview
 
-These notes map the active MambaFold implementation to its main references.
+These notes map the active MambaFold-ESMC-6B implementation to its main
+architectural references. Paper drafting itself is maintained outside this
+directory.
 
 ## SimpleFold
 
-SimpleFold is the architectural reference: all-atom generation with an atom encoder, residue-level global trunk, atom decoder, PLM conditioning, and structure-aware auxiliary losses.
+SimpleFold provides the primary folding comparison and the high-level
+atom-encoder, residue-trunk, atom-decoder decomposition. SimpleFold-360M is the
+size-matched primary baseline; SimpleFold-3B is a scale reference when an
+evaluation under the same target and scoring contract is available.
 
-MambaFold keeps this decomposition but replaces the expensive trunk with Mamba-3 blocks.
+MambaFold retains the direct all-atom flow-matching decomposition but uses a
+pair-free Bi-Mamba residue trunk with sparse self-attention.
 
 ## Mamba-3
 
-Mamba-3 is the sequence-modeling backbone used in the residue trunk. The goal is to keep long-range residue communication while avoiding a full quadratic attention trunk.
+Mamba-3 supplies the sequence-modeling blocks used bidirectionally in the atom
+encoder, residue trunk, and atom decoder. The active 18-block residue trunk
+inserts self-attention every six blocks for sparse global communication.
 
-Current implementation uses bidirectional Mamba stacks for atom encoder/decoder and residue trunk blocks.
+## ESMC-6B conditioning
 
-## Active Objective
+The active conditioner is the frozen, sequence-only `biohub/ESMC-6B` revision
+pinned in [`../models/esmc6b.md`](../models/esmc6b.md). Its residue embeddings
+are projected into the trunk input. ESM3 belongs only to the immutable legacy
+archive and is not part of the active comparison.
 
-The active training objective is flow matching:
+## Flow objective
 
 ```text
-x_t = t * x_clean + (1 - t) * eps
-model target = x_clean - eps
+x_t = t * x_clean + (1 - t) * epsilon
+target velocity = x_clean - epsilon
 ```
 
-ESM3 embeddings are concatenated into the residue trunk input. Auxiliary heads provide distogram and pLDDT supervision.
+The atom decoder predicts the velocity for every valid atom slot. Geometry,
+lDDT, and topology terms supplement the masked flow-matching objective.
 
-## Reading Order
+## Reading order
 
 1. `simplefold_summary.md` for the folding pipeline template.
 2. `mamba3_summary.md` for the sequence backbone.
+3. [`../architecture.md`](../architecture.md) for the active implementation.
