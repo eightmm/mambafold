@@ -234,6 +234,7 @@ class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
         )
         self.seed = seed
         self.epoch = 0
+        self._start_batch = 0
         self.megabatch_mult = max(1, megabatch_mult)
 
         # Exact per-rank batch count after globally aligned drop_last.
@@ -250,6 +251,18 @@ class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
+
+    def set_start_batch(self, start_batch: int) -> None:
+        """Skip batch indices before dataset workers receive any samples.
+
+        The offset changes only which suffix of the deterministic epoch is
+        yielded.  ``__len__`` deliberately remains the full epoch length so
+        checkpoint accounting stays independent of a one-time resume offset.
+        """
+        start_batch = int(start_batch)
+        if not 0 <= start_batch <= self._n_batches:
+            raise ValueError(f"start_batch={start_batch} outside [0, {self._n_batches}]")
+        self._start_batch = start_batch
 
     def __iter__(self) -> Iterator[list[int]]:
         g = torch.Generator()
@@ -283,7 +296,7 @@ class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
 
         # Shuffle batch order so the model doesn't see length-monotonic batches.
         perm = torch.randperm(len(batches), generator=g).tolist()
-        return iter([batches[i] for i in perm])
+        return iter([batches[i] for i in perm[self._start_batch :]])
 
     def __len__(self) -> int:
         return self._n_batches

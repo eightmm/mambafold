@@ -8,6 +8,7 @@ from mambafold.losses.geometry import (
     bond_length_loss,
     ca_clash_loss,
 )
+from mambafold.losses.lddt import soft_lddt_ca_loss
 
 
 def _build_ideal_residue(res_name: str, base_z: float = 0.0) -> torch.Tensor:
@@ -93,3 +94,37 @@ def test_ca_clash_loss_penalises_overlap():
     coords = torch.zeros(B, L, 15, 3)  # all Cα at origin
     res_mask = torch.ones(B, L, dtype=torch.bool)
     assert ca_clash_loss(coords, res_mask).item() > 0.0
+
+
+def test_soft_lddt_cdist_matches_explicit_distances_and_gradients():
+    """The memory-efficient cdist path preserves the original loss and gradient."""
+    torch.manual_seed(7)
+    pred = torch.randn(2, 7, 15, 3, dtype=torch.float64, requires_grad=True)
+    true = torch.randn(2, 7, 15, 3, dtype=torch.float64)
+    mask = torch.tensor(
+        [
+            [True, True, True, False, True, True, True],
+            [True, False, True, True, True, False, True],
+        ]
+    )
+
+    actual = soft_lddt_ca_loss(pred, true, mask)
+    actual_grad = torch.autograd.grad(actual, pred, retain_graph=True)[0]
+
+    pred_ca = pred[:, :, 1, :]
+    true_ca = true[:, :, 1, :]
+    pred_dist = torch.linalg.norm(pred_ca.unsqueeze(2) - pred_ca.unsqueeze(1), dim=-1)
+    true_dist = torch.linalg.norm(true_ca.unsqueeze(2) - true_ca.unsqueeze(1), dim=-1)
+    pair_mask = mask.unsqueeze(2) & mask.unsqueeze(1) & (true_dist < 1.5)
+    pair_mask &= ~torch.eye(7, dtype=torch.bool).unsqueeze(0)
+    dist_error = (pred_dist - true_dist).abs()
+    score = (
+        sum(torch.sigmoid((threshold - dist_error) * 5.0) for threshold in (0.05, 0.1, 0.2, 0.4))
+        / 4
+    )
+    weight = pair_mask.to(score.dtype)
+    expected = 1.0 - (score * weight).sum() / weight.sum().clamp(min=1)
+    expected_grad = torch.autograd.grad(expected, pred)[0]
+
+    torch.testing.assert_close(actual, expected, rtol=1e-10, atol=1e-10)
+    torch.testing.assert_close(actual_grad, expected_grad, rtol=1e-9, atol=1e-10)

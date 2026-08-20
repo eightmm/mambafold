@@ -1,20 +1,20 @@
 # `src/mambafold`
 
-This package implements the shared single-chain direct all-atom MambaFold
-architecture. The frozen ESM3 release uses this code for inference; the active
-research path uses the same architecture with ESMC-6B conditioning.
+This package implements the active single-chain direct all-atom MambaFold
+architecture conditioned on frozen, sequence-only ESMC-6B embeddings.
 
 ```text
 mambafold/
-├── data/        RCSB/AFDB datasets, PLM embedding loading, collation, transforms
+├── data/        RCSB/AFDB datasets, ESMC cache loading, collation, transforms
 ├── losses/      flow-matching, lDDT, geometry, and topology auxiliaries
-├── model/       Bi-Mamba blocks and atom→token→atom model
+├── model/       Bi-Mamba atom encoder/decoder and pair-free residue trunk
 ├── sampling/    direct all-atom ODE/SDE samplers
-├── train/       config, DDP, engine, logging, and checkpoint loading
+├── train/       configuration, DDP, engine, logging, and checkpoints
 └── utils/       geometry helpers
 ```
 
-The public ESM3 FASTA entrypoint is
-[`projects/esm3/predict_fasta.py`](../projects/esm3/predict_fasta.py). Do not
-resume its checkpoint with the ESMC-6B configuration: ESM3 uses 1,536-d PLM
-embeddings while ESMC-6B uses 2,560-d embeddings.
+The public FASTA entrypoint is
+[`projects/esmc6b/predict_fasta.py`](../projects/esmc6b/predict_fasta.py).
+The ESM3 project is an immutable legacy archive only. ESM3 and ESMC-6B
+checkpoints are incompatible because their PLM feature widths are 1,536 and
+2,560, respectively.

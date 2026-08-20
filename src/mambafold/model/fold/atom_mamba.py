@@ -4,7 +4,7 @@ The direct all-atom model reasons at three levels, all SSM-based so the
 "MambaFold" identity holds end to end:
 
     atom  →  AtomEncoder (BiMamba over the A atom slots of each residue) → pool
-    token →  residue trunk (Mamba + triangle-mult pair stack)            ← global
+    token →  pair-free residue trunk (Bi-Mamba + sparse attention)      ← global
     atom  →  AtomDecoder (BiMamba over the A atom slots) → per-atom velocity
 
 Atom attention is intentionally avoided: the canonical atom ordering within a

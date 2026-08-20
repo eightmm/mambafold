@@ -7,7 +7,8 @@ on the first bucketing run; running it ahead of time avoids the startup scan.
 
 Usage:
     PYTHONPATH=src uv run python scripts/precompute_lengths.py \
-        --config configs/direct_allatom_360m.yaml [--length_cache_workers 16]
+        --config configs/direct_allatom_puremamba_attn6_geo_adaln_sf360_esmc6b_gpu8.yaml \
+        [--length_cache_workers 16]
 """
 
 from __future__ import annotations
@@ -43,14 +44,18 @@ def main():
     if extract:
         lens = sorted(t[2] for t in ds.chain_index)
         n = len(lens)
-        print(f"[precompute] extract_monomer_chains: {n} monomer chains from "
-              f"{len(ds.files)} files; len min={lens[0]} median={lens[n // 2]} max={lens[-1]}")
+        print(
+            f"[precompute] extract_monomer_chains: {n} monomer chains from "
+            f"{len(ds.files)} files; len min={lens[0]} median={lens[n // 2]} max={lens[-1]}"
+        )
     else:
         cache = build_length_cache(ds, num_workers=workers)
         lens = sorted(cache.values())
         n = len(lens)
-        print(f"[precompute] single-chain entries: valid={n}/{len(ds.files)}; "
-              f"len min={lens[0]} median={lens[n // 2]} max={lens[-1]}")
+        print(
+            f"[precompute] single-chain entries: valid={n}/{len(ds.files)}; "
+            f"len min={lens[0]} median={lens[n // 2]} max={lens[-1]}"
+        )
 
 
 if __name__ == "__main__":

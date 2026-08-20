@@ -33,6 +33,11 @@ from mambafold.losses.geometry import (
     ca_clash_loss,
 )
 from mambafold.losses.lddt import soft_lddt_all_atom_loss, soft_lddt_ca_loss
+from mambafold.losses.stereochemistry import (
+    all_atom_clash_surrogate_loss,
+    covalent_geometry_loss,
+    peptide_planarity_loss,
+)
 
 
 def _zero_like_loss(ref: Tensor) -> Tensor:
@@ -48,6 +53,175 @@ def _alpha(t: Tensor, mode: str) -> float:
 def _recon_atom(x_t: Tensor, t: Tensor, v_atom: Tensor) -> Tensor:
     one_minus_t = (1.0 - t.squeeze(-1).squeeze(-1)).view(-1, 1, 1, 1)
     return x_t + one_minus_t * v_atom
+
+
+def _smoothstep01(value: Tensor) -> Tensor:
+    value = value.clamp(0.0, 1.0)
+    return value.square() * (3.0 - 2.0 * value)
+
+
+def _geometry_time_weights(
+    t: Tensor,
+    *,
+    start: float,
+    ramp_end: float,
+    taper_start: float,
+    end: float,
+    jacobian_floor: float,
+) -> tuple[Tensor, Tensor]:
+    """Return smooth activation and x-hat-Jacobian-compensated weights."""
+    if not (0.0 <= start < ramp_end <= taper_start < end <= 1.0):
+        raise ValueError(
+            "geometry time bounds must satisfy 0 <= start < ramp_end <= taper_start < end <= 1"
+        )
+    if not (0.0 < jacobian_floor <= 1.0):
+        raise ValueError("geo_jacobian_floor must be in (0, 1]")
+    flat_t = t.reshape(t.shape[0], -1)[:, 0]
+    ramp = _smoothstep01((flat_t - start) / (ramp_end - start))
+    taper = 1.0 - _smoothstep01((flat_t - taper_start) / (end - taper_start))
+    gate = ramp * taper
+    compensated = gate / (1.0 - flat_t).clamp(min=jacobian_floor)
+    return gate, compensated
+
+
+def _geometry_bundle(
+    x_hat: Tensor,
+    batch: ProteinBatch,
+    *,
+    compute_ost: bool,
+    compute_covalent: bool,
+    compute_planarity: bool,
+    ost_clash_mode: str,
+    ost_clash_margin_A: float,
+    ost_clash_huber_A: float,
+    ost_clash_softplus_tau_A: float,
+    ost_clash_softplus_halo: float,
+    ost_clash_pair_chunk_size: int,
+    covalent_guard_tolerance_z: float,
+    geo_t_start: float,
+    geo_t_ramp_end: float,
+    geo_t_taper_start: float,
+    geo_t_end: float,
+    geo_jacobian_floor: float,
+    geo_max_examples_per_batch: int,
+    use_time_weighting: bool,
+) -> dict[str, Tensor]:
+    """Compute equal-protein geometry terms on a bounded subset of a batch."""
+    zero = _zero_like_loss(x_hat)
+    result = {
+        "ost_objective": zero,
+        "ost_raw": zero,
+        "ost_hard_per_1k": zero,
+        "ost_soft_per_1k": zero,
+        "covalent_objective": zero,
+        "covalent_raw": zero,
+        "planarity_objective": zero,
+        "planarity_raw": zero,
+        "active_fraction": zero,
+        "jacobian_mean": zero,
+    }
+    if not (compute_ost or compute_covalent or compute_planarity):
+        return result
+    if geo_max_examples_per_batch < 0:
+        raise ValueError("geo_max_examples_per_batch must be non-negative")
+
+    if use_time_weighting:
+        gate, compensated = _geometry_time_weights(
+            batch.t,
+            start=geo_t_start,
+            ramp_end=geo_t_ramp_end,
+            taper_start=geo_t_taper_start,
+            end=geo_t_end,
+            jacobian_floor=geo_jacobian_floor,
+        )
+    else:
+        gate = x_hat.new_ones(x_hat.shape[0])
+        compensated = gate
+    eligible = torch.nonzero(gate > 0.0, as_tuple=False).flatten()
+    if eligible.numel() == 0:
+        return result
+    if geo_max_examples_per_batch and eligible.numel() > geo_max_examples_per_batch:
+        selected_gate = gate[eligible]
+        selected = torch.topk(
+            selected_gate,
+            k=geo_max_examples_per_batch,
+            sorted=False,
+        ).indices
+        eligible = eligible[selected]
+
+    raw_weights = gate[eligible]
+    objective_weights = compensated[eligible]
+    metric_denominator = raw_weights.sum().clamp(min=1e-8)
+    # Preserve the absolute ramp/taper strength when fewer than one effective
+    # example is active.  Dividing by an arbitrarily small gate sum would
+    # otherwise cancel the taper entirely for a single selected example.
+    objective_denominator = raw_weights.sum().clamp(min=1.0)
+    ost_losses: list[Tensor] = []
+    ost_hard: list[Tensor] = []
+    ost_soft: list[Tensor] = []
+    covalent_losses: list[Tensor] = []
+    planarity_losses: list[Tensor] = []
+    for index in eligible.tolist():
+        coords = x_hat[index : index + 1]
+        if compute_ost:
+            steric = all_atom_clash_surrogate_loss(
+                coords,
+                batch.res_type[index : index + 1],
+                batch.atom_mask[index : index + 1],
+                batch.res_mask[index : index + 1],
+                batch.chain_id[index : index + 1],
+                batch.res_seq_nums[index : index + 1],
+                mode=ost_clash_mode,
+                margin_A=ost_clash_margin_A,
+                huber_delta_A=ost_clash_huber_A,
+                softplus_tau_A=ost_clash_softplus_tau_A,
+                softplus_halo=ost_clash_softplus_halo,
+                pair_chunk_size=ost_clash_pair_chunk_size,
+            )
+            ost_losses.append(steric["loss"])
+            ost_hard.append(1000.0 * steric["hard_clashes_per_atom"])
+            ost_soft.append(1000.0 * steric["soft_clashes_per_atom"])
+        if compute_covalent:
+            covalent_losses.append(
+                covalent_geometry_loss(
+                    coords,
+                    batch.res_type[index : index + 1],
+                    batch.atom_mask[index : index + 1],
+                    batch.res_mask[index : index + 1],
+                    batch.chain_id[index : index + 1],
+                    batch.res_seq_nums[index : index + 1],
+                    tolerance_z=covalent_guard_tolerance_z,
+                )
+            )
+        if compute_planarity:
+            planarity_losses.append(
+                peptide_planarity_loss(
+                    coords,
+                    batch.atom_mask[index : index + 1],
+                    batch.res_mask[index : index + 1],
+                    batch.chain_id[index : index + 1],
+                    batch.res_seq_nums[index : index + 1],
+                )
+            )
+
+    def reduce(values: list[Tensor], weights: Tensor, denominator: Tensor) -> Tensor:
+        if not values:
+            return zero
+        return (torch.stack(values) * weights).sum() / denominator
+
+    result["ost_objective"] = reduce(ost_losses, objective_weights, objective_denominator)
+    result["ost_raw"] = reduce(ost_losses, raw_weights, metric_denominator)
+    result["ost_hard_per_1k"] = reduce(ost_hard, raw_weights, metric_denominator)
+    result["ost_soft_per_1k"] = reduce(ost_soft, raw_weights, metric_denominator)
+    result["covalent_objective"] = reduce(covalent_losses, objective_weights, objective_denominator)
+    result["covalent_raw"] = reduce(covalent_losses, raw_weights, metric_denominator)
+    result["planarity_objective"] = reduce(
+        planarity_losses, objective_weights, objective_denominator
+    )
+    result["planarity_raw"] = reduce(planarity_losses, raw_weights, metric_denominator)
+    result["active_fraction"] = x_hat.new_tensor(eligible.numel() / max(1, x_hat.shape[0]))
+    result["jacobian_mean"] = (objective_weights.sum() / metric_denominator).detach()
+    return result
 
 
 def _fm_loss_atom(v_pred: Tensor, x_clean: Tensor, eps: Tensor, mask: Tensor) -> Tensor:
@@ -87,6 +261,24 @@ def allatom_loss_surface(
     lddt_cutoff: float,
     max_lddt_atoms: int,
     max_clash_atoms: int,
+    w_ost_clash: float = 0.0,
+    ost_clash_mode: str = "huber",
+    ost_clash_margin_A: float = 0.1,
+    ost_clash_huber_A: float = 0.25,
+    ost_clash_softplus_tau_A: float = 0.05,
+    ost_clash_softplus_halo: float = 6.0,
+    ost_clash_pair_chunk_size: int = 1024,
+    w_covalent_guard: float = 0.0,
+    covalent_guard_tolerance_z: float = 3.0,
+    w_peptide_planarity_guard: float = 0.0,
+    geo_t_start: float = 0.55,
+    geo_t_ramp_end: float = 0.65,
+    geo_t_taper_start: float = 0.95,
+    geo_t_end: float = 0.98,
+    geo_jacobian_floor: float = 0.1,
+    geo_max_examples_per_batch: int = 0,
+    diagnose_geometry: bool = False,
+    geo_use_time_weighting: bool = True,
 ) -> tuple[Tensor, dict]:
     """Direct all-atom composite loss.
 
@@ -124,7 +316,7 @@ def allatom_loss_surface(
             res_seq_nums=batch.res_seq_nums,
             true_coords=x_clean,
         )
-        if w_bond
+        if w_bond or diagnose_geometry
         else _zero_like_loss(x_hat)
     )
     loss_clash = (
@@ -135,13 +327,34 @@ def allatom_loss_surface(
             chain_id=batch.chain_id,
             max_atoms=max_clash_atoms,
         )
-        if w_clash
+        if w_clash or diagnose_geometry
         else _zero_like_loss(x_hat)
     )
     loss_ca_clash = (
         ca_clash_loss(x_hat, batch.res_mask, chain_id=batch.chain_id)
-        if w_ca_clash
+        if w_ca_clash or diagnose_geometry
         else _zero_like_loss(x_hat)
+    )
+    geometry = _geometry_bundle(
+        x_hat,
+        batch,
+        compute_ost=bool(w_ost_clash) or diagnose_geometry,
+        compute_covalent=bool(w_covalent_guard) or diagnose_geometry,
+        compute_planarity=bool(w_peptide_planarity_guard) or diagnose_geometry,
+        ost_clash_mode=ost_clash_mode,
+        ost_clash_margin_A=ost_clash_margin_A,
+        ost_clash_huber_A=ost_clash_huber_A,
+        ost_clash_softplus_tau_A=ost_clash_softplus_tau_A,
+        ost_clash_softplus_halo=ost_clash_softplus_halo,
+        ost_clash_pair_chunk_size=ost_clash_pair_chunk_size,
+        covalent_guard_tolerance_z=covalent_guard_tolerance_z,
+        geo_t_start=geo_t_start,
+        geo_t_ramp_end=geo_t_ramp_end,
+        geo_t_taper_start=geo_t_taper_start,
+        geo_t_end=geo_t_end,
+        geo_jacobian_floor=geo_jacobian_floor,
+        geo_max_examples_per_batch=geo_max_examples_per_batch,
+        use_time_weighting=geo_use_time_weighting,
     )
 
     loss_dist = (
@@ -222,6 +435,9 @@ def allatom_loss_surface(
         + w_ca_self_clash * loss_selfclash
         + w_chirality * loss_chir
         + w_chirality_atom * loss_chir_atom
+        + w_ost_clash * geometry["ost_objective"]
+        + w_covalent_guard * geometry["covalent_objective"]
+        + w_peptide_planarity_guard * geometry["planarity_objective"]
     )
     metrics = {
         "fm_atom": loss_fm.item(),
@@ -240,6 +456,16 @@ def allatom_loss_surface(
         "ca_self_clash": loss_selfclash.item(),
         "chirality": loss_chir.item(),
         "chirality_atom": loss_chir_atom.item(),
+        "ost_clash": geometry["ost_raw"].item(),
+        "ost_clash_weighted": geometry["ost_objective"].item(),
+        "ost_hard_per_1k": geometry["ost_hard_per_1k"].item(),
+        "ost_soft_per_1k": geometry["ost_soft_per_1k"].item(),
+        "covalent_guard": geometry["covalent_raw"].item(),
+        "covalent_guard_weighted": geometry["covalent_objective"].item(),
+        "peptide_planarity_guard": geometry["planarity_raw"].item(),
+        "peptide_planarity_guard_weighted": geometry["planarity_objective"].item(),
+        "geo_active_fraction": geometry["active_fraction"].item(),
+        "geo_jacobian_mean": geometry["jacobian_mean"].item(),
         "alpha": alpha,
     }
     return total, metrics
@@ -269,6 +495,22 @@ def allatom_forward_and_loss(
     lddt_cutoff: float = 1.5,
     max_lddt_atoms: int = 2048,
     max_clash_atoms: int = 2048,
+    w_ost_clash: float = 0.0,
+    ost_clash_mode: str = "huber",
+    ost_clash_margin_A: float = 0.1,
+    ost_clash_huber_A: float = 0.25,
+    ost_clash_softplus_tau_A: float = 0.05,
+    ost_clash_softplus_halo: float = 6.0,
+    ost_clash_pair_chunk_size: int = 1024,
+    w_covalent_guard: float = 0.0,
+    covalent_guard_tolerance_z: float = 3.0,
+    w_peptide_planarity_guard: float = 0.0,
+    geo_t_start: float = 0.55,
+    geo_t_ramp_end: float = 0.65,
+    geo_t_taper_start: float = 0.95,
+    geo_t_end: float = 0.98,
+    geo_jacobian_floor: float = 0.1,
+    geo_max_examples_per_batch: int = 0,
     self_condition_prob: float = 0.0,
 ):
     model.train()
@@ -310,6 +552,22 @@ def allatom_forward_and_loss(
         lddt_cutoff=lddt_cutoff,
         max_lddt_atoms=max_lddt_atoms,
         max_clash_atoms=max_clash_atoms,
+        w_ost_clash=w_ost_clash,
+        ost_clash_mode=ost_clash_mode,
+        ost_clash_margin_A=ost_clash_margin_A,
+        ost_clash_huber_A=ost_clash_huber_A,
+        ost_clash_softplus_tau_A=ost_clash_softplus_tau_A,
+        ost_clash_softplus_halo=ost_clash_softplus_halo,
+        ost_clash_pair_chunk_size=ost_clash_pair_chunk_size,
+        w_covalent_guard=w_covalent_guard,
+        covalent_guard_tolerance_z=covalent_guard_tolerance_z,
+        w_peptide_planarity_guard=w_peptide_planarity_guard,
+        geo_t_start=geo_t_start,
+        geo_t_ramp_end=geo_t_ramp_end,
+        geo_t_taper_start=geo_t_taper_start,
+        geo_t_end=geo_t_end,
+        geo_jacobian_floor=geo_jacobian_floor,
+        geo_max_examples_per_batch=geo_max_examples_per_batch,
     )
     metrics["loss"] = loss.item()
     metrics["t_mean"] = batch.t.mean().item()
@@ -325,6 +583,14 @@ def allatom_eval_step(
     lddt_cutoff: float = 1.5,
     max_lddt_atoms: int = 2048,
     max_clash_atoms: int = 2048,
+    ost_clash_mode: str = "huber",
+    ost_clash_margin_A: float = 0.1,
+    ost_clash_huber_A: float = 0.25,
+    ost_clash_softplus_tau_A: float = 0.05,
+    ost_clash_softplus_halo: float = 6.0,
+    ost_clash_pair_chunk_size: int = 1024,
+    covalent_guard_tolerance_z: float = 3.0,
+    geo_max_examples_per_batch: int = 0,
 ) -> dict:
     model.eval()
     amp_enabled = use_amp and batch.device.type == "cuda"
@@ -355,6 +621,16 @@ def allatom_eval_step(
         lddt_cutoff=lddt_cutoff,
         max_lddt_atoms=max_lddt_atoms,
         max_clash_atoms=max_clash_atoms,
+        ost_clash_mode=ost_clash_mode,
+        ost_clash_margin_A=ost_clash_margin_A,
+        ost_clash_huber_A=ost_clash_huber_A,
+        ost_clash_softplus_tau_A=ost_clash_softplus_tau_A,
+        ost_clash_softplus_halo=ost_clash_softplus_halo,
+        ost_clash_pair_chunk_size=ost_clash_pair_chunk_size,
+        covalent_guard_tolerance_z=covalent_guard_tolerance_z,
+        geo_max_examples_per_batch=geo_max_examples_per_batch,
+        diagnose_geometry=True,
+        geo_use_time_weighting=False,
     )
     return {
         "fm_atom": metrics["fm_atom"],
@@ -363,5 +639,11 @@ def allatom_eval_step(
         "lddt_ca": metrics["lddt_ca"],
         "bond": metrics["bond"],
         "clash": metrics["clash"],
+        "ca_clash": metrics["ca_clash"],
+        "ost_clash": metrics["ost_clash"],
+        "ost_hard_per_1k": metrics["ost_hard_per_1k"],
+        "ost_soft_per_1k": metrics["ost_soft_per_1k"],
+        "covalent_guard": metrics["covalent_guard"],
+        "peptide_planarity_guard": metrics["peptide_planarity_guard"],
         "v_rms": v_rms.item(),
     }

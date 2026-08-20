@@ -59,12 +59,81 @@ def _gather_esm_rows(
         rows_by_origin.setdefault(origin, []).append(loc)
 
     assert embedding_dim is not None and embedding_dtype is not None
+
+    def contiguous_bounds(values: list[int]) -> tuple[int, int] | None:
+        start = values[0]
+        if all(value == start + offset for offset, value in enumerate(values)):
+            return start, start + len(values)
+        return None
+
+    # Production monomer crops are one contiguous slice from one sequence.
+    # Keep that common path zero-copy until collation rather than materializing
+    # a fancy-index temporary and then copying it into another array.
+    if len(rows_by_origin) == 1:
+        origin = next(iter(rows_by_origin))
+        position_bounds = contiguous_bounds(positions_by_origin[origin])
+        row_bounds = contiguous_bounds(rows_by_origin[origin])
+        if position_bounds == (0, len(entries)) and row_bounds is not None:
+            view = per_chain_cache[origin][slice(*row_bounds)]
+            if view.flags.c_contiguous:
+                # Eager np.load arrays are writable.  Preserve safety for a
+                # read-only mmap supplied by a caller or legacy test fixture.
+                if not view.flags.writeable:
+                    view = np.array(view, copy=True)
+                return torch.from_numpy(view)
+
     gathered = np.empty((len(entries), embedding_dim), dtype=embedding_dtype)
     for origin, positions in positions_by_origin.items():
-        gathered[np.asarray(positions)] = per_chain_cache[origin][
-            np.asarray(rows_by_origin[origin])
-        ]
+        position_bounds = contiguous_bounds(positions)
+        row_bounds = contiguous_bounds(rows_by_origin[origin])
+        if position_bounds is not None and row_bounds is not None:
+            gathered[slice(*position_bounds)] = per_chain_cache[origin][slice(*row_bounds)]
+        else:
+            gathered[np.asarray(positions)] = per_chain_cache[origin][
+                np.asarray(rows_by_origin[origin])
+            ]
     return torch.from_numpy(gathered)
+
+
+def _valid_observation_crop_starts(
+    residues: np.ndarray,
+    atoms: np.ndarray,
+    entries: list[tuple],
+    max_length: int,
+    min_obs_ratio: float,
+) -> list[int]:
+    """Return crop starts that satisfy the runtime observed-atom filter."""
+    if not entries:
+        return []
+
+    atom_counts = np.zeros(len(entries), dtype=np.int64)
+    observed_counts = np.zeros(len(entries), dtype=np.int64)
+    for position, entry in enumerate(entries):
+        residue = residues[entry[0]]
+        residue_name = str(residue["name"])
+        canonical_names = RESIDUE_ATOMS.get(residue_name, [])
+        atom_start = int(residue["atom_idx"])
+        usable = min(int(residue["atom_num"]), len(canonical_names))
+        if usable <= 0:
+            continue
+        # RESIDUE_ATOMS is the same canonical prefix consumed by
+        # `_canonicalize`; every listed atom has a valid atom-slot mapping.
+        atom_counts[position] = usable
+        observed_counts[position] = int(
+            np.count_nonzero(atoms["is_present"][atom_start : atom_start + usable])
+        )
+
+    crop_length = min(len(entries), max_length)
+    atom_prefix = np.concatenate(([0], np.cumsum(atom_counts)))
+    observed_prefix = np.concatenate(([0], np.cumsum(observed_counts)))
+    starts = []
+    for start in range(len(entries) - crop_length + 1):
+        end = start + crop_length
+        n_atoms = int(atom_prefix[end] - atom_prefix[start])
+        n_observed = int(observed_prefix[end] - observed_prefix[start])
+        if n_atoms == 0 or n_observed / n_atoms >= min_obs_ratio:
+            starts.append(start)
+    return starts
 
 
 class AFDBDataset(Dataset):
@@ -259,19 +328,17 @@ class RCSBDataset(Dataset):
         """For monomer extraction: list of (protein_chain_origin, seq_len) for
         every valid monomer chain in `path`.
 
-        Fast path — replicates only the residue-keeping + ESM-length clamp that
-        set `seq_len` in `_canonicalize` (no coordinate tensors), so the cached
-        length matches training exactly. The min_obs_ratio gate is *not* applied
-        here (it needs the atom arrays); the rare low-observation chain that
-        survives indexing is dropped at load time and skipped to the next, which
-        only marginally loosens a bucket. Validity otherwise matches: protein
-        chain, >= min_length standard residues, and ESM present when required.
+        Fast path — replicates residue keeping, ESM-length clamping, and the
+        observed-atom crop gate used by `_canonicalize`, without constructing
+        coordinate tensors. This keeps index validity deterministic and aligned
+        with runtime loading.
         """
         out: list[tuple[int, int]] = []
         try:
             data = np.load(path)
             chains = data["chains"]
             residues = data["residues"]
+            atoms = data["atoms"]
         except Exception:
             return out
         stem = Path(path).stem
@@ -282,15 +349,18 @@ class RCSBDataset(Dataset):
             origin += 1
             r_start = int(ch["res_idx"])
             r_end = r_start + int(ch["res_num"])
+            kept: list[tuple[int, int, int]] = []
             sequence: list[str] = []
+            local = 0
             for i in range(r_start, r_end):
                 r = residues[i]
                 if r["is_standard"] and str(r["name"]) in AA_TO_ID and str(r["name"]) != "UNK":
+                    kept.append((i, local, _residue_seq_num(r, local)))
                     sequence.append(AA_3TO1[str(r["name"])])
-            kept = len(sequence)
-            if kept < self.min_length:
+                    local += 1
+            if len(kept) < self.min_length:
                 continue
-            L = kept
+            L = len(kept)
             if self.esm_dir is not None:
                 # ESM-loc filter keeps chain-local indices < esm rows → L=min(kept, esm_len).
                 p = self._esm_embedding_path(stem, origin, "".join(sequence))
@@ -300,36 +370,34 @@ class RCSBDataset(Dataset):
                     L = min(L, int(np.load(p, mmap_mode="r").shape[0]))
                 except Exception:
                     continue
+            kept = kept[:L]
+            if not _valid_observation_crop_starts(
+                residues,
+                atoms,
+                kept,
+                self.max_length,
+                self.min_obs_ratio,
+            ):
+                continue
             out.append((origin, min(L, self.max_length)))
         return out
 
-    def __getitem__(self, idx: int) -> ProteinExample:
+    def __getitem__(self, idx: int) -> ProteinExample | None:
         if self.extract_monomer_chains and self.chain_index is not None:
-            n = len(self.chain_index)
-            for attempt in range(n):
-                fi, origin, _ = self.chain_index[(idx + attempt) % n]
-                try:
-                    ex = self._canonicalize(
-                        np.load(self.files[fi]), self.files[fi], only_chain_origin=origin
-                    )
-                except Exception:
-                    ex = None
-                if ex is not None:
-                    return ex
-            raise RuntimeError("RCSBDataset: no valid chain in entire index")
-
-        n = len(self.files)
-        for attempt in range(n):
-            i = (idx + attempt) % n
+            fi, origin, _ = self.chain_index[idx]
+            path = self.files[fi]
             try:
-                path = self.files[i]
-                data = np.load(path)
-                ex = self._canonicalize(data, path)
-            except Exception:
-                ex = None
-            if ex is not None:
-                return ex
-        raise RuntimeError("RCSBDataset: no valid sample in entire dataset")
+                return self._canonicalize(np.load(path), path, only_chain_origin=origin)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"failed to load RCSB chain path={path} origin={origin}"
+                ) from exc
+
+        path = self.files[idx]
+        try:
+            return self._canonicalize(np.load(path), path)
+        except Exception as exc:
+            raise RuntimeError(f"failed to load RCSB sample path={path}") from exc
 
     def probe_length(self, path) -> int | None:
         """Return the seq_len `__getitem__` would yield for `path` (the same value
@@ -386,6 +454,14 @@ class RCSBDataset(Dataset):
         for ch in chains:
             if ch["mol_type"] != self.MOL_TYPE_PROTEIN:
                 continue
+            origin = chain_origin_idx
+            chain_origin_idx += 1
+            # Monomer extraction already names the exact protein-chain origin
+            # in the cached chain index.  Skip unrelated chains before walking
+            # their residues: large biological assemblies can otherwise make a
+            # single monomer sample scan tens of thousands of irrelevant rows.
+            if only_chain_origin is not None and origin != only_chain_origin:
+                continue
             r_start = int(ch["res_idx"])
             r_end = r_start + int(ch["res_num"])
             local = 0
@@ -395,11 +471,9 @@ class RCSBDataset(Dataset):
                 if r["is_standard"] and r["name"] in AA_TO_ID and r["name"] != "UNK":
                     kept.append((i, local, _residue_seq_num(r, local)))
                     local += 1
-            if len(kept) >= self.min_length and (
-                only_chain_origin is None or chain_origin_idx == only_chain_origin
-            ):
+            if len(kept) >= self.min_length:
                 for ri, loc, seq_num in kept:
-                    entries.append((ri, loc, seq_num, chain_id_next, chain_origin_idx))
+                    entries.append((ri, loc, seq_num, chain_id_next, origin))
                 per_chain_counts.append(len(kept))
                 # Entity id: chains with identical residue-name sequence share an id.
                 seq_tuple = tuple(str(residues[ri]["name"]) for ri, _, _ in kept)
@@ -411,19 +485,19 @@ class RCSBDataset(Dataset):
                 sym_id_val = seq_to_sym_count.get(seq_tuple, 0)
                 seq_to_sym_count[seq_tuple] = sym_id_val + 1
                 per_chain_sym.append(sym_id_val)
-                chain_origin_map.append(chain_origin_idx)
+                chain_origin_map.append(origin)
                 chain_id_next += 1
-            chain_origin_idx += 1
 
         if not entries:
             return None
         if only_chain_origin is None and self.single_chain_only and chain_id_next != 1:
             return None
 
-        # ESM precompute may intentionally cap very long chains (default 2048).
+        # ESM precompute may intentionally cap very long chains.
         # When PLM features are requested, only sample residues whose chain-local
         # index has a corresponding ESM row. Otherwise a random tail crop from a
         # very long chain would make the whole batch lose PLM conditioning.
+        per_chain_cache: dict[int, np.ndarray] = {}
         if self.esm_dir is not None and path is not None:
             esm_lengths: dict[int, int] = {}
             filtered_entries = []
@@ -433,7 +507,12 @@ class RCSBDataset(Dataset):
                     if p is None:
                         return None
                     try:
-                        esm_lengths[origin] = int(np.load(p, mmap_mode="r").shape[0])
+                        # Keep the large cache file lazy; `_gather_esm_rows`
+                        # turns the common monomer crop into one contiguous
+                        # slice instead of row-wise fancy-index page faults.
+                        arr = np.load(p, mmap_mode="r")
+                        per_chain_cache[origin] = arr
+                        esm_lengths[origin] = int(arr.shape[0])
                     except Exception:
                         return None
                 if loc < esm_lengths[origin]:
@@ -442,11 +521,19 @@ class RCSBDataset(Dataset):
             if not entries:
                 return None
 
-        # Random contiguous crop over the flat concatenation
-        start = 0
-        if len(entries) > self.max_length:
-            start = int(torch.randint(0, len(entries) - self.max_length, (1,)).item())
-            entries = entries[start : start + self.max_length]
+        # Random contiguous crop among windows that satisfy the same observed-
+        # atom threshold used by the final canonical example.
+        valid_starts = _valid_observation_crop_starts(
+            residues,
+            atoms,
+            entries,
+            self.max_length,
+            self.min_obs_ratio,
+        )
+        if not valid_starts:
+            return None
+        start = valid_starts[int(torch.randint(0, len(valid_starts), (1,)).item())]
+        entries = entries[start : start + min(len(entries), self.max_length)]
         L = len(entries)
         A = MAX_ATOMS_PER_RES
 
@@ -506,7 +593,6 @@ class RCSBDataset(Dataset):
         # `{stem}_ch{origin}.npy` fallback, then reassemble the selected crop.
         esm = None
         if self.esm_dir is not None and path is not None:
-            per_chain_cache: dict[int, np.ndarray] = {}
             ok = True
             for _ri, loc, _seq_num, cid, origin in entries:
                 if origin not in per_chain_cache:

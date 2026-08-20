@@ -48,7 +48,18 @@ def resolve_dataloader_workers(
             available = os.cpu_count() or world_size
             source = "os.cpu_count"
 
-    per_rank = max(1, available // world_size)
+    # torchrun exposes how many ranks share this node.  Slurm and affinity CPU
+    # counts are node-local, so global world_size would under-allocate workers
+    # when the job spans multiple nodes.
+    local_world_size = _leading_int(os.environ.get("LOCAL_WORLD_SIZE"))
+    ranks_sharing_cpus = local_world_size or world_size
+    if not 1 <= ranks_sharing_cpus <= world_size:
+        raise ValueError(
+            "LOCAL_WORLD_SIZE must be between 1 and world_size, got "
+            f"{ranks_sharing_cpus} for world_size={world_size}"
+        )
+
+    per_rank = max(1, available // ranks_sharing_cpus)
     cap = max(0, per_rank - max(0, reserve_per_rank))
     return min(requested, cap), available, source
 
@@ -73,6 +84,7 @@ def _redirect_tmpdir_if_noexec():
     """If /tmp is mounted noexec, TileLang/ninja JIT .so loads fail. Redirect
     TMPDIR to a project-local .cache/tmp before any JIT kernel compiles."""
     import tempfile
+
     if os.environ.get("TMPDIR"):
         return  # respect user override
     tmp = tempfile.gettempdir()
@@ -81,9 +93,10 @@ def _redirect_tmpdir_if_noexec():
         with open(probe, "w") as f:
             f.write("#!/bin/sh\nexit 0\n")
         os.chmod(probe, 0o755)
-        exec_ok = os.access(probe, os.X_OK) and subprocess.call(
-            [probe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        ) == 0
+        exec_ok = (
+            os.access(probe, os.X_OK)
+            and subprocess.call([probe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+        )
     except Exception:
         exec_ok = False
     finally:
@@ -168,17 +181,19 @@ class GPUMonitor:
         while not self._stop.wait(self.interval):
             try:
                 out = subprocess.check_output(
-                    ["nvidia-smi",
-                     "--query-gpu=index,name,utilization.gpu,memory.used,memory.total",
-                     "--format=csv,noheader,nounits"],
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=index,name,utilization.gpu,memory.used,memory.total",
+                        "--format=csv,noheader,nounits",
+                    ],
                     text=True,
                 ).strip()
                 for line in out.splitlines():
                     idx, name, util, used, total = [x.strip() for x in line.split(",")]
-                    print(f"  [GPU:{idx}] {name} | util={util}% | vram={used}/{total} MiB",
-                          flush=True)
+                    print(
+                        f"  [GPU:{idx}] {name} | util={util}% | vram={used}/{total} MiB", flush=True
+                    )
                     if _wandb is not None and _wandb.run is not None:
-                        _wandb.log({"gpu/util_pct": int(util),
-                                    "gpu/vram_used_mib": int(used)})
+                        _wandb.log({"gpu/util_pct": int(util), "gpu/vram_used_mib": int(used)})
             except Exception:
                 pass

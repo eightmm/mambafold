@@ -1,15 +1,13 @@
 # Model projects
 
-Each directory under `projects/` is a versioned model release contract. It
-contains the checkpoint identity, inference boundary, evaluation record, and
-minimal entrypoints required to use that release without changing its reported
-result.
+Each directory under `projects/` is an artifact contract: checkpoint identity,
+inference boundary, evaluation record, and the minimal reproduction entrypoint.
 
 | Project | Status | Entry point |
 | --- | --- | --- |
-| [`esm3/`](esm3/) | frozen model artifact; interface release `esm3-v1.1.0` | `predict_fasta.py` for FASTA, `run_casp14.sh` for the fixed benchmark protocol |
-| ESMC-6B research track | active, not released | Interim status and evaluation are recorded in [`docs/models/esmc6b.md`](../docs/models/esmc6b.md) |
+| [`esmc6b/`](esmc6b/) | sole active track; provisional step-170k EMA prerelease while geometry fine-tuning continues | `predict_fasta.py` for FASTA and `run_casp14.sh` for retrospective reproduction |
+| [`esm3/`](esm3/) | frozen legacy archive; interface release `esm3-v1.1.0` | historical FASTA and CASP14 reproduction only |
 
-A new user interface or a future model may receive a new release tag, but the
-ESM3 step-120,000 EMA checkpoint, saved training configuration, and CASP14
-result must not be modified.
+New research, benchmarks, and releases target ESMC-6B. The ESM3 directory is
+kept immutable for historical reproducibility and must not be used as an
+active comparator or resumed with an ESMC configuration.

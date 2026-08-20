@@ -1,52 +1,67 @@
 # Benchmarks
 
-These utilities evaluate a checkpoint against PDB-ID datasets that include
-reference structures. They are separate from
-[`projects/esm3/predict_fasta.py`](../projects/esm3/predict_fasta.py), which
-accepts sequence-only FASTA input and does not produce a reference structure.
+These utilities evaluate the active MambaFold-ESMC-6B track on fixed
+single-chain inputs. Read [`BENCHMARK_POLICY.md`](BENCHMARK_POLICY.md) before
+interpreting a score: the committed FASTAs are stable inputs, not automatically
+leakage-free splits.
 
 ```text
 benchmarks/
-├── run_inference.py              checkpoint + PDB IDs → prediction/GT PDB pairs
-├── run_eval.sh                   inference + lightweight score wrapper
-├── external_testsets/            fixed public FASTA model inputs
-├── score_simplefold_metrics.py   preferred identity-matched scorer
-├── score_local_geometry.py       bond/clash geometry report
-├── score.py                      legacy quick scorer
-└── sets/                         fixed benchmark ID lists
+├── BENCHMARK_POLICY.md            dataset roles and admission rules
+├── audit_sequence_overlap.py    exact coordinate-training overlap gate
+├── external_testsets/           fixed public FASTA inputs
+├── run_inference.py             checkpoint + PDB IDs → prediction/GT pairs
+├── run_eval.sh                  inference + lightweight score wrapper
+├── score_simplefold_metrics.py  identity-matched local scorer
+├── score_local_geometry.py      bond/clash geometry report
+└── sets/                        fixed benchmark ID lists
 ```
 
-`run_inference.py` filters inputs to single-chain examples through
-`RCSBDataset(single_chain_only=True)`. It needs the processed `.npz` records
-and PLM embedding cache compatible with the checkpoint.
+The active comparator roster is SimpleFold-360M, SimpleFold-3B when a matching
+scale-reference result is available, ESMFold v1, and DPLM-2 Bit 650M.
+OmegaFold is excluded because OOM failures made its coverage incomplete, and
+the frozen ESM3 archive is not an active baseline. DPLM-2 emits only backbone
+atoms plus CB, so its backbone lDDT is comparable but its all-atom lDDT is not.
+
+## Current evaluation order
+
+1. CASP16 strict single-chain targets, after exact and MMseqs2 homology gates.
+2. CASP15 strict single-chain targets under the same gates.
+3. CASP14 only for development and preview reproduction.
+4. CAMEO22, Apo, and CoDNaS only as overlap/conformational diagnostics.
+5. Prospective post-checkpoint RCSB/CAMEO and CASP17 after public references
+   for confirmatory evaluation.
+
+## Exact-overlap gate
+
+Export canonical training sequences from every coordinate source, then run:
 
 ```bash
-bash benchmarks/run_eval.sh /path/to/checkpoint.pt t1_quick 0
+PYTHONPATH=. uv run --no-sync python benchmarks/audit_sequence_overlap.py \
+  --targets benchmarks/external_testsets/casp16_single_chain_21.fasta \
+  --training /path/to/rcsb-training.fasta \
+  --training /path/to/afdb-swissprot-training.fasta \
+  --out /path/to/casp16-exact-overlap.json \
+  --write-exact-clean-fasta /path/to/casp16-exact-clean.fasta \
+  --write-exact-clean-ids /path/to/casp16-exact-clean-ids.txt
 ```
 
-`score_simplefold_metrics.py` reports TM-score, GDT-TS, all-atom lDDT,
-Cα lDDT, Cα RMSD, and all-atom RMSD. It is not the OpenStructure scorer used
-for the frozen ESM3 CASP14 record; use the project release protocol for that
-comparison.
+The generated FASTA and ID list are only exact-match-clean. Apply the declared
+MMseqs2 homology screen and remove its excluded IDs before passing the final ID
+list to `score_external_openstructure.py --target-ids`.
 
-## Public SimpleFold test sets
+## PDB-ID inference and scoring
 
-The exact released SimpleFold CAMEO22, Apo, and CoDNaS artifacts can be
-downloaded and converted to MambaFold inference inputs with:
+`run_inference.py` uses `RCSBDataset(single_chain_only=True)` and requires
+processed `.npz` records plus an ESMC-6B embedding cache compatible with the
+checkpoint.
 
 ```bash
-bash scripts/download_simplefold_testsets.sh
+bash benchmarks/run_eval.sh /path/to/esmc6b-checkpoint.pt t1_quick 0
 ```
 
-This produces 183 CAMEO22 folding targets, 90 Apo two-state targets, and 77
-CoDNaS two-state targets under `data/simplefold_official/testsets/`. The
-official SimpleFold predictions remain separated by model size and sample.
-Use OpenStructure 2.9.1 for CAMEO22 folding metrics; Apo and CoDNaS follow the
-upstream five-sample, two-state TM-score protocol.
-
-These public targets are not automatically excluded from MambaFold training.
-Check the exact training split before treating a score as an unseen-test result.
-
-The corresponding sequence inputs, together with CASP14/15/16, are committed
-under [`external_testsets`](external_testsets/README.md). Public model inference
-consumes those FASTA files directly and can write PDB, mmCIF, or both.
+Use OpenStructure 2.9.1 for paper-facing CASP/CAMEO metrics. The lightweight
+scorer reports TM-score, GDT-TS, all-atom lDDT, Cα lDDT, and RMSD variants.
+The exact released SimpleFold CAMEO22, Apo, and CoDNaS artifacts can be staged
+with `bash scripts/download_simplefold_testsets.sh`; their heavy references and
+baseline predictions remain outside Git.

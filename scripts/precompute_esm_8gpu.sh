@@ -1,28 +1,43 @@
-#!/bin/bash
-# Fan out precompute_esm.py across 8 B200s. Each shard owns 1/8 of unique
-# sequences. All share the same scan (re-done per shard but cheap).
+#!/usr/bin/env bash
+# Fan out precompute_esm.py across eight visible GPUs. Each shard owns one
+# eighth of the unique sequences.
 #
 # Usage:
-#   bash scripts/precompute_esm_8gpu.sh data/rcsb data/rcsb_esm [shard_count=8]
-set -uo pipefail
+#   bash scripts/precompute_esm_8gpu.sh \
+#     data/rcsb_boltz_official_full data/rcsb_esmc6b_official_full [shard_count=8]
+set -euo pipefail
 
-DATA_DIR="${1:-data/rcsb}"
-OUT_DIR="${2:-data/rcsb_esm}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+DATA_DIR="${1:-data/rcsb_boltz_official_full}"
+OUT_DIR="${2:-data/rcsb_esmc6b_official_full}"
 SHARDS="${3:-8}"
 
 mkdir -p "$OUT_DIR" outputs
+pids=()
 for i in $(seq 0 $((SHARDS-1))); do
   CUDA_VISIBLE_DEVICES="$i" \
   PYTHONPATH=src \
-    uv run python scripts/precompute_esm.py \
+    uv run --no-sync python scripts/precompute_esm.py \
       --data_dir "$DATA_DIR" \
       --out_dir  "$OUT_DIR" \
-      --esm_model esm3-open \
+      --esm_model esmc-6b \
       --device cuda \
       --dtype float16 \
+      --max_length 1024 \
+      --cache_layout sequence \
       --shard_idx "$i" \
       --shard_count "$SHARDS" \
       > "outputs/esm_shard_$i.log" 2>&1 &
-  echo "launched shard $i pid=$!"
+  pids+=("$!")
+  echo "launched shard $i pid=${pids[-1]}"
 done
-echo "All $SHARDS shards launched."
+
+status=0
+for pid in "${pids[@]}"; do
+  if ! wait "$pid"; then
+    status=1
+  fi
+done
+exit "$status"

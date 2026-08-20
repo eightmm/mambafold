@@ -20,9 +20,15 @@ export CUDA_HOME
 export PATH="$CUDA_HOME/bin:$PATH"
 export CPLUS_INCLUDE_PATH="$CUDA_HOME/include/cccl:$CUDA_HOME/include${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}"
 
-uv run --no-sync torchrun --nproc_per_node=4 --master_port=29515 \
-    scripts/smoke_real_data_ddp.py --config "$config" --batches 4
+echo "[gate 1/3] exact-index real-data loader, workers=0"
+uv run --no-sync torchrun --nproc_per_node=4 --master_port=29514 \
+    scripts/smoke_real_data_ddp.py --config "$config" --batches 8 --workers 0
 
+echo "[gate 2/3] production automatic worker cap and prefetch"
+uv run --no-sync torchrun --nproc_per_node=4 --master_port=29515 \
+    scripts/smoke_real_data_ddp.py --config "$config" --batches 16
+
+echo "[gate 3/3] variable-length allocator, then production accumulation at 1024"
 uv run --no-sync torchrun --nproc_per_node=4 --master_port=29516 \
     scripts/smoke_esmc6b_ddp.py --config "$config" \
-    --batch-size 10 --length 1024 --grad-accum 1
+    --length-sequence 128,256,384,512,640,768,896,1024

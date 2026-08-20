@@ -19,10 +19,12 @@ train_sources:
     file_list: null
     esm_dir: data/afdb_swissprot_esmc6b
 max_length: 1024
-# RTX 6000 Ada calibration: 4-rank target, 10 examples/GPU. A 2-rank
-# L=1024 DDP accumulation smoke reserved 46.22/47.37 GiB per GPU.
-batch_size: 10
+# RTX 6000 Ada calibration: 4 ranks, 9 examples/GPU. The L=1024 gate includes
+# initialized AdamW state and all 13 no_sync accumulation micro-steps:
+# 43.469 GiB allocated, 43.699/47.372 GiB reserved per GPU.
+batch_size: 9
 num_workers: 16
+prefetch_factor: 1
 copies_per_protein: 1
 single_chain_only: true
 extract_monomer_chains: true
@@ -39,7 +41,7 @@ length_bucketing: true
 crop_schedule:
   - weights: {1024: 1.0}
 
-out_dir: outputs/train/direct_puremamba_attn6_geo_adaln_sf360_esmc6b_ada_dstate64_gpu4_v1
+out_dir: outputs/train/direct_puremamba_attn6_geo_adaln_sf360_esmc6b_ada_dstate64_gpu4_v4
 resume: null
 
 total_steps: 170_000
@@ -52,7 +54,7 @@ log_interval: 50
 ckpt_interval: 10_000
 eval_interval: 5_000
 seed: 0
-grad_accum_steps: 12
+grad_accum_steps: 13
 find_unused_parameters: true
 
 d_res: 1024
@@ -107,7 +109,7 @@ d_plm: 2560
 esm_dir: data/rcsb_esmc6b_official_full
 
 wandb_project: mambafold
-wandb_name: direct_puremamba_attn6_geo_adaln_sf360_esmc6b_ada_dstate64_gpu4_v1
-wandb_tags: [direct_allatom, pure_mamba, attn_every_6, small_geometry, adaln_zero, mainline, single_chain, L_1024, esmc6b, ada, dstate64, gpu4, batch480, from_scratch]
+wandb_name: direct_puremamba_attn6_geo_adaln_sf360_esmc6b_ada_dstate64_gpu4_v4
+wandb_tags: [direct_allatom, pure_mamba, attn_every_6, small_geometry, adaln_zero, mainline, single_chain, L_1024, esmc6b, ada, dstate64, gpu4, batch468, expandable_segments, memory_efficient_lddt, from_scratch]
 wandb_offline: false
 no_wandb: false

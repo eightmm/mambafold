@@ -97,7 +97,9 @@ class ProteinCollator:
             x_clean[i, :L] = ex.coords
 
             xt, ep, ti = flow_corrupt(
-                ex.coords, ex.atom_mask & ex.observed_mask, self.t_schedule,
+                ex.coords,
+                ex.atom_mask & ex.observed_mask,
+                self.t_schedule,
             )
             x_t[i, :L] = xt
             eps[i, :L] = ep
@@ -108,7 +110,15 @@ class ProteinCollator:
         esm_list = [ex.esm for ex in processed]
         if all(e is not None and e.shape[0] > 0 for e in esm_list):
             d_esm = esm_list[0].shape[-1]
-            esm = torch.zeros(B, max_L, d_esm, dtype=torch.float32)
+            # Preserve the cache dtype through collation and host-to-device
+            # transfer.  ESMC caches are float16 and the model explicitly casts
+            # them to its compute dtype before LayerNorm/projection, so an
+            # intermediate float32 expansion only doubles pinned memory and
+            # PCIe traffic.
+            esm_dtype = esm_list[0].dtype
+            for embedding in esm_list[1:]:
+                esm_dtype = torch.promote_types(esm_dtype, embedding.dtype)
+            esm = torch.zeros(B, max_L, d_esm, dtype=esm_dtype)
             for i, ex in enumerate(processed):
                 n = min(ex.seq_len, ex.esm.shape[0], max_L)
                 esm[i, :n] = ex.esm[:n]

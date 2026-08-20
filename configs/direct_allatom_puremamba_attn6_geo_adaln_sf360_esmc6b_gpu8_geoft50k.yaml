@@ -1,0 +1,140 @@
+# Geometry fine-tune extension initialized from the completed step-170k
+# ESMC-6B mainline EMA.  This is the admitted 2k pilot configuration with
+# only the training horizon, output identity, and checkpoint milestones
+# extended to 50k.
+
+data_dir:      data/rcsb_boltz_official_full
+val_data_dir:  data/rcsb_boltz_official_full
+file_list:     data/splits/train_boltz_official_full.txt
+val_file_list: data/splits/val_boltz_official_full.txt
+train_sources:
+  - name: rcsb
+    data_dir: data/rcsb_boltz_official_full
+    file_list: data/splits/train_boltz_official_full.txt
+    esm_dir: data/rcsb_esmc6b_official_full
+  - name: afdb_swissprot
+    data_dir: data/afdb_swissprot/npz
+    file_list: null
+    esm_dir: data/afdb_swissprot_esmc6b
+max_length: 1024
+batch_size: 9
+num_workers: 16
+prefetch_factor: 1
+copies_per_protein: 1
+single_chain_only: true
+extract_monomer_chains: true
+length_bin: 128
+
+length_balanced_sampling: true
+metadata_path: data/splits/metadata.tsv
+length_balance_mode: power
+length_balance_exponent: 0.5
+length_balance_clip_min: 1.0
+length_balance_clip_max: 1.5
+length_bucketing: true
+
+crop_schedule:
+  - weights: {1024: 1.0}
+
+out_dir: outputs/train/direct_puremamba_attn6_geo_adaln_sf360_esmc6b_ada_dstate64_gpu8_geoft50k_v1
+resume: null
+
+# Fresh optimizer/scheduler over the step-170k EMA.  LR, warmup, losses, data,
+# and batching are unchanged from the completed 2k pilot; only total_steps is
+# extended, so the same cosine schedule now spans 50k steps.
+total_steps: 50_000
+lr: 1.0e-5
+warmup_steps: 100
+grad_clip: 1.0
+t_schedule: logit_normal
+ema_decay: 0.999
+log_interval: 50
+ckpt_interval: 250
+keep_last_checkpoints: 3
+keep_checkpoint_steps: [250, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 30_000, 40_000, 50_000]
+eval_interval: 500
+max_val_batches: 16
+seed: 0
+grad_accum_steps: 7
+find_unused_parameters: true
+
+d_res: 1024
+n_trunk: 18
+d_res_type: 32
+d_res_pos: 64
+d_plm_proj: 256
+d_ca_emb: 128
+d_state: 64
+mimo_rank: 4
+expand: 2
+headdim: 64
+bimamba_share: false
+
+trunk_attn_layers: null
+trunk_attn_every: 6
+n_attn_heads: 16
+trunk_time_film: true
+trunk_adaln_zero: true
+
+use_pair_stack: false
+d_pair: 192
+n_pair_blocks: 0
+n_pair_heads: 4
+pair_mult_c: 128
+pair_use_cueq: false
+
+d_atom: 256
+n_atom_layers: 2
+
+# Preserve the learned fold objective and existing local terms.  The legacy
+# sampled clash term is disabled; the topology-aware OpenStructure-aligned
+# channel supplies the steric signal exactly as in the completed 2k pilot.
+w_fm:            1.0
+w_lddt_atom:     1.0
+w_lddt_ca:       1.0
+w_drmsd:         0.75
+w_bond:          0.02
+w_clash:         0.0
+w_ca_clash:      0.005
+w_distogram:     0.0
+w_contact:       0.0
+w_pcb:           0.0
+w_conf:          0.0
+w_ca_angle:      0.05
+w_ca_self_clash: 0.05
+w_chirality:     0.2
+w_chirality_atom: 0.2
+
+w_ost_clash: 0.5
+ost_clash_mode: huber
+ost_clash_margin_A: 0.10
+ost_clash_huber_A: 0.25
+ost_clash_softplus_tau_A: 0.05
+ost_clash_softplus_halo: 6
+ost_clash_pair_chunk_size: 1024
+w_covalent_guard: 0.25
+covalent_guard_tolerance_z: 3.0
+w_peptide_planarity_guard: 0.05
+
+# Smoothly activate geometry where x-hat is informative, taper before the
+# reconstruction Jacobian becomes singular, and cap per-step compute.
+geo_t_start: 0.55
+geo_t_ramp_end: 0.65
+geo_t_taper_start: 0.95
+geo_t_end: 0.98
+geo_jacobian_floor: 0.10
+geo_max_examples_per_batch: 2
+
+alpha_mode: ramp
+max_lddt_atoms:  2048
+max_clash_atoms: 2048
+
+use_plm: true
+d_plm: 2560
+esm_dir: data/rcsb_esmc6b_official_full
+
+wandb_project: mambafold
+wandb_name: direct_puremamba_attn6_geo_adaln_sf360_esmc6b_ada_dstate64_gpu8_geoft50k_v1
+wandb_tags: [direct_allatom, pure_mamba, attn_every_6, small_geometry, adaln_zero, single_chain, L_1024, esmc6b, ada, dstate64, gpu8, batch504, geometry_finetune, ost_clash, source_170k, ema_init, exploratory_50k]
+wandb_offline: false
+no_wandb: false

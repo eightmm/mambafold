@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "project_id": "mambafold-esmc6b-170k",
+  "status": "provisional_prerelease_baseline",
+  "release_status": "verified_prerelease",
+  "source_tag": "esmc6b-170k-preview.1",
+  "model_artifact_id": "mambafold-esmc6b-170k-ema",
+  "checkpoint": {
+    "filename": "mambafold-esmc6b-170k-ema.pt",
+    "format": "PyTorch EMA-only MambaFold inference checkpoint",
+    "step": 170000,
+    "use_ema": true,
+    "model_parameter_count": 404856302,
+    "state_value_count": 404856326,
+    "state_key_count": 678,
+    "dtype": "float32",
+    "bytes": 1619662835,
+    "sha256": "465ddb7d873479e51487a79b39d2a871a10b3b54be178adcd76afe7f86665a02",
+    "integrity_status": "verified_local_export",
+    "sha256_sidecar": "mambafold-esmc6b-170k-ema.pt.SHA256SUMS",
+    "excluded_state": [
+      "non_ema_model_weights",
+      "optimizer",
+      "scheduler",
+      "rng_states",
+      "data_state",
+      "plm_weights"
+    ]
+  },
+  "export_provenance": {
+    "export_schema_version": 1,
+    "source_training_checkpoint_step": 170000,
+    "source_training_checkpoint_bytes": 6470465497,
+    "source_training_checkpoint_sha256": "09ae2581c6c029093a3e60aa66f371639f30908ed766062a6824d39079b1a9a4",
+    "source_checkpoint_distributed": false
+  },
+  "conditioning": {
+    "model": "biohub/ESMC-6B",
+    "runtime_name": "esmc-6b",
+    "revision": "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a",
+    "embedding_dimensions": 2560,
+    "sequence_only": true,
+    "weights_bundled": false,
+    "download_script": "scripts/download_esmc6b.sh"
+  },
+  "input_contract": {
+    "single_chain_only": true,
+    "standard_amino_acids_only": true,
+    "minimum_length": 10,
+    "max_length": 1024,
+    "unsupported": [
+      "multimers",
+      "ligands",
+      "nucleic_acids",
+      "metals",
+      "cofactors",
+      "water",
+      "ptms"
+    ]
+  },
+  "evaluation": {
+    "status": "provisional_retrospective_engineering_evidence",
+    "benchmark": "CASP14 70 whole-chain targets",
+    "target_count": 70,
+    "success_count": 70,
+    "excluded_target": "T1044 (>1024 residues)",
+    "target_list_sha256": "4309a73bcb42b90a1573f12ca4a2f3635b99a3adf4065f8de42f8a5293056df1",
+    "result_summary_sha256": "f8ec8894b6dacc20b73e4d33065c79ba945cf504513ae0d98f7acda89009d3dd",
+    "use_ema": true,
+    "sampler": "sde",
+    "n_steps": 500,
+    "seed_offset": 0,
+    "n_seeds": 1,
+    "sde_tau": 0.01,
+    "sde_eps": 0.01,
+    "sde_w_cutoff": 0.99,
+    "sde_log_timesteps": true,
+    "geometry_guidance_scale": 0.0,
+    "source_tar_sha256": "75592af0778e0814cb8c2e0666980066b1f851407d759ad96da32744ad16a9b8",
+    "scorer": {
+      "name": "OpenStructure compare-structures",
+      "version": "2.9.1",
+      "command": "ost compare-structures -m MODEL_FILE -r REFERENCE_FILE -o OUTPUT_FILE --fault-tolerant --min-pep-length 4 --lddt --bb-lddt --rigid-scores --tm-score"
+    },
+    "limitations": [
+      "CASP14 was used during checkpoint and sampler development.",
+      "ESMC-6B sequence pretraining postdates CASP14.",
+      "The ongoing 50k geometry fine-tuning run may change model selection."
+    ]
+  },
+  "metrics": {
+    "gdt_ts": {
+      "mean": 0.6822142857142858,
+      "median": 0.757
+    },
+    "gdt_ha": {
+      "mean": 0.5441857142857144,
+      "median": 0.552
+    },
+    "tm_score": {
+      "mean": 0.7608857142857143,
+      "median": 0.849
+    },
+    "lddt": {
+      "mean": 0.6458571428571429,
+      "median": 0.7295
+    },
+    "bb_lddt": {
+      "mean": 0.769,
+      "median": 0.8514999999999999
+    },
+    "rmsd_angstrom": {
+      "mean": 6.145714285714286,
+      "median": 3.0445
+    }
+  },
+  "training_provenance": {
+    "hardware": "8 x NVIDIA RTX 6000 Ada",
+    "saved_config": "projects/esmc6b/training_config.json",
+    "saved_config_sha256": "65f1c91cca5f81f62cf07719495d5e152883fa974d4d899fda9f8fe43b500268",
+    "training_source_commit": null,
+    "note": "The saved resolved configuration and source checkpoint digest are retained; the release tag must identify the compatible inference source."
+  },
+  "ongoing_work": {
+    "geometry_finetuning_status": "training_in_progress",
+    "planned_steps": 50000,
+    "initial_weights": "step-170000 EMA",
+    "included_in_this_artifact": false
+  }
+}

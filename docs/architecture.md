@@ -1,49 +1,56 @@
 # Architecture
 
-MambaFold is now a single-path direct all-atom flow-matching model.
+The active MambaFold-ESMC-6B checkpoint is a pair-free direct all-atom
+flow-matching model. The atom decoder emits the velocity field; coordinates
+flow into the model only through the noised atom state.
 
 ```mermaid
 flowchart LR
-    A["Noised atom-slot coordinates + atom ids + t"] --> B["AtomEncoder: Bi-Mamba over 15 atom slots"]
-    B --> C["Gated atom pool -> residue token"]
-    D["Sequence + residue ids + ESM3"] --> E["Residue embedding"]
-    C --> E
-    E --> F["Bi-Mamba trunk + selected self-attention"]
-    F --> G["Triangle-mult pair stack"]
-    G --> H["Pair-to-single pooling"]
-    H --> I["AtomDecoder: residue latent + atom skip"]
-    I --> J["v_atom [B,L,A,3]"]
-    H --> K["CA/topology aux heads"]
+    X["Noised atom coordinates x_t"] --> AE["Atom Bi-Mamba encoder"]
+    I["Atom and residue identities"] --> AE
+    T["Flow time t"] --> AE
+    AE -->|"residue token"| R["Residue input"]
+    S["Sequence features"] --> R
+    P["Frozen ESMC-6B embeddings"] --> R
+    T --> R
+    R --> M["18-block Bi-Mamba trunk<br/>attention every 6 blocks"]
+    M --> AD["Atom Bi-Mamba decoder"]
+    AE -->|"atom skip"| AD
+    T --> AD
+    AD --> V["Atom velocity v_atom"]
 ```
 
-## Model
+## Active model contract
 
 `src/mambafold/model/fold/all_atom.py::MambaFoldAllAtom`
 
-- Input: sequence features, chain/entity/sym ids, ESM3, noised atom-slot coordinates, FM time.
-- Output: `v_atom [B, L, A, 3]` and `v_ca` as the CA slot view.
-- Atom path: `AtomEncoder` and `AtomDecoder` run Bi-Mamba over the 15 atom slots
-  inside each residue; no atom attention.
-- Trunk: Bi-Mamba with optional interleaved self-attention.
-- Pair path: relative-position initialized pair tensor, PairBlock stack, pair-to-single pooling.
-- Aux heads: distogram, contact, pseudo-CB direction, confidence.
+- Inputs: noised atom-slot coordinates `x_t [B,L,A,3]`, atom/residue
+  identities and masks, chain-local position features, flow time, and pinned
+  ESMC-6B residue embeddings.
+- Atom encoder: two bidirectional Mamba layers over the 15 atom slots inside
+  each residue, followed by gated pooling to one residue token. It also keeps
+  a per-atom skip representation.
+- Residue trunk: 18 bidirectional Mamba blocks at width 1,024, with 16-head
+  self-attention after every sixth block and time-conditioned AdaLN-Zero.
+- Pair path: disabled (`use_pair_stack: false`, `n_pair_blocks: 0`). No
+  quadratic pair representation participates in the active forward path.
+- Atom decoder: two bidirectional Mamba layers conditioned on the residue
+  latent, flow time, identities, and encoder atom skip. Its output is
+  `v_atom [B,L,A,3]`; `v_ca` is the CA-slot view of that velocity.
 
-## Loss
-
-`src/mambafold/train/engine.py`
+The flow path is
 
 ```text
-L = L_fm_atom
-  + alpha(t) * w_lddt_atom * L_lddt_atom_sampled
-  + alpha(t) * w_lddt_ca   * L_lddt_ca
-  + w_bond      * L_bond
-  + w_clash     * L_all_atom_clash_sampled
-  + w_ca_clash  * L_ca_clash
-  + w_chirality * L_ca_trace_chirality
-  + w_chirality_atom * L_ca_center_chirality
-  + CA topology auxiliaries
+x_t = t x_clean + (1 - t) epsilon
+v_target = x_clean - epsilon
+v_theta = MambaFold(x_t, t, sequence, ESMC)
 ```
 
-All-atom LDDT and all-atom clash are sampled to keep L=1024 training feasible.
-Confidence is supervised against sampled per-residue all-atom LDDT and is
-written to inference PDB B-factors.
+and training minimizes the masked atom-velocity error plus geometry and
+structure auxiliaries. The active configuration samples the expensive
+all-atom lDDT and clash terms so length-1,024 examples remain feasible.
+
+The ESMC-6B conditioner is sequence-only and frozen. This avoids feeding
+predicted structure tokens into the folding head, but it does not prove that a
+benchmark sequence was absent from ESMC pretraining. Leakage claims therefore
+apply only to the audited coordinate-training corpus.
