@@ -16,6 +16,23 @@ outputs/
 .ruff_cache/
 .cache/
 
+# Locally installed third-party comparison models, environments, and weights
+external_models/
+
+# Downloaded/generated SimpleFold comparison structures.  Keep the small
+# DATASET.md, manifests, input FASTA files, and source checksums trackable.
+data/simplefold_official/raw/
+data/simplefold_official/testsets/*/inference_npz/
+data/simplefold_official/testsets/*/references/
+data/simplefold_official/testsets/*/simplefold_predictions/
+
+# Local experiment ledger and scratch diagnostics
+docs/EXPERIMENTS.jsonl
+tea_debug.log
+
+# Manuscript sources are maintained in the external Prism workspace.
+paper/
+
 # Local agent/project operating notes (kept locally, never published)
 AGENTS.md
 CLAUDE.md
@@ -53,3 +70,7 @@ data/casp_official/
 data/external/afdb_swissprot_cif/
 tools/
 data/splits/sequences.fasta
+
+# Inactive/generated intersections for quarantined Boltz corpora
+data/splits/*_boltz_partial_67k.txt
+data/splits/*_boltz_v2.txt

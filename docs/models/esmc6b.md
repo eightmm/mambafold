@@ -23,30 +23,32 @@ incompatible with ESM3 checkpoints.
 
 ## Status and reporting rule
 
-This track is actively training from scratch. At the 2026-08-12 snapshot, the
-latest retained checkpoint is step 111,500 of 170,000. Training has not
-finished, and this checkpoint has not yet received the full evaluation below.
+The from-scratch mainline reached its planned step 170,000 on 2026-08-18. Its
+EMA state is distributed as a verified, deliberately provisional preview in
+[`../../projects/esmc6b`](../../projects/esmc6b/README.md). A separate
+50,000-step geometry fine-tuning experiment initialized from that EMA remains
+in progress, so step 170,000 is not a final model selection.
 
-The newest complete result is the step-88,500 EMA checkpoint evaluated on all
-70 fixed CASP14 whole-chain targets with seed 0, 500-step SDE sampling, and
-OpenStructure 2.9.1. T1044 is excluded because it exceeds the 1,024-residue
-model limit.
+The step-170,000 EMA was evaluated on all 70 fixed CASP14 whole-chain targets
+with seed 0, 500-step SDE sampling, and OpenStructure 2.9.1. T1044 is excluded
+because it exceeds the 1,024-residue model limit.
 
 | Checkpoint | GDT-TS ↑ | GDT-HA ↑ | TM-score ↑ | all-atom lDDT ↑ | backbone lDDT ↑ | RMSD (Å) ↓ |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 50,000 | 0.596 | 0.458 | 0.687 | 0.577 | 0.719 | 8.178 |
-| **88,500** | **0.629** | **0.487** | **0.718** | **0.612** | **0.738** | **7.275** |
+| 88,500 | 0.629 | 0.487 | 0.718 | 0.612 | 0.738 | 7.275 |
+| **170,000 preview** | **0.682** | **0.544** | **0.761** | **0.646** | **0.769** | **6.146** |
 
 All values are 70-target means from `ost compare-structures` with
 `--fault-tolerant --min-pep-length 4 --lddt --bb-lddt --rigid-scores
 --tm-score`. The machine-readable interim record is
 [`../results/esmc6b_casp14_interim.json`](../results/esmc6b_casp14_interim.json).
 
-These are interim research results, not a frozen model release. The checkpoint
-is not distributed, step 111,500 has not been rescored, and ESMC-6B pretraining
-postdates CASP14. Accordingly, CASP14 is used here for retrospective
-architecture comparison and must not be described as a temporally clean blind
-test.
+These remain interim research results, not a frozen final model. The
+step-170,000 inference-only EMA is distributed as a preview, while its source
+training state and the ongoing geometry fine-tune are not. ESMC-6B pretraining
+postdates CASP14; accordingly, CASP14 is retrospective engineering evidence
+and must not be described as a temporally clean blind test.
 
 ## Reproduction entrypoints
 

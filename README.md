@@ -7,13 +7,13 @@ model tracks:
 | Track | Status | What is available |
 | --- | --- | --- |
 | **ESM3** | frozen | Verified 422.4M-parameter checkpoint, FASTA inference, and CASP14 evaluation record |
-| **ESMC-6B** | active research track | 404.9M-parameter training run and interim step-88,500 CASP14 result |
+| **ESMC-6B** | active research track | Verified step-170k EMA preview plus ongoing geometry fine-tuning |
 
 ## Use the frozen ESM3 model
 
-The ESM3 project is the only completed, user-facing model in this repository.
-It is inference/evaluation only: its checkpoint, saved configuration, and
-CASP14 result are fixed. The current interface release is
+ESM3 remains the only completed model selection in this repository. It is
+inference/evaluation only: its checkpoint, saved configuration, and CASP14
+result are fixed. The current interface release is
 [`esm3-v1.1.0`](https://github.com/eightmm/mambafold/tree/esm3-v1.1.0).
 
 1. Install the project environment and obtain the checkpoint separately. The
@@ -65,13 +65,14 @@ single-chain targets with SDE (500 steps, seed 0) and OpenStructure 2.9.1.
 The table below uses mean CASP14 values under the common 70-target,
 500-step SDE, OpenStructure 2.9.1 reporting contract. SimpleFold aggregates
 are from the [SimpleFold paper](https://arxiv.org/abs/2509.18480). The ESM3 row
-is frozen; the ESMC-6B row is an interim checkpoint and is not a model release.
+is frozen; the ESMC-6B row is the verified step-170k preview and is not a final
+model selection.
 
 | Model | Parameters | GDT-TS ↑ | TM-score ↑ | all-atom lDDT ↑ | backbone lDDT ↑ | RMSD (Å) ↓ |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | SimpleFold-360M | 360M | 0.585 | 0.674 | 0.617 | 0.703 | 9.382 |
 | SimpleFold-3B | 2.86B | 0.639 | 0.720 | **0.666** | 0.747 | 7.732 |
-| MambaFold-ESMC-6B, step 88,500 | 404.9M | 0.629 | 0.718 | 0.612 | 0.738 | 7.275 |
+| **MambaFold-ESMC-6B, step 170,000 preview** | **404.9M** | **0.682** | **0.761** | 0.646 | **0.769** | **6.146** |
 | **MambaFold-ESM3** | **422.4M** | **0.670** | **0.757** | 0.657 | **0.763** | **6.276** |
 
 Against the size-matched SimpleFold-360M, the frozen ESM3 model improves mean
@@ -81,13 +82,13 @@ while reducing mean RMSD by 3.106 Å. Against SimpleFold-3B it is higher on
 GDT-TS, TM-score, backbone lDDT, and RMSD, but lower by 0.009 all-atom lDDT.
 These are aggregate comparisons, not a paired significance test.
 
-The interim ESMC-6B model is already above SimpleFold-360M in GDT-TS
-(+0.044), TM-score (+0.044), and backbone lDDT (+0.035), and lowers RMSD by
-2.107 Å. Its all-atom lDDT is 0.005 lower. It is close to SimpleFold-3B in
-global fold metrics at substantially smaller model size, but remains below it
-in local all-atom quality. ESMC-6B sequence pretraining postdates CASP14, so
-this row is a retrospective architecture benchmark rather than a temporally
-clean blind-test claim.
+The step-170k ESMC-6B preview is above SimpleFold-360M in GDT-TS (+0.097),
+TM-score (+0.087), all-atom lDDT (+0.029), and backbone lDDT (+0.066), while
+reducing RMSD by 3.236 Å. Against SimpleFold-3B it is higher in GDT-TS
+(+0.043), TM-score (+0.041), backbone lDDT (+0.022), and RMSD (-1.586 Å), but
+lower by 0.020 in all-atom lDDT. ESMC-6B sequence pretraining postdates
+CASP14, so this row is retrospective engineering evidence rather than a
+temporally clean blind-test claim.
 
 The full artifact identity, evaluation protocol, and CASP14 reproduction entry
 point are in [projects/esm3](projects/esm3/README.md). FASTA predictions are
@@ -102,10 +103,15 @@ Apo (90), and CoDNaS (77). The model consumes these files through the same
 FASTA interface used for user sequences. Reference structures remain separate
 evaluation artifacts and are not required to generate a prediction.
 
+The completed snapshot prediction coverage, measured runtime/VRAM, and
+currently available structure scores are organized by dataset in
+[the external benchmark results](docs/results/external_dataset_results.md).
+
 ## Repository layout
 
 ```text
 projects/esm3/     frozen ESM3 artifact contract, FASTA CLI, and evaluation entrypoint
+projects/esmc6b/   provisional step-170k EMA artifact contract and FASTA CLI
 src/mambafold/     model, data, sampling, and training package
 benchmarks/        PDB-ID benchmark inference and scoring utilities
 configs/           research configurations; ESMC-6B is the active future track
@@ -117,15 +123,21 @@ tests/             focused correctness checks
 
 The ESMC-6B path is checkpoint-incompatible with ESM3 (2,560-dimensional
 sequence-only embeddings versus 1,536-dimensional ESM3 embeddings). It is
-trained from scratch and must never resume the frozen ESM3 checkpoint. As of
-the 2026-08-12 snapshot, the active 8-GPU run has a step-111,500 checkpoint on
-the way to 170,000 steps; the newest complete CASP14 evaluation remains the
-step-88,500 EMA result above. Its detailed status, 50k→88.5k progression, and
-reporting limits are documented in
+trained from scratch and must never resume the frozen ESM3 checkpoint. The
+ESMC-6B research program remains active. The verified step-170k EMA is
+available as a deliberately provisional prerelease through
+[`projects/esmc6b`](projects/esmc6b/README.md); it initializes the ongoing
+geometry fine-tuning run and is not a final model selection. Other ESMC values
+reported in this repository remain checkpoint-specific snapshots. Detailed
+training status and reporting limits are documented in
 [docs/models/esmc6b.md](docs/models/esmc6b.md).
 
 ## License and model artifacts
 
-This repository contains source code and reproducibility metadata only. Before
-redistributing a checkpoint or running ESM3, comply with the applicable ESM3,
-RCSB, CASP, AlphaFold DB, and other source-data terms.
+The Git tree contains source code and reproducibility metadata; model weights
+are distributed separately as release assets. The MambaFold ESMC preview does
+not bundle the upstream ESMC-6B parameters. Before redistributing a checkpoint
+or running either track, comply with the applicable model and source-data
+terms.
+Bundled third-party reference data and its upstream license are documented in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
