@@ -151,7 +151,13 @@ def save_checkpoint(
     rng_states: list[dict] | None = None,
     data_state: dict | None = None,
 ):
-    import wandb
+    try:
+        import wandb
+    except ImportError:
+        wandb_run_id = None
+    else:
+        active_run = getattr(wandb, "run", None)
+        wandb_run_id = getattr(active_run, "id", None)
 
     raw_model = model.module if isinstance(model, DDP) else model
     path = out_dir / f"ckpt_{step:07d}.pt"
@@ -165,7 +171,7 @@ def save_checkpoint(
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "args": vars(args) if not isinstance(args, dict) else args,
-            "wandb_run_id": wandb.run.id if wandb.run is not None else None,
+            "wandb_run_id": wandb_run_id,
             "rng_states": rng_states,
             "data_state": data_state or {},
         },

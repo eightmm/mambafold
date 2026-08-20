@@ -1,4 +1,5 @@
 import random
+import sys
 from itertools import islice
 from types import SimpleNamespace
 
@@ -33,7 +34,8 @@ def test_rng_state_round_trip():
     torch.testing.assert_close(actual[2], expected[2])
 
 
-def test_checkpoint_contains_resume_state(tmp_path):
+def test_checkpoint_contains_resume_state(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "wandb", None)
     model = torch.nn.Linear(4, 2)
     ema = EMA(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
@@ -73,6 +75,7 @@ def test_checkpoint_contains_resume_state(tmp_path):
     assert checkpoint["step"] == 3
     assert len(checkpoint["rng_states"]) == 1
     assert checkpoint["data_state"] == data_state
+    assert checkpoint["wandb_run_id"] is None
     assert not any(key.startswith("module.") for key in checkpoint["model"])
 
     for step in (4, 5):
