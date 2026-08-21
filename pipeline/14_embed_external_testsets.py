@@ -91,7 +91,12 @@ def main() -> int:
             path = sequence_embedding_path(out_dir, seq)
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".npy.tmp")
-            np.save(tmp, emb)
+            # Write through an open handle. `np.save` appends ".npy" to any
+            # filename that does not already end in it, so `np.save(tmp, ...)`
+            # with a ".npy.tmp" name silently creates ".npy.tmp.npy" and the
+            # rename below then fails on a file that was never written.
+            with open(tmp, "wb") as fh:
+                np.save(fh, emb)
             tmp.replace(path)
             written += 1
             if index % 10 == 0 or index == len(todo):
