@@ -321,6 +321,12 @@ Everything here is measured. Nothing in this section is an estimate.
   0.0% of CA-CA steps within 0.5 A of ideal, from a model trained 40 steps whose
   zero-initialised head leaves the sampler integrating noise. A metric that says
   "bad" for a model that is bad is the property being checked here.
+- **The chain index is built and findable.** 498,546 chains (RCSB 229,705 +
+  AFDB 268,841) in 2,424 s. The loader resolves both caches to the files
+  `pipeline/13` wrote, which is the point that was broken: the stage builds from
+  absolute paths and the loader looks up from config-relative ones, and before
+  the key was made spelling-independent the two never met. `slurm_train.sh`'s
+  guard passes, so training starts without paying the rebuild.
 - **CASP embeddings exist**: 113/113 across the three sets (lengths 35-881), in
   `data/casp_esmc6b`, kept apart from the training caches.
 - **Prewarm is a first-run cost only.** Four shapes compiled in 900.0s cold and
