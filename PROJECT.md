@@ -301,6 +301,18 @@ Everything here is measured. Nothing in this section is an estimate.
 - **The loader is not the bottleneck.** `data_wait` settles at **0.6%** of step
   time after the first batch. This replaces an estimate of ~26x headroom with a
   reading from the training loop itself.
+- **Step time, split (A5000, 768 residues, warm kernels, 422 ms/step).**
+  backward 203.3 ms (48.2%), forward with its metric syncs 155.3 ms (36.8%),
+  grad clip and AdamW 59.5 ms (14.1%), collate 2.9 ms, host-to-device 0.7 ms,
+  unaccounted 0.0 ms. The clip-and-optimizer share is worth naming: 59.5 ms on
+  370M parameters is about five hours of a 300k-step run spent on nothing but
+  the optimizer.
+- **A 3.7x step-time discrepancy is closed, and it was measurement.** The same
+  workload read 1091 ms/step in the first overfit probe and 422 ms here. The
+  difference is TileLang compilation landing inside the timed region: that probe
+  has no prewarm stage and the kernel cache was cold. Neither `use_rigid_align`
+  nor the metric `.item()` syncs — the two candidates named at the time —
+  accounts for it. Time any step only with warm kernels.
 - **Prewarm is a first-run cost only.** Four shapes compiled in 900.0s cold and
   22-37s warm: TileLang caches kernels on disk. The 16 shapes of crop 1024 at
   bin 64 should cost about an hour once, and near nothing on every restart.

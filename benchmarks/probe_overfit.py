@@ -50,6 +50,14 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--log_every", type=int, default=25)
     ap.add_argument("--out", default=None)
+    ap.add_argument(
+        "--profile", action="store_true",
+        help="Time collate, host-to-device, forward+loss, backward and the "
+             "optimizer separately. Two measurements of the same work disagree "
+             "by 3.7x — probe_train_memory's fit predicts 298 ms for this "
+             "workload and this probe measured 1091 ms — and collation (2.1 ms) "
+             "and the lDDT chunking are already ruled out. This splits the step.",
+    )
     args = ap.parse_args()
 
     if not torch.cuda.is_available():
@@ -102,13 +110,27 @@ def main() -> int:
     print(f"[overfit] {n_params:,} params", flush=True)
 
     history = []
+    sections: dict[str, float] = {}
+
+    def _mark(name: str, start: float) -> float:
+        """Record a wall-clock section, synchronising so the number is real."""
+        if args.profile:
+            torch.cuda.synchronize()
+            now = time.perf_counter()
+            sections[name] = sections.get(name, 0.0) + (now - start)
+            return now
+        return start
+
     t0 = time.perf_counter()
     for step in range(1, args.steps + 1):
         ex = examples[step % len(examples)]
+        mark = time.perf_counter()
         batch = collator([ex])
         if batch is None:
             continue
+        mark = _mark("collate", mark)
         batch = batch.to(torch.device("cuda"))
+        mark = _mark("host_to_device", mark)
         loss, metrics = allatom_forward_and_loss(
             model,
             batch,
@@ -120,12 +142,17 @@ def main() -> int:
             lddt_cutoff_A=cfg.get("lddt_cutoff_A", 15.0),
             lddt_pair_chunk_size=cfg.get("lddt_pair_chunk_size", 512),
         )
+        # `allatom_forward_and_loss` calls `.item()` on its metrics, so the
+        # forward is already synchronised by the time it returns.
+        mark = _mark("forward_loss_and_metric_syncs", mark)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        mark = _mark("backward", mark)
         gnorm = torch.nn.utils.clip_grad_norm_(
             model.parameters(), cfg.get("grad_clip", 2.0)
         ).item()
         optimizer.step()
+        mark = _mark("clip_and_optimizer", mark)
         row = {"step": step, "grad_norm": gnorm, **metrics}
         history.append(row)
         if step % args.log_every == 0 or step == 1:
@@ -150,8 +177,17 @@ def main() -> int:
     print(f"\n[overfit] first-25 mean {first}")
     print(f"[overfit] last-25  mean {last}")
     print(f"[overfit] verdict  {verdict}")
-    print(f"[overfit] {args.steps} steps in {time.perf_counter()-t0:.0f}s "
-          f"({(time.perf_counter()-t0)/max(1,args.steps)*1000:.0f} ms/step)")
+    total = time.perf_counter() - t0
+    print(f"[overfit] {args.steps} steps in {total:.0f}s "
+          f"({total/max(1,args.steps)*1000:.0f} ms/step)")
+    if sections:
+        print("[overfit] where the step goes:")
+        for name, secs in sorted(sections.items(), key=lambda kv: -kv[1]):
+            print(f"  {name:34} {1000*secs/max(1,args.steps):8.1f} ms/step "
+                  f"{100*secs/total:5.1f}%")
+        accounted = sum(sections.values())
+        print(f"  {'unaccounted':34} {1000*(total-accounted)/max(1,args.steps):8.1f} ms/step "
+              f"{100*(total-accounted)/total:5.1f}%")
 
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
