@@ -313,6 +313,16 @@ Everything here is measured. Nothing in this section is an estimate.
   has no prewarm stage and the kernel cache was cold. Neither `use_rigid_align`
   nor the metric `.item()` syncs — the two candidates named at the time —
   accounts for it. Time any step only with warm kernels.
+- **The rollout path runs.** `scripts/rollout.py` sampled 6 CASP16 targets under
+  both ODE and SDE from a smoke checkpoint: EMA weights loaded, sequence-only
+  examples built, structures written. `t1208s1.pdb` carries 2,619 ATOM records,
+  which is exactly the atom_mask count computed independently for that sequence.
+  The geometry report correctly calls the output garbage — bond RMSD 37-56 A and
+  0.0% of CA-CA steps within 0.5 A of ideal, from a model trained 40 steps whose
+  zero-initialised head leaves the sampler integrating noise. A metric that says
+  "bad" for a model that is bad is the property being checked here.
+- **CASP embeddings exist**: 113/113 across the three sets (lengths 35-881), in
+  `data/casp_esmc6b`, kept apart from the training caches.
 - **Prewarm is a first-run cost only.** Four shapes compiled in 900.0s cold and
   22-37s warm: TileLang caches kernels on disk. The 16 shapes of crop 1024 at
   bin 64 should cost about an hour once, and near nothing on every restart.
