@@ -92,6 +92,32 @@ if missing:
     )
 PYCHECK
 
+# Preflight: is NCCL usable on the node we landed on? It is not everywhere —
+# on gpu2 every NCCL variant segfaults (with device_id, without, and with P2P
+# and SHM disabled) while gloo passes, established with a probe that imports
+# nothing from this project. The danger is not a crash, which is loud and
+# immediate; it is falling back to gloo unnoticed, because gloo all-reduces
+# 370M parameters over CPU and would stretch this run by days with nothing in
+# the log to say why. So the probe decides, and gloo needs an explicit opt-in.
+if [ "${DIST_BACKEND:-nccl}" = "nccl" ] && [ "$NPROC" -gt 1 ]; then
+  echo
+  echo "=== preflight: NCCL on $(hostname) ==="
+  if timeout 300 "$MFCLEAN_PYTHON" -m torch.distributed.run \
+       --standalone --nproc_per_node=2 benchmarks/probe_nccl.py >/dev/null 2>&1; then
+    echo "  NCCL ok"
+  elif [ "${MF_ALLOW_GLOO:-0}" = "1" ]; then
+    echo "  NCCL FAILED — falling back to gloo because MF_ALLOW_GLOO=1."
+    echo "  Expect gradient all-reduce over CPU on 370M parameters: much slower."
+    export DIST_BACKEND=gloo
+  else
+    echo "  NCCL FAILED on this node. Refusing to start."
+    echo "  Reproduce:  sbatch -p \$PARTITION --gres=gpu:2 scripts/slurm_probe_nccl.sh"
+    echo "  To run anyway on gloo, and accept a much slower run:"
+    echo "      MF_ALLOW_GLOO=1 sbatch scripts/slurm_train.sh"
+    exit 1
+  fi
+fi
+
 exec "$MFCLEAN_PYTHON" -m torch.distributed.run \
   --standalone --nproc_per_node="$NPROC" \
   scripts/train.py --config "$CONFIG" --out_dir "$OUT_DIR" "$@"
