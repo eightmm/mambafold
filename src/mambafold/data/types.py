@@ -84,7 +84,10 @@ class ProteinBatch:
     t: torch.Tensor  # [B, 1, 1, 1] float — interpolation time ∈ [0, 1]
 
     # Conditioning
-    esm: Optional[torch.Tensor]  # [B, L, d_plm] float — optional external PLM embeddings
+    # [B, L, d_plm] float — optional external PLM embeddings. May carry a
+    # single row when every example in the batch is the same protein
+    # (`copies_per_protein` > 1); the model broadcasts it.
+    esm: Optional[torch.Tensor]
     x_self_cond: Optional[torch.Tensor] = None  # [B, L, A, 3] detached x0 estimate
 
     @property
@@ -99,33 +102,21 @@ class ProteinBatch:
     def max_len(self) -> int:
         return self.res_type.shape[1]
 
-    def with_coords(self, new_coords: torch.Tensor) -> "ProteinBatch":
-        """Return a copy with x_t replaced (for sampling)."""
-        return replace(self, x_t=new_coords)
-
     def to(self, device: torch.device) -> "ProteinBatch":
-        """Move all tensor fields to `device`; non-tensors pass through."""
+        """Move all tensor fields to `device`; non-tensors pass through.
+
+        `non_blocking=True` is safe and useful here because the loader sets
+        `pin_memory=True`: the copies are queued on the current stream and every
+        consumer is on that same stream, so ordering holds while the transfer
+        overlaps whatever the GPU is still finishing. It is a small win — about
+        15 MB per micro-step at crop 1024 with 8 copies — but it is free.
+        """
         moved = {
-            f.name: v.to(device)
+            f.name: v.to(device, non_blocking=True)
             for f in fields(self)
             if isinstance(v := getattr(self, f.name), torch.Tensor)
         }
         return replace(self, **moved)
-
-    def truncate_length(self, max_L: int) -> "ProteinBatch":
-        """Return a copy with the L-axis (dim 1) cropped to `max_L`.
-
-        No-op if already shorter. Every tensor field carries L at dim 1
-        except `t` ([B,1,1,1]), which is shape-invariant and passes through.
-        """
-        if self.res_type.shape[1] <= max_L:
-            return self
-        cropped = {
-            f.name: v[:, :max_L]
-            for f in fields(self)
-            if f.name != "t" and isinstance(v := getattr(self, f.name), torch.Tensor)
-        }
-        return replace(self, **cropped)
 
     def pad_to_length(self, max_L: int) -> "ProteinBatch":
         """Right-pad every residue-axis tensor to ``max_L``.

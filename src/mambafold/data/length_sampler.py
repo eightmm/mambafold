@@ -1,173 +1,38 @@
-"""DDP-compatible length-balanced sampler for RCSB protein training.
+"""DDP length-bucketed batch sampler.
 
-Default `DistributedSampler(shuffle=True)` samples every protein with equal
-probability. The dataset audit showed our train set is 90% L<500 (median
-sum-chain-length ≈ 217) — uniform sampling spends ~90% of training compute
-on short monomers, contributing to long-chain quality drop at L=512-1024
-(0.80 → 0.72).
+The training loop pads every rank up to one global sequence length so the
+TileLang Mamba-3 kernels, which specialize on length, see a single shape per
+step. With independent per-rank draws that global maximum is the max of
+`world_size` random chain lengths: measured over this corpus it averages 624
+residues at 8 ranks against a mean own length of 312, so every rank does 2x the
+necessary work. Drawing all ranks from one length-sorted global batch brings
+that back to 1.0x. That, not intra-batch padding, is why bucketing is on at
+batch_size 1.
 
-`LengthBalancedDistributedSampler` upweights longer proteins via a configurable
-exponent (default L^0.5, "moderate"). Each DDP rank draws its own
-WeightedRandomSampler-style indices with a rank-offset seed so the union
-across ranks is approximately balanced and ranks don't duplicate work
-heavily.
-
-For length stats, the sampler reads `data/splits/metadata.tsv` once and
-matches it to `dataset.files`. Files missing from metadata fall back to
-weight 1.0.
+The draw itself is uniform over valid indices. A length-balance weighting
+(`w = clip((L/200)**0.5, clip_min, clip_max)`) used to sit here and was removed:
+it was never declared in any config, `length_balanced_sampling: false` read as
+"no length weighting", and it was nonetheless applied by this sampler, giving
+chains of 450+ residues 1.5x the draw rate of chains under 200. That is a
+different training measure from the one the corpus documents describe, and from
+SimpleFold's, which draws each entry once.
 """
 
 from __future__ import annotations
 
 import math
-from collections import defaultdict
-from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Iterator
 
 import torch
 from torch.utils.data import Sampler
 
 
-def _load_protein_lengths(metadata_path: Path) -> dict[str, int]:
-    """pdb_id (lowercase) → sum of standard-residue lengths across protein chains."""
-    chains: dict[str, int] = defaultdict(int)
-    with open(metadata_path) as f:
-        header = f.readline().rstrip("\n").split("\t")
-        idx_id = header.index("pdb_id")
-        idx_len = header.index("n_standard")
-        for line in f:
-            parts = line.rstrip("\n").split("\t")
-            if len(parts) < len(header):
-                continue
-            pid = parts[idx_id].lower()
-            try:
-                n = int(parts[idx_len])
-            except ValueError:
-                continue
-            if n > 0:
-                chains[pid] += n
-    return dict(chains)
-
-
-def _weight_from_length(
-    L: int, mode: str, exponent: float, clip_min: float, clip_max: float
-) -> float:
-    """Map a protein's sum-chain length to a sampling weight.
-
-    mode="power": w = max(clip_min, min(clip_max, (L / 200) ** exponent))
-        — moderate upweight for longer proteins (default exponent=0.5).
-    mode="linear_clip": w = clip(L / 200, clip_min, clip_max)
-        — proportional, clipped to a comfortable range.
-    """
-    base = max(L, 1) / 200.0
-    if mode == "power":
-        w = base**exponent
-    elif mode == "linear_clip":
-        w = base
-    else:
-        raise ValueError(f"unknown length-balance mode: {mode!r}")
-    return float(max(clip_min, min(clip_max, w)))
-
-
-class LengthBalancedDistributedSampler(Sampler[int]):
-    """Per-rank weighted sampler over a flat protein list.
-
-    Args:
-        dataset_files: list of Paths or strings matching `dataset.files`
-            (the order MUST match `dataset[idx]` order).
-        metadata_path: Path to `data/splits/metadata.tsv`.
-        rank, world_size: DDP coordinates. Default rank=0, world_size=1 (single-GPU).
-        num_samples_per_rank: per-rank sample count per epoch. Default =
-            `ceil(len(files) / world_size)`.
-        mode, exponent, clip_min, clip_max: see `_weight_from_length`.
-        seed: RNG seed; per-epoch RNG = seed + epoch*world_size + rank.
-    """
-
-    def __init__(
-        self,
-        dataset_files: Sequence,
-        metadata_path: str | Path,
-        rank: int = 0,
-        world_size: int = 1,
-        num_samples_per_rank: int | None = None,
-        mode: str = "power",
-        exponent: float = 0.5,
-        clip_min: float = 1.0,
-        clip_max: float = 1.5,
-        seed: int = 0,
-    ):
-        # Note: torch.utils.data.Sampler in recent PyTorch no longer accepts
-        # data_source — skip super().__init__ (Sampler is just an iterable protocol).
-        if world_size < 1:
-            raise ValueError(f"world_size must be >= 1, got {world_size}")
-        if not (0 <= rank < world_size):
-            raise ValueError(f"rank={rank} out of range for world_size={world_size}")
-
-        lengths = _load_protein_lengths(Path(metadata_path))
-        n = len(dataset_files)
-        weights = []
-        n_default = 0
-        for f in dataset_files:
-            stem = Path(f).stem.lower()
-            L = lengths.get(stem)
-            if L is None:
-                weights.append(1.0)
-                n_default += 1
-            else:
-                weights.append(_weight_from_length(L, mode, exponent, clip_min, clip_max))
-        self.weights = torch.tensor(weights, dtype=torch.double)
-        self.n_default = n_default
-
-        self.rank = rank
-        self.world_size = world_size
-        self.num_samples = (
-            num_samples_per_rank if num_samples_per_rank is not None else math.ceil(n / world_size)
-        )
-        self.seed = seed
-        self.epoch = 0
-
-        # Stats for logging
-        self._n_total = n
-        self._mode = mode
-        self._exponent = exponent
-        self._clip = (clip_min, clip_max)
-
-    def set_epoch(self, epoch: int) -> None:
-        self.epoch = int(epoch)
-
-    def __iter__(self) -> Iterator[int]:
-        g = torch.Generator()
-        g.manual_seed(self.seed + self.epoch * self.world_size + self.rank)
-        idx = torch.multinomial(
-            self.weights,
-            self.num_samples,
-            replacement=True,
-            generator=g,
-        )
-        return iter(idx.tolist())
-
-    def __len__(self) -> int:
-        return self.num_samples
-
-    def __repr__(self) -> str:
-        w = self.weights
-        return (
-            f"LengthBalancedDistributedSampler("
-            f"n={self._n_total}, rank={self.rank}/{self.world_size}, "
-            f"per_rank={self.num_samples}, mode={self._mode}, exp={self._exponent}, "
-            f"clip={self._clip}, default_weight_n={self.n_default}, "
-            f"w_min={float(w.min()):.2f}, w_max={float(w.max()):.2f}, "
-            f"w_mean={float(w.mean()):.2f})"
-        )
-
-
 class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
     """Per-rank *batch* sampler that groups near-equal-length proteins together.
 
-    Same length-balance draw as `LengthBalancedDistributedSampler`, but yields
-    whole batches whose members have similar length — so the collator pads each
-    batch to ~its own longest sequence instead of the global max, cutting the
-    padding waste that dominates the O(L²) pair stack.
+    Yields whole batches whose members have similar length, so the collator pads
+    each batch to ~its own longest sequence instead of the global max, cutting
+    padding waste across the atom and residue sequence paths.
 
     Operates on a precomputed `index_lengths` map (valid dataset index → true
     example length, from `length_cache`). Only those indices are emitted, so
@@ -175,8 +40,8 @@ class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
     keeping each batch's real content aligned with the length it was bucketed by.
 
     Per epoch, every rank deterministically reconstructs the same global draw:
-      1. draw `num_samples_per_rank * world_size` valid indices ~ length-balance
-         weights (replacement).
+      1. draw `num_samples_per_rank * world_size` valid indices uniformly
+         (with replacement).
       2. split into global megabatches, sort by true length, and chunk into
          `batch_size * world_size` global batches.
       3. shard each global batch across ranks and shuffle the shared batch order.
@@ -199,10 +64,6 @@ class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
         rank: int = 0,
         world_size: int = 1,
         num_samples_per_rank: int | None = None,
-        mode: str = "power",
-        exponent: float = 0.5,
-        clip_min: float = 1.0,
-        clip_max: float = 1.5,
         seed: int = 0,
         megabatch_mult: int = 50,
     ):
@@ -219,11 +80,6 @@ class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
         self.valid = torch.tensor(sorted(index_lengths.keys()), dtype=torch.long)
         lens = [index_lengths[int(i)] for i in self.valid]
         self.lengths = torch.tensor(lens, dtype=torch.long)
-        self.weights = torch.tensor(
-            [_weight_from_length(L, mode, exponent, clip_min, clip_max) for L in lens],
-            dtype=torch.double,
-        )
-
         self.batch_size = batch_size
         self.rank = rank
         self.world_size = world_size
@@ -245,9 +101,6 @@ class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
         self._n_batches = full_mb * self.megabatch_mult + rem // global_batch
 
         self._n_valid = len(self.valid)
-        self._mode = mode
-        self._exponent = exponent
-        self._clip = (clip_min, clip_max)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
@@ -270,11 +123,9 @@ class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
         # selects its non-overlapping slice from each global batch below.
         g.manual_seed(self.seed + self.epoch)
         global_samples = self.num_samples * self.world_size
-        pos = torch.multinomial(  # positions into self.valid
-            self.weights,
-            global_samples,
-            replacement=True,
-            generator=g,
+        # Uniform draw with replacement over valid indices.
+        pos = torch.randint(
+            len(self.valid), (global_samples,), generator=g, dtype=torch.long
         )
         lens = self.lengths[pos]
         global_batch = self.batch_size * self.world_size
@@ -302,12 +153,9 @@ class LengthBucketedDistributedBatchSampler(Sampler[list[int]]):
         return self._n_batches
 
     def __repr__(self) -> str:
-        w = self.weights
         return (
             f"LengthBucketedDistributedBatchSampler("
             f"valid={self._n_valid}, rank={self.rank}/{self.world_size}, bs={self.batch_size}, "
             f"batches/epoch={self._n_batches}, megabatch_mult={self.megabatch_mult}, "
-            f"mode={self._mode}, exp={self._exponent}, clip={self._clip}, "
-            f"len_min={int(self.lengths.min())}, len_max={int(self.lengths.max())}, "
-            f"w_mean={float(w.mean()):.2f})"
+            f"len_min={int(self.lengths.min())}, len_max={int(self.lengths.max())})"
         )

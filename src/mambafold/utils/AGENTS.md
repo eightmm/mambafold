@@ -2,18 +2,7 @@
 
 ## `geometry.py`
 
-**remove_translation(coords, atom_mask)** — Remove centroid for SE(3) invariance.
-
-```python
-centroid = (coords * mask).sum(dim=(1,2)) / mask.sum(dim=(1,2))
-return coords - centroid
-```
-
-Applied every step during sampling to prevent translation drift.
-
-**pairwise_distances(coords, valid_mask)** — Compute all-to-all distances for LDDT.
-
-**random_rotation(coords, atom_mask)** — Random SO(3) rotation for data augmentation.
-
-## `metrics.py`
-CA-LDDT, TM-score, GDT-TS (optional external tools).
+- `random_rotation_matrix` and `apply_rotation` support coordinate augmentation.
+- `masked_centroid` is shared by augmentation and per-example sampler centering.
+- `weighted_rigid_align` aligns clean coordinates to detached predictions for
+  the flow-matching target.

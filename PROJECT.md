@@ -130,20 +130,16 @@ A stricter population still — chains that also admit a valid observed-atom cro
   given attention by flipping a flag cannot support the claim that a pure SSM
   trunk suffices — the claim has to be a property of the code, not of a default.
   And a disabled O(L²) triangle path still has to be carried, sized, and
-  reasoned about at every crop decision. Parameter count is unchanged at 354.7M,
-  confirming the pair stack was already contributing nothing: this removed
-  complexity, not capacity. An all-attention control arm is a separate trunk,
-  written for the purpose — not a flag on this one.
+  reasoned about at every crop decision. That reasoning stands on its own — it
+  is why attention is absent rather than disabled — and does not depend on the
+  control arm, which was cancelled (see below).
 - Three SSM levels, atom → token → atom: AtomEncoder over each residue's atom
   slots, a pair-free BiMamba residue trunk, an AtomDecoder reading out per-atom
   velocity.
-- The one O(L²) tensor left is `pairfree_aux_heads`, an output head: it builds
-  an outer sum from the residue latent on the way out and feeds nothing back
-  into the trunk. Off in the baseline run.
+- There is no learned O(L²) pair tensor, including in the output path.
 - Loss: rigid-aligned flow matching + exact all-atom lDDT only. Pretraining uses
   α(t)=1; a separately declared fine-tune may use 1+8·ReLU(t−0.5).
-  `losses/geometry.py` and `losses/stereochemistry.py` are present and carry
-  zero weight; a geometry fine-tune is a separate run, reported separately.
+  Confidence is trained later against a frozen folding model.
 
 ### Shared-memory limits (measured)
 
@@ -193,31 +189,34 @@ Deliberately the same shape as SimpleFold, so the comparison means something.
   does the same, and every admitted record goes to training.
 - **One fixed crop of 1024. No schedule, no stages.** At 1024, 98.85% of chains
   fit whole and 98.4% of all residues fall inside the crop, so a curriculum
-  would be buying the last 1.6%. The cost of a single large crop is padding —
-  the median chain is 248 — and that is paid down by length bucketing rather
-  than by a crop schedule: each batch pads to its own longest member, and
-  `length_bin: 64` aligns that to the SSM chunk size the kernel pads to anyway.
-- Two arms under one contract carry the architecture claim: a Mamba trunk and a
-  transformer control trunk, **matched on parameter count**, differing in the
-  trunk mixer and nowhere else. FLOPs are reported but not matched. The released
-  SimpleFold checkpoint is an external baseline, not a controlled ablation — it
-  differs in PLM, corpus size, and training infrastructure.
+  would be buying the last 1.6%. Run A samples one distinct protein per GPU and
+  repeats it for noise multiplicity, so all rows share a length; no length
+  bucketing is needed. `length_bin: 64` matches the SSM kernel's own padding.
+- **One arm.** The parameter-matched transformer control trunk was cancelled
+  on 2026-08-21 as too expensive: at
+  `copies 8 x grad_accum 2` a step is two micro-steps, so even a short 20k-step
+  paired probe runs past a day of wall clock for the two arms, before queue time.
+  What this costs is stated plainly rather than quietly dropped — no controlled
+  comparison remains, so a difference against SimpleFold cannot be attributed to
+  the trunk mixer as against any of this project's declared deviations from it.
+  The released SimpleFold checkpoint is now the only comparator: a public
+  baseline, not a controlled ablation, differing in PLM, corpus size and
+  training infrastructure.
 
 ### Run A — `configs/run_a_mamba.yaml`
 
 | | | why |
 | --- | --- | --- |
-| `d_res` / `n_trunk` | 1024 / 16 | 354.7M parameters, measured; the grid point nearest SimpleFold-360M (17 would be 376.5M) |
+| `d_res` / `n_trunk` | 1024 / 16 | 353.68M parameters, measured; the nearest tested grid point to SimpleFold-360M |
 | `d_atom` / `n_atom_layers` | 128 / 4 | the atom levels are under 4M together; the trunk is 98% of the model |
 | `d_state` / `mimo_rank` | 128 / 1 | the only route to `d_state=128` on Ada — MIMO would need 123,216 B against a 101,376 B limit |
-| `max_length` | 1024 | fixed, `crop_schedule: null` |
-| loss | `w_fm` + `w_lddt_atom` only | every other weight is 0 |
+| `max_length` | 1024 | one fixed upper bound; no crop-schedule interface |
+| loss | `w_fm` + `w_lddt_atom` only | no auxiliary loss knobs in the folding trainer |
 | validation | none | no validation loader or CLI knobs; one `admitted_all` list |
 
-Still provisional in that file, and marked as such: `total_steps`, `lr`,
-`warmup_steps`, and `batch_size` (measured at `d_state=64`, `mimo_rank=4`,
-which is not the chosen setting). The timestep distribution now matches
-SimpleFold's logit-normal mixture exactly.
+The step count, optimizer, warmup, clipping, timestep distribution, and
+16-way noise multiplicity match the declared SimpleFold reference recipe. The
+global number of distinct proteins per step remains equal to the DDP world size.
 
 Measured on one RTX 6000 Ada (47.4 GiB), worst case — crop 1024, every residue
 and atom slot valid, real forward, objective, backward and AdamW step
@@ -275,11 +274,41 @@ PYTHONPATH=src python scripts/train.py --config configs/run_a_mamba.yaml
 1. **Admitted set**: 161,613, the SimpleFold-exact figure, always reported with
    the 158,210 the farm holds.
 2. **Model size**: `d_res=1024`, `n_trunk=16`, `d_atom=128`, `n_atom_layers=4`
-   — 354.7M parameters.
+   — 353,679,466 parameters (353.68M).
 3. **Mamba settings**: `d_state=128`, `mimo_rank=1` (SISO), `headdim=64`,
    `expand=2`.
-4. **Transformer control arm**: matched on parameter count.
+4. **No transformer control arm** — cancelled 2026-08-21 on cost.
 5. **Crop**: one fixed 1024. No schedule.
+
+## Validated on GPU (2026-08-22, jobs 57848 / 57856 / 57859)
+
+Everything here is measured. Nothing in this section is an estimate.
+
+- **Masking.** A padded batch matches each sequence run alone, and padded
+  outputs are exactly zero. This rules out the depthwise-conv boundary, the
+  `_flip_by_mask` contiguous-prefix assumption, the pooling softmax, the
+  `BackboneStreamMixer` axis order and the AdaLN `repeat` broadcast — all of
+  which fail silently rather than raising.
+- **Memory.** `peak = 4.89 GiB + 2.538 MiB/residue`, eight points at or above
+  1024 residues, max residual 0.223 GiB. Depends on the total residue count and
+  not on how crop and batch divide it, checked directly. Add ~3 GiB for the EMA
+  copy and DDP buckets: `copies 8 x 1024` projects to 28.2 GiB, 59% of a 47.4
+  GiB card; 16 copies does not fit.
+- **The model learns.** Four real chains, 400 steps: fm -76%, lDDT loss -21%.
+- **Distributed.** One rank, two ranks, checkpoint and resume all pass. The
+  per-interval packed metric all-reduce does not hang; the step counter
+  continues correctly across a resume.
+- **The loader is not the bottleneck.** `data_wait` settles at **0.6%** of step
+  time after the first batch. This replaces an estimate of ~26x headroom with a
+  reading from the training loop itself.
+- **Prewarm is a first-run cost only.** Four shapes compiled in 900.0s cold and
+  22-37s warm: TileLang caches kernels on disk. The 16 shapes of crop 1024 at
+  bin 64 should cost about an hour once, and near nothing on every restart.
+- **NCCL is broken on gpu2.** `benchmarks/probe_nccl.py`, which imports nothing
+  from this project, segfaults for every NCCL variant tried (with `device_id`,
+  without, and with P2P and SHM disabled) while gloo passes init, barrier and a
+  value-checked all_reduce. Re-run that probe on any node before trusting it.
+  Whether the 6000ada nodes are affected decides whether Run A can use NCCL.
 
 ## Open decisions
 
@@ -289,9 +318,10 @@ PYTHONPATH=src python scripts/train.py --config configs/run_a_mamba.yaml
 
 ## Not yet done
 
-- The transformer control arm config. Run A exists;
-  `configs/run_b_transformer.yaml` does not, and sizing it to 354.7M has not
-  been done.
+- The rollout script. This is now the only path to any number at all: with the
+  control arm cancelled, an external-benchmark rollout is the sole evidence the
+  project produces. `src/mambafold/sampling/` and `src/mambafold/structure_io.py`
+  exist and have zero callers because nothing invokes them yet.
 - CASP domain-level homology queries: the policy requires them, stage 10 runs
   whole-chain queries only.
 - The loader chain index. `pipeline/13_prebuild_loader_caches.py` exists but has

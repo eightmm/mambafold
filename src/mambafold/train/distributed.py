@@ -74,9 +74,23 @@ def setup_dist():
     if local_rank < 0:
         return False, 0, 1, "cuda" if torch.cuda.is_available() else "cpu"
 
-    torch.cuda.set_device(local_rank)
     backend = os.environ.get("DIST_BACKEND", "nccl")
-    dist.init_process_group(backend, timeout=timedelta(minutes=30))
+    device = torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else None
+    if device is not None:
+        torch.cuda.set_device(device)
+
+    # `device_id` is not optional in practice. Without it torch 2.11 warns
+    # "Guessing device ID based on global rank" and then binds the process
+    # group to whatever it guessed; on a node whose GPUs are not identical —
+    # gpu2 here carries 4x 2080ti alongside 4x a5000 — the guess does not match
+    # the device this rank actually set, and the first `dist.barrier()`
+    # segfaults. Measured: SIGSEGV inside `distributed_c10d.barrier` at both
+    # one and two ranks, with no Python traceback, which is what a bare
+    # "exitcode -11" from the elastic launcher looks like from the outside.
+    kwargs = {"timeout": timedelta(minutes=30)}
+    if device is not None and backend == "nccl":
+        kwargs["device_id"] = device
+    dist.init_process_group(backend, **kwargs)
     return True, dist.get_rank(), dist.get_world_size(), f"cuda:{local_rank}"
 
 
@@ -136,11 +150,6 @@ def enable_cuda_perf_flags():
     if hasattr(torch.backends.cuda.matmul, "allow_bf16_reduced_precision_reduction"):
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
 
-
-def all_reduce_mean(tensor: torch.Tensor) -> float:
-    """모든 rank의 텐서를 sum한 뒤 world_size로 나눈 평균 반환."""
-    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-    return (tensor / dist.get_world_size()).item()
 
 
 def any_rank_true(value: bool, device: torch.device | str) -> bool:

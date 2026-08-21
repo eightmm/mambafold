@@ -31,11 +31,17 @@ AA_TO_ID["UNK"] = 20
 
 ID_TO_AA = {v: k for k, v in AA_TO_ID.items()}
 
-# Maximum heavy atoms per residue (atom14 layout + OXT terminal oxygen)
-MAX_ATOMS_PER_RES = 15
+# Maximum heavy atoms per residue. TRP is the largest standard residue at 14
+# heavy atoms, and no entry in RESIDUE_ATOMS below carries OXT, so the old
+# 15-slot layout reserved a slot that nothing ever wrote: it padded every
+# atom-axis tensor by 1/15 and made the slot mixer a 15x15 map over 14 real
+# slots. If a terminal OXT is ever added it has to be added to RESIDUE_ATOMS,
+# the atom-name vocabulary, and the (residue, atom) pair vocabulary — reserving
+# an empty slot here does not make it reachable.
+MAX_ATOMS_PER_RES = 14
 
-# Canonical heavy atom names per residue type (atom14-style, padded to 14 + OXT)
-# Order: N, CA, C, O, CB, then side-chain specific, then OXT
+# Canonical heavy atom names per residue type (atom14 layout).
+# Order: N, CA, C, O, CB, then side-chain specific.
 CA_ATOM_ID = 1
 
 # Per-residue heavy atom slot table

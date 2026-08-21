@@ -114,15 +114,27 @@ so the difference is never invisible.
 | AFESM | not used | SimpleFold-360M pretrains with it; this corpus is a strict subset |
 | PLM | ESMC-6B, 2560-d, pinned revision | SimpleFold uses ESM2-3B |
 | Trunk | pure Mamba; attention and the pair stack are deleted from `src/`, not disabled | SimpleFold is all-attention |
-| Loss | rigid-aligned flow matching + exact all-atom lDDT; pretraining uses α(t)=1, the 1+8·ReLU(t−0.5) ramp belongs to a separately declared fine-tune | none once the geometry weights are zero |
+| Loss | rigid-aligned flow matching + exact all-atom lDDT; pretraining uses α(t)=1, the 1+8·ReLU(t−0.5) ramp belongs to a separately declared fine-tune | no auxiliary loss surface in the folding trainer |
 | Crop size | one fixed 1024, no schedule | SimpleFold's `pdb.yaml` sets `max_tokens: 256` |
 | Crop shape | contiguous sequence window | **SimpleFold crops spatially** — `BoltzCropper` anchors on a resolved token and expands by distance, so its crop can be sequence-discontiguous and can span chains |
 | Validation | none; one `admitted_all` list, fixed steps, last EMA | none — SimpleFold also disables it |
+| Time sampling | `0.98·logit_normal(m=0.8, s=1.7) + 0.02·U(0,1)`, bounded by `t_eps=1e-4` | none — same constants; SimpleFold hardcodes this in `flow_matching_train_step` |
+| lDDT time weight | α(t)=1 in pretraining | none — SimpleFold's `lddt_weight_schedule` is `False` in `configs/experiment/train.yaml`, "set to True in finetuning phase" |
+| Coordinate scale | divide by 16.0 | none — `processor.scale: 16.0`. `ref_scale: 5.0` applies to reference conformers, which this model has no input for |
+| Centering | centroid over every canonical atom slot | none — SimpleFold centres with `atom_pad_mask`, not the resolved mask |
+| Augmentation | random SO(3) rotation + N(0,1) translation, per copy | none — `center_random_augmentation(s_trans=1.0)` |
+| Interpolant | `x_t = t·x_1 + (1−t)·x_0`, target `x_1 − x_0`, noise `randn_like(coords)` unmasked outside padding | none — `LinearPath` with `alpha_t = t`, `sigma_t = 1−t` |
+| Noise multiplicity | 16 independent augment/noise copies per sampled protein | none — matches SimpleFold's `processor.multiplicity: 16` |
+| Optimizer | AdamW, lr 1e-4, weight_decay 0.0 | none — `configs/model/simplefold.yaml` |
+| LR schedule | linear warmup 1e-6 → 1e-4 over 5,000 steps, then held flat | none — `utils/lr_scheduler.py::LinearWarmup` has no decay phase |
+| Grad clip | 2.0 | none — `clip_grad_norm_val: 2.0` |
+| EMA | 0.999 | none |
+| Steps / warmup | 300,000 / 5,000 | matched to `configs/experiment/train.yaml`; the *token* throughput is not matched — see below |
 
 Because the chain rule differs, admitted counts will not equal SimpleFold's. The
 rules are matched; the counts are reported, not forced.
 
-### The three rows that are ours
+### Implementation details and remaining deviations
 
 **The observed-atom gate was removed.** It had no SimpleFold counterpart:
 `configs/data/pdb.yaml` declares exactly `SizeFilter`, `ResolutionFilter` and
@@ -134,19 +146,12 @@ but never rejects a crop for its resolved fraction. At 0.5 it dropped 18,683 of
 496,400 RCSB chains (3.8%) and 687 entries outright — `4cau`, a 300-chain entry,
 yielded nothing at all.
 
-Removing it is safe because an unresolved atom never reaches the model as a
-coordinate. `ProteinCollator` builds the flow-matching pair under
-`atom_mask & observed_mask`, so unresolved slots arrive as **exact zero**
-(verified on `1a02`: 261 unresolved slots, `|x_t|` max 0.0, against 1.02 for
-resolved slots). Exact zero cannot occur for a real atom and never occurs at
-inference, so it is a constant sentinel rather than a fabricated position. The
-fabricated position does exist in `x_clean` — all unresolved slots share one
-value, the negated centroid — but both consumers of `x_clean`, the FM MSE and
-`weighted_rigid_align`, take `valid_mask`, so it is never read.
-
-For the same reason, an "is this atom resolved" input feature must **not** be
-added: at inference every atom is unresolved, so such a feature would be True in
-training and False everywhere at sampling time.
+The collator follows SimpleFold here: centering and corruption use the canonical
+`atom_mask`, while FM alignment, FM MSE, and lDDT supervision use
+`valid_mask = atom_mask & observed_mask`. Thus unresolved canonical slots see
+the same interpolant/noise input distribution as slots that will be generated at
+inference, but never contribute a target loss. A resolved-mask input feature is
+deliberately absent because it would expose training-only information.
 
 **Chain-level examples multiply SimpleFold's sampling weight.** One SimpleFold
 example is one entry, drawn uniformly, with no clustering. One of ours is one
@@ -159,6 +164,15 @@ its target, so copies related by a rigid transform are the same target. Keeping
 one copy per distinct sequence per entry — the copy resolving the most atoms —
 restores an entry-level measure while still exposing every distinct chain.
 Cross-entry repeats of a protein are untouched, exactly as in SimpleFold.
+
+**Noise multiplicity is matched.** SimpleFold's processor sets
+`multiplicity: 16`, so each sampled protein enters the step with sixteen
+independent rotations, translations, timesteps, and noise draws. This project
+uses `copies_per_protein: 16` for the same per-protein variance reduction. The
+global number of distinct proteins per optimizer step is the DDP world size in
+both recipes; no fixed GPU count is assumed here. Feasibility at the worst-case
+1024-residue length remains a preflight memory gate, not a reason to silently
+change the objective or multiplicity.
 
 The crop-shape row matters more than the crop-size row. A spatial crop yields a
 sequence-discontiguous token set, which breaks the locality a state-space scan
@@ -214,10 +228,9 @@ the attribution. There they were mixed in with RCSB matches, and the CASP14 six
 and CASP15's `T1120` were RCSB-side. The date cut removed those, leaving only
 the distillation channel — which the AFDB half of the gate now names precisely.
 
-CASP14 returns as a comparable benchmark, on two conditions: sampler settings
-are frozen against the post-cutoff pool rather than against CASP14, and the
-geometry terms and guidance developed against it stay disabled. Both are part of
-this contract.
+CASP14 returns as a comparable benchmark on one condition: sampler settings are
+frozen against the post-cutoff pool rather than against CASP14. The previous
+geometry terms and guidance are not carried in this project.
 
 `data/splits/heldout_post_cutoff.txt` — every entry released after the cutoff —
 is the confirmatory selection set.
@@ -353,7 +366,7 @@ been doing, while keeping the admission rule explicit and auditable.
   net for a future corpus change and has never been run.
 - Training configs. `configs/` is deliberately empty; nothing may be copied in
   from the previous track without being re-derived against this contract.
-- The transformer control arm's matching basis — parameter count or training
-  FLOPs — decided before either arm trains.
+- (Closed 2026-08-21.) The transformer control arm's matching basis is moot:
+  the arm was cancelled, so nothing needs matching.
 - The previous track's `geoft50k` run, still training against the superseded
   contract and holding a GPU this project will need.

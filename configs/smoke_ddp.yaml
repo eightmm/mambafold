@@ -1,0 +1,97 @@
+# Multi-rank smoke config. Not a training run — a correctness harness.
+#
+# Everything here is sized so the whole thing finishes in minutes on two small
+# GPUs, and every value that could hide a distributed bug is chosen to expose
+# one instead:
+#
+#   log_interval 5      The per-interval packed metric all-reduce added on
+#                       2026-08-21 replaced nine per-step collectives. Every
+#                       rank must pack the same sorted key set; if they diverge
+#                       the collective does not raise, it HANGS. A run that
+#                       never reaches a logging step would never test it.
+#   ckpt_interval 10    Exercises save, and gives --resume something to load.
+#   grad_accum 2        Keeps the no_sync() path and RepeatBatchSampler live.
+#   length_bucketing    Keeps LengthBucketedDistributedBatchSampler live, which
+#                       is what aligns every rank onto one padded length.
+#
+# The model is small only in d_res and n_trunk. Every value the SSM kernels
+# specialise on is the real one, because a shape the kernels never compile is a
+# shape this harness does not test.
+
+train_sources:
+  - name: rcsb
+    data_dir: data/rcsb_train
+    esm_dir: data/rcsb_esmc6b
+    file_list: data/audit/gpu_probe_filelist.txt   # 200 records, index builds in seconds
+
+extract_monomer_chains: true
+single_chain_only: false
+dedup_homomer_chains: true
+min_obs_ratio: 0.0
+
+max_length: 256
+length_bucketing: true
+length_bin: 64
+
+num_workers: 2
+prefetch_factor: 2
+loader_timeout: 600.0
+length_cache_workers: 2
+
+use_plm: true
+d_plm: 2560
+
+# Small where it is free, real where the kernels care.
+d_res: 256
+n_trunk: 2
+expand: 2
+headdim: 64
+d_state: 64
+mimo_rank: 4
+bimamba_share: false
+d_atom: 128
+n_atom_layers: 2
+atom_mixer: mlp
+atom_d_state: 64
+atom_mimo_rank: 2
+n_atom_cross_layers: 1
+n_backbone_streams: 5
+d_res_type: 32
+d_res_pos: 64
+d_plm_proj: 256
+d_ca_emb: 128
+d_temb: 256
+self_conditioning: false
+self_condition_prob: 0.0
+
+w_fm: 1.0
+w_lddt_atom: 1.0
+alpha_mode: const
+use_rigid_align: true
+lddt_cutoff_A: 15.0
+lddt_pair_chunk_size: 512
+
+total_steps: 30
+lr: 1.0e-4
+warmup_steps: 5
+grad_clip: 2.0
+lr_cooldown_steps: 0
+weight_decay: 0.0
+min_lr: 1.0e-6
+ema_decay: 0.9
+t_schedule: logit_normal
+t_uniform_weight: 0.10
+seed: 0
+
+batch_size: 1
+copies_per_protein: 2
+grad_accum_steps: 2
+accum_same_protein: true
+
+ckpt_interval: 10
+keep_last_checkpoints: 3
+log_interval: 5
+
+wandb_project: mambafold-smoke
+wandb_name: smoke-ddp
+wandb_tags: [smoke]

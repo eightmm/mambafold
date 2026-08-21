@@ -7,7 +7,7 @@ The shared-memory probe (`probe_mamba3_dstate.py`) answers which
 activations of a 1024-residue crop. That is the number the config decision
 actually turns on, and it cannot be derived from parameter count: the trunk is
 bidirectional, so every BiMamba3 layer stores two SSM passes, and the atom
-levels carry an extra A=15 axis.
+levels carry an extra A=MAX_ATOMS_PER_RES axis.
 
 So this runs the real thing — the real module, a real forward, the real
 flow-matching + all-atom-lDDT objective, a real backward, and a real AdamW
@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 
 import torch
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -37,8 +38,9 @@ sys.path.insert(0, str(ROOT / "src"))
 from mambafold.data.constants import MAX_ATOMS_PER_RES, NUM_PAIR_TYPES  # noqa: E402
 from mambafold.data.types import ProteinBatch  # noqa: E402
 from mambafold.losses.lddt import soft_lddt_all_atom_loss  # noqa: E402
-from mambafold.model.fold.all_atom import NUM_RES_TYPES, MambaFoldAllAtom  # noqa: E402
+from mambafold.model.fold.all_atom import NUM_RES_TYPES  # noqa: E402
 from mambafold.model.fold.atom_mamba import NUM_ATOM_TYPES  # noqa: E402
+from mambafold.train.trainer import build_model  # noqa: E402
 
 
 def device_report() -> dict:
@@ -104,19 +106,20 @@ def classify(error: str) -> str:
     return "other"
 
 
-def try_case(cfg: dict, crop: int, batch: int, d_plm: int, steps: int) -> dict:
-    result = {"batch": batch}
+def try_case(cfg: dict, crop: int, batch: int, d_plm: int, steps: int,
+             loss_mode: str) -> dict:
+    result = {"batch": batch, "loss_mode": loss_mode}
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     model = optimizer = None
     try:
-        model = MambaFoldAllAtom(
-            d_res=cfg["d_res"], n_trunk=cfg["n_trunk"],
-            d_atom=cfg["d_atom"], n_atom_layers=cfg["n_atom_layers"],
-            d_plm=d_plm,
-            d_state=cfg["d_state"], mimo_rank=cfg["mimo_rank"],
-            expand=cfg["expand"], headdim=cfg["headdim"],
-        ).cuda()
+        # Built through `build_model` from the run config, not from a handful of
+        # keyword arguments. The previous form named eight of them and inherited
+        # the constructor defaults for the rest, so it silently measured
+        # `atom_mixer="mamba"`, `d_temb=128` and `d_plm_proj=256` — none of
+        # which is what the config trains. Every number this produced for the
+        # current model was therefore wrong.
+        model = build_model(cfg, "cuda")
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         data = synthetic_batch(batch, crop, d_plm, "cuda")
         # Flow-matching target for the straight interpolant.
@@ -130,10 +133,15 @@ def try_case(cfg: dict, crop: int, batch: int, d_plm: int, steps: int) -> dict:
                 out = model(data)
             v = out["v_atom"].float()
             loss = torch.nn.functional.mse_loss(v, target)
-            # x0 estimate along the straight path, so the lDDT term sees a
-            # structure rather than a velocity.
-            x0 = data.x_t + (1.0 - data.t) * v
-            loss = loss + soft_lddt_all_atom_loss(x0, data.x_clean, data.valid_mask)
+            if loss_mode != "fm":
+                # x0 estimate along the straight path, so the lDDT term sees a
+                # structure rather than a velocity.
+                x0 = data.x_t + (1.0 - data.t) * v
+                loss = loss + soft_lddt_all_atom_loss(
+                    x0,
+                    data.x_clean,
+                    data.valid_mask,
+                )
             loss.backward()
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
@@ -166,14 +174,27 @@ def main() -> int:
     ap.add_argument("--crops", default="256,512,1024")
     ap.add_argument("--batches", default="1,2,4,8")
     ap.add_argument("--steps", type=int, default=3)
+    ap.add_argument(
+        "--loss_mode",
+        choices=("fm", "lddt_exact"),
+        default="lddt_exact",
+        help="Isolate flow-matching MSE alone or include exact all-atom lDDT.",
+    )
     ap.add_argument("--d_state", type=int, default=64)
     ap.add_argument("--mimo_rank", type=int, default=4)
     ap.add_argument("--expand", type=int, default=2)
     ap.add_argument("--headdim", type=int, default=64)
     ap.add_argument(
-        "--configs",
-        default="1024:16:128:4,1024:18:128:4,1024:20:160:4,1280:16:160:4",
-        help="comma-separated d_res:n_trunk:d_atom:n_atom_layers",
+        "--config",
+        default="configs/run_a_mamba.yaml",
+        help="Run config to measure. The model is built from this exactly as "
+             "training builds it, so the numbers apply to the model that trains.",
+    )
+    ap.add_argument(
+        "--override",
+        default="",
+        help="Optional comma-separated key=value overrides applied to the "
+             "config, for sweeping one setting (e.g. 'd_state=96,mimo_rank=4').",
     )
     args = ap.parse_args()
 
@@ -183,21 +204,19 @@ def main() -> int:
 
     crops = [int(c) for c in args.crops.split(",")]
     batches = [int(b) for b in args.batches.split(",")]
-    configs = []
-    for spec in args.configs.split(","):
-        d_res, n_trunk, d_atom, n_atom_layers = (int(v) for v in spec.split(":"))
-        configs.append({
-            "d_res": d_res, "n_trunk": n_trunk, "d_atom": d_atom,
-            "n_atom_layers": n_atom_layers, "d_state": args.d_state,
-            "mimo_rank": args.mimo_rank, "expand": args.expand,
-            "headdim": args.headdim,
-        })
+    with open(args.config) as fh:
+        base = yaml.safe_load(fh)
+    for item in (o for o in args.override.split(",") if o.strip()):
+        key, _, raw = item.partition("=")
+        base[key.strip()] = yaml.safe_load(raw)
+    configs = [base]
+    args.d_plm = int(base.get("d_plm", args.d_plm))
 
     report = {
         "device": device_report(),
         "settings": {
             "d_plm": args.d_plm, "dtype": "bfloat16", "optimizer": "adamw",
-            "pair_stack": "removed", "attention": "removed",
+            "loss_mode": args.loss_mode, "config": args.config, "override": args.override,
             "atoms_per_residue": MAX_ATOMS_PER_RES, "steps": args.steps,
         },
         "cases": [],
@@ -208,7 +227,7 @@ def main() -> int:
         params = None
         for crop in crops:
             for batch in batches:
-                case = try_case(cfg, crop, batch, args.d_plm, args.steps)
+                case = try_case(cfg, crop, batch, args.d_plm, args.steps, args.loss_mode)
                 case.update(cfg)
                 case["crop"] = crop
                 report["cases"].append(case)

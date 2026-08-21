@@ -119,13 +119,14 @@ set — the only set that may be used to choose a checkpoint or sampler.
   defaulted off, so neither is reachable by config. A trunk that could be given
   attention by flipping a flag cannot carry the claim that a pure SSM trunk
   suffices, and a disabled O(L²) triangle path still has to be sized at every
-  crop decision. Parameter count did not move (354.7M), so this removed
-  complexity rather than capacity.
-- **The confidence head.** pLDDT training is a later phase and its code is not
-  carried here; it remains recoverable from the previous root.
+  crop decision. The current folding model is 353.68M parameters; its only
+  outputs are all-atom velocity and the trunk latent.
+- **The confidence head.** Confidence is a later training phase on a frozen
+  folding model, so neither its head nor its loss is part of this baseline.
 - **AFDB v6 coordinates.** Generated 2025-08-01 by a model whose training
   cutoff is not established here.
-- **Guidance and the previous track's sampler tuning.**
+- **Guidance and the previous track's sampler tuning.** Sampling has one
+  batch-first ODE/SDE implementation; batch size one uses that same path.
 
 ## Known deviations from SimpleFold
 
@@ -135,8 +136,10 @@ set — the only set that may be used to choose a checkpoint or sampler.
 | Trunk | transformer with full self-attention | pure Mamba, no attention |
 | Chains | assemblies up to 300 chains | single-chain monomers only |
 | Distillation | PDB + SwissProt + AFESM | PDB + SwissProt v4 |
-| Crop | 256 → 512 | one fixed 1024 crop with length bucketing |
+| Crop | 256 → 512 | one fixed 1024 crop with 64-residue shape binning |
 
-The architecture claim is carried by two arms trained inside this project under
-one contract — a Mamba trunk and a transformer control trunk — not by
-comparison against the released SimpleFold checkpoint.
+There is one arm. A parameter-matched transformer control trunk was planned and
+cancelled — see `benchmarks/BENCHMARK_POLICY.md` — so the comparison is against
+the released SimpleFold checkpoint, which is a public baseline and not a
+controlled ablation. Results therefore describe how this model scores, not what
+the trunk mixer accounts for.

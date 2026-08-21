@@ -69,7 +69,6 @@ def _run_one(
             current_pred,
             true,
             mask,
-            max_atoms=0,
             pair_chunk_size=chunk_size,
         )
         _sync(device)

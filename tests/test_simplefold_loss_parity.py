@@ -68,23 +68,8 @@ def _baseline_loss_kwargs() -> dict[str, float | int | bool | str]:
         "use_rigid_align": False,
         "w_fm": 1.0,
         "w_lddt_atom": 1.0,
-        "w_lddt_ca": 0.0,
-        "w_bond": 0.0,
-        "w_clash": 0.0,
-        "w_ca_clash": 0.0,
-        "w_distogram": 0.0,
-        "w_drmsd": 0.0,
-        "w_contact": 0.0,
-        "w_pcb": 0.0,
-        "w_conf": 0.0,
-        "w_ca_angle": 0.0,
-        "w_ca_self_clash": 0.0,
-        "w_chirality": 0.0,
-        "w_chirality_atom": 0.0,
         "lddt_cutoff_A": 15.0,
-        "max_lddt_atoms": 0,
         "lddt_pair_chunk_size": 2,
-        "max_clash_atoms": 8,
     }
 
 
@@ -106,7 +91,6 @@ def test_chunked_exact_all_atom_lddt_matches_dense_value_and_gradient() -> None:
         pred_chunked,
         true,
         valid_mask,
-        max_atoms=0,
         pair_chunk_size=2,
         reduction="none",
     )
@@ -123,7 +107,7 @@ def test_exact_all_atom_lddt_is_invariant_to_chunk_size() -> None:
     pred = true + 0.03 * torch.randn_like(true)
     mask = torch.ones(1, 3, 3, dtype=torch.bool)
     losses = [
-        soft_lddt_all_atom_loss(pred, true, mask, max_atoms=0, pair_chunk_size=size)
+        soft_lddt_all_atom_loss(pred, true, mask, pair_chunk_size=size)
         for size in (1, 2, 64)
     ]
     torch.testing.assert_close(losses[0], losses[1])
@@ -132,18 +116,13 @@ def test_exact_all_atom_lddt_is_invariant_to_chunk_size() -> None:
 
 def test_per_example_alpha_is_applied_before_batch_reduction(monkeypatch) -> None:
     batch = _small_batch()
-    output = {"v_atom": torch.zeros_like(batch.x_clean), "v_ca": torch.zeros(2, 1, 3)}
+    output = {"v_atom": torch.zeros_like(batch.x_clean)}
 
     def fake_atom_lddt(*_args, reduction: str, **_kwargs) -> torch.Tensor:
         assert reduction == "none"
         return torch.tensor([1.0, 0.0])
 
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("zero-weight quadratic auxiliary was evaluated")
-
     monkeypatch.setattr(engine, "soft_lddt_all_atom_loss", fake_atom_lddt)
-    monkeypatch.setattr(engine, "soft_lddt_ca_loss", forbidden)
-    monkeypatch.setattr(engine, "drmsd_ca", forbidden)
     total, metrics = engine.allatom_loss_surface(
         output,
         batch,
@@ -186,7 +165,7 @@ def test_composite_baseline_loss_has_finite_gradient() -> None:
         esm=None,
     )
     velocity = torch.randn_like(clean, requires_grad=True)
-    output = {"v_atom": velocity, "v_ca": velocity[..., CA_ATOM_ID, :]}
+    output = {"v_atom": velocity}
     kwargs = _baseline_loss_kwargs()
     kwargs["use_rigid_align"] = True
     total, _ = engine.allatom_loss_surface(output, batch, **kwargs)
@@ -234,7 +213,7 @@ def test_flow_corruption_keeps_uncentered_gaussian_noise(monkeypatch) -> None:
     monkeypatch.setattr(torch, "randn_like", lambda _coords: noise.clone())
     monkeypatch.setattr(
         "mambafold.data.transforms._sample_t",
-        lambda _schedule: 0.25,
+        lambda _schedule, _uniform_weight=0.02: 0.25,
     )
     coords = torch.zeros_like(noise)
     mask = torch.tensor([[True, True]])

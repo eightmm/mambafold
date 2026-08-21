@@ -1,8 +1,9 @@
 # Run A — pure Mamba trunk, single fixed crop.
 #
-# This is the architecture arm. The transformer control arm is not written yet;
-# when it is, it must be parameter-matched to this file and differ in the trunk
-# mixer and nowhere else.
+# This is the only arm. A parameter-matched transformer control trunk was
+# planned and cancelled on cost, so nothing here is a controlled comparison
+# against attention — see benchmarks/BENCHMARK_POLICY.md for what may and may
+# not be claimed from this run.
 #
 # Every number here is either measured, taken from the data contract, or marked
 # PROVISIONAL. Nothing is inherited from the previous ESMC-6B track.
@@ -14,7 +15,8 @@
 
 # ── Data ────────────────────────────────────────────────────────────────────
 # One list, no train/val split: SimpleFold disables validation outright, so
-# every admitted record trains. `admitted_all.txt` is train.txt ∪ val.txt.
+# every admitted record trains and `admitted_all.txt` is the whole training set —
+# there is no longer a train.txt or val.txt to carve it into.
 train_sources:
   - name: rcsb
     data_dir: data/rcsb_train
@@ -48,34 +50,39 @@ dedup_homomer_chains: true
 # usable. 0.0 = no filter, which is what SimpleFold does: its filter set is
 # SizeFilter/ResolutionFilter/DateFilter, its tokenizer records `is_present` as
 # metadata only, and its cropper never rejects a crop for its resolved fraction.
-# Safe because unresolved atoms never reach the model as coordinates — the
-# collator builds x_t under `atom_mask & observed_mask`, so those slots arrive as
-# exact zero, a constant sentinel that cannot occur for a real atom and never
-# appears at inference. The loss already excludes them via `valid_mask`.
+# The collator follows SimpleFold and corrupts every canonical slot under
+# `atom_mask`; only supervision is restricted by `valid_mask`. No resolved-mask
+# feature reaches the model, so training and inference expose the same inputs.
 min_obs_ratio: 0.0
 
 # ── Crop ────────────────────────────────────────────────────────────────────
 # One fixed crop, no schedule. At 1024 the corpus is essentially fully covered:
 # 98.85% of chains fit whole and 98.4% of all residues are inside the crop.
 max_length: 1024
-crop_schedule: null
 
-# Fixed 1024 with uniform padding would waste ~3.5x, since the median chain is
-# 248 residues. Bucketing sorts each megabatch by true length and pads each
-# batch to its own longest member instead of the global max, which is what
-# makes a single large crop affordable. It needs batch_size > 1.
+# Bucketing stays on, for a different reason than intra-batch padding — at
+# batch_size 1 there is none, since every row is the same protein. It is the
+# *cross-rank* shape that matters: the training loop pads all ranks to one
+# global length so the TileLang kernels see a single shape per step, and with
+# independent per-rank draws that global maximum averages 624 residues at 8
+# ranks against a mean own length of 312 — 2x wasted work on every rank.
+# Drawing all ranks from one length-sorted group brings it back to 1.0x.
 length_bucketing: true
-# Pad to a multiple of the SSM chunk size. At mimo_rank 1 the Mamba-3 kernel
-# takes chunk_size 64 and pads to it internally anyway, so binning here is free.
+# Round the padded length up to a multiple of 64. This is what bounds the number
+# of TileLang kernel compilations: the Mamba-3 kernels specialize on sequence
+# length, so unbinned lengths would compile a new kernel almost every step.
+# Binning to 64 leaves exactly 16 distinct shapes up to max_length 1024. It is
+# also free in kernel terms at any rank used here: `mimo_rank: 4` gives chunk 8
+# and rank 2 gives chunk 16, and 64 is a multiple of both, so the kernel adds no
+# internal padding on top of the bin. Do NOT set this to 0.
 length_bin: 64
-# Uniform sampling over chains, matching SimpleFold. The bucketed sampler
-# always applies its length-balance weight, so exponent 0 with a degenerate
-# clip range is how "no reweighting" is expressed: w = (L/200)^0 = 1.
-length_balanced_sampling: false
-length_balance_mode: power
-length_balance_exponent: 0.0
-length_balance_clip_min: 1.0
-length_balance_clip_max: 1.0
+# The bucketed sampler draws uniformly over admitted chains. There is no
+# length-weighted draw: one used to be applied here unconditionally
+# (`w = clip((L/200)**0.5, 1.0, 1.5)`, so 450+ residue chains were drawn 1.5x as
+# often as chains under 200) while no config declared it. It was removed rather
+# than exposed — the corpus documents and SimpleFold both describe a uniform
+# draw, and a sampling measure that only exists in a default argument is not
+# auditable.
 
 # ── Loader ──────────────────────────────────────────────────────────────────
 num_workers: 8
@@ -89,107 +96,233 @@ length_cache_workers: 16
 use_plm: true
 d_plm: 2560
 
-# ── Model — 354.7M parameters (measured, not estimated) ─────────────────────
+# ── Model — 370.48M parameters (measured, not estimated) ────────────────────
 # SimpleFold-360M is the external reference, so the trunk is sized to it:
-# d_res 1024 x n_trunk 16 gives 354.7M at these SSM settings, the closest grid
-# point (n_trunk 17 would be 376.5M). The trunk is 98% of the parameters; the
-# atom encoder and decoder together are under 4M.
+# d_res 1024 x n_trunk 15 gives 370,480,666 parameters at these SSM settings,
+# 2.9% over the nominal 360M. The trunk is 96.9% of the budget; everything that
+# actually places atoms — both coordinate embedders, the atom encoder and the
+# atom decoder — is 5.72M, or 1.54%.
 d_res: 1024
-n_trunk: 16
+n_trunk: 15
+# Pinned rather than left to an argparse default: the Ada shared-memory formula
+# `27008 + 736*d_state + 250*chunk` was only ever measured at headdim 64, and
+# `expand` sets d_inner = expand*d_res = 2048, which is what fixes the SSM state
+# size at d_inner*d_state = 131,072 scalars per direction per layer.
+expand: 2
+headdim: 64
+# Per-block AdaLN-Zero time conditioning is not a setting — every trunk block
+# and every atom block carries it, matching SimpleFold, whose atom encoder and
+# decoder are the same DiTBlock class as its trunk. There is no flag: a trunk
+# that can be built without knowing t at each block is not the model this
+# project claims to train.
 d_atom: 128
 n_atom_layers: 4
+
+# SSM settings for the atom-level stages. Read this carefully, because what
+# they govern changed when `atom_mixer` became 'mlp': the 14-slot axis has no
+# SSM on it any more, so these two now configure ONE module, the
+# `BackboneStreamMixer`, and that module scans the RESIDUE axis (up to
+# max_length) on the N/CA/C/O/CB streams — not a 14-long axis.
+#
+# They are therefore not the chunk-padding argument they were written as. On a
+# 1024-long scan, rank 2 gives chunk 16 and so 64 sequential chunks, which is a
+# throughput choice; d_state 64 at d_atom 128 gives d_inner 256 and a state of
+# 256*64 = 16,384 per direction per layer, which is a capacity choice for
+# cross-residue backbone routing. Both are inherited defaults that have not been
+# reasoned about for this axis, and neither has been measured. Ada's shared
+# memory allows d_state up to 95 at rank 2 (27008 + 736*d_state + 250*16 <=
+# 101,376).
+#
+# A itself is MAX_ATOMS_PER_RES, now 14 rather than 15. TRP is the largest
+# standard residue at 14 heavy atoms and no residue table carries OXT, so the
+# 15th slot was never written by anything: it padded every atom-axis tensor by
+# 1/15 and made the slot mixer a 15x15 map over 14 real slots.
+atom_d_state: 64
+atom_mimo_rank: 2
+# 'mlp' replaces the atom-slot scan with an MLP-Mixer over slots, and is what
+# leaves atom_d_state/atom_mimo_rank above governing only the cross-residue
+# mixer. Setting this back to 'mamba' puts them back on the 14-slot axis too.
+# The 14 slots are a labelled tuple, not a sequence: slots 0-3 are always
+# N, CA, C, O and slot 4 is CB, while a scan assumes the canonical atom order is
+# a bond path. It is, roughly, for Arg; it is not for Ile/Thr/Val, which branch
+# at CB, nor for the aromatic rings, whose canonical order zigzags across the
+# ring. The mixer makes no ordering assumption and reaches every slot from every
+# other in one layer.
+atom_mixer: mlp
+
+# Cross-residue mixing on the backbone atom streams (N, CA, C, O, CB). Without
+# it no atom ever meets an atom of a neighbouring residue — the peptide bond
+# C(i)-N(i+1) is invisible until the trunk has already pooled each residue to
+# one token. SimpleFold has no such hole: its atom encoder and decoder run
+# windowed attention over the whole flat atom sequence. This is the scan
+# equivalent, restricted to the slots that carry backbone continuity.
+n_atom_cross_layers: 1
+n_backbone_streams: 5
 d_res_type: 32
 d_res_pos: 64
-d_plm_proj: 256
+# ESMC-6B is the only evolutionary signal this model has — there is no MSA — so
+# it is carried at full trunk width rather than squeezed through a side channel.
+# SimpleFold projects ESM to hidden_size and concatenates
+# (`esm_cat_proj = Linear(latent_cat_dim, hidden_size)`); 256 was a 10x
+# compression of a 2560-d embedding.
+d_plm_proj: 1024
+# Width of each of the two coordinate embedders. The noised structure enters on
+# two bands, not one: `ca_abs_embed` takes the residue's own CA at 128 A -> 4 A,
+# `atom_rel_embed` takes each atom minus that CA at 16 A -> 1 A. A single
+# absolute embedder had to span both the crop extent (+-35 A) and bond scale
+# (1.2-1.5 A); the band it actually covered was 804 A -> 6.28 A, so its coarse
+# half was longer than any protein and its fine end could not resolve a bond.
+# The bands are declared in Angstrom and converted with COORD_SCALE, so they
+# stay pinned to physical distance. The CA embedding is also fed to the trunk
+# input directly: with only the pooled atom token the trunk saw the structure
+# on 128 of 1251 channels against 1024 for the PLM, in a model whose whole
+# output is a coordinate update. It is now 256 of 1379 (18.6%).
 d_ca_emb: 128
+# AdaLN-Zero projects d_temb -> 6*d_res inside every trunk block, so this is a
+# first-class part of the budget, not a side channel. SimpleFold's DiTBlock uses
+# `Linear(hidden_size, 6 * hidden_size)` — the full trunk width, 6.29M and 33%
+# of each of its blocks. This is NOT matched and deliberately so: at d_temb 256
+# the same projection is 1.58M, and t is a scalar, so carrying it at 1024 would
+# spend 4.7M per block, 71M over the trunk, to embed one number. The saved
+# budget goes to the SSM. Declared deviation, measured, not an oversight.
+d_temb: 256
 
-# No attention and no pair stack. Neither is a setting: both were deleted from
-# the model, so there is no flag here to get wrong and no O(L^2) triangle path
-# to carry. The pair-free distogram/contact heads remain available and are off.
-pairfree_aux_heads: false
+# No attention, pair stack, or pair-output head. They are absent from the model,
+# so the folding path carries no O(L^2) learned pair representation.
 
 # ── SSM ─────────────────────────────────────────────────────────────────────
-# mimo_rank 1 takes the SISO kernel, which is the only path to d_state 128 on
-# an RTX 6000 Ada: the MIMO backward kernel wants
-# 27008 + 736*d_state + 250*chunk bytes of shared memory, so d_state 128 needs
-# 123,216 B at rank 4 against a 101,376 B hard limit. The SISO kernel at
-# d_state 128 fits (measured), and the fleet that can run more than one GPU is
-# Ada. d_state 256 does not fit even on SISO there (114,944 B).
-d_state: 128
-mimo_rank: 1
-headdim: 64
-expand: 2
+# Routing rank over state size. `mimo_rank` is literally the rank of the SSM's
+# B and C projections (`d_in_proj = ... + 2*d_state*num_bc_heads*mimo_rank`),
+# so rank 1 selects the SISO kernel and discards the MIMO promotion that is
+# Mamba-3's contribution: every i<->j interaction collapses to one scalar
+# bilinear form per head per direction. Rank 1 was originally chosen only to
+# reach d_state 128 inside the RTX 6000 Ada shared-memory limit — a capacity
+# argument that never weighed what it switched off. Long-range contact routing
+# with no attention and no pair tensor is the whole claim, so the rank is worth
+# more than the state width here.
+#
+# Shared memory at rank 4 is 27008 + 736*64 + 250*8 = 76,112 B against Ada's
+# 101,376 B limit. headdim stays 64 because the shared-memory formula was only
+# ever measured there.
+d_state: 64
+mimo_rank: 4
 bimamba_share: false
 
 # ── Objective ───────────────────────────────────────────────────────────────
-# Flow matching + all-atom lDDT, nothing else. Every other term is present in
-# the codebase and carries zero weight here; a geometry fine-tune is a separate
-# run, reported separately.
+# Flow matching + exact all-atom lDDT, nothing else. Confidence is a separate
+# training phase on top of a frozen folding model and is not part of this model.
 w_fm: 1.0
 w_lddt_atom: 1.0
 alpha_mode: const           # SimpleFold pretraining; switch to ramp only for fine-tuning
 use_rigid_align: true
 lddt_cutoff_A: 15.0
-max_lddt_atoms: 0           # exact all-atom lDDT; 0 means every resolved atom
 lddt_pair_chunk_size: 512   # bounds workspace, not the exact atom set
-
-w_lddt_ca: 0.0
-w_drmsd: 0.0
-w_contact: 0.0
-w_pcb: 0.0
-w_conf: 0.0
-w_ca_angle: 0.0
-w_ca_self_clash: 0.0
-w_chirality: 0.0
-w_chirality_atom: 0.0
-w_distogram: 0.0
-w_bond: 0.0
-w_clash: 0.0
-w_ca_clash: 0.0
-w_ost_clash: 0.0
-w_covalent_guard: 0.0
-w_peptide_planarity_guard: 0.0
 
 # ── Schedule ────────────────────────────────────────────────────────────────
 # Fixed step count, no validation, no selection: the reported model is the last
 # EMA. SimpleFold's checkpoint callback monitors global_step with mode max,
 # which makes "best k" mean "most recent k"; this does the same thing without
 # the indirection.
-total_steps: 200000         # PROVISIONAL — no reference step count established
-lr: 1.0e-4                  # PROVISIONAL
-warmup_steps: 2000          # PROVISIONAL
-grad_clip: 1.0
+total_steps: 300000         # SimpleFold configs/experiment/train.yaml: max_steps
+lr: 1.0e-4                  # SimpleFold configs/model/simplefold.yaml
+warmup_steps: 5000          # SimpleFold configs/experiment/train.yaml
+# SimpleFold configs/model/simplefold.yaml: clip_grad_norm_val 2.0, AdamW
+# weight_decay 0.0, and a LinearWarmup that ramps min_lr -> lr and then holds
+# flat for the rest of the run — no decay phase.
+grad_clip: 2.0
+# SimpleFold holds 1e-4 flat to step 300k with no decay. That is safe for
+# attention; a selective SSM keeps its learned discretisation moving, and with
+# EMA 0.999 the reported model averages only the last ~1000 steps — taken at
+# the noise floor. Declared deviation: cosine to min_lr over the final sixth.
+lr_cooldown_steps: 50000
+weight_decay: 0.0
+min_lr: 1.0e-6
 ema_decay: 0.999
-t_schedule: logit_normal    # exact SimpleFold 0.98*LN + 0.02*U implementation
+t_schedule: logit_normal
+# SimpleFold uses 0.02. Low t is where the fold has to be built out of noise —
+# maximum long-range routing demand and minimum local signal, which is exactly
+# where a scan is weakest — and the logit-normal puts its median at 0.69, so it
+# samples that regime least. A declared deviation, and a modest one: the shape
+# is unchanged, only the floor is widened.
+t_uniform_weight: 0.10
 seed: 0
 
-# batch_size is per GPU, and it is bounded by residues, not by examples.
-# Measured on one RTX 6000 Ada (47.4 GiB) with this exact config — d_state 128,
-# mimo_rank 1, exact all-atom lDDT — running a real forward, objective, backward
-# and AdamW step (`data/audit/train_memory/ada_siso_d128.json`):
-#
-#   crop 256 x batch 8   = 2048 residues -> 25.50 GiB
-#   crop 512 x batch 4   = 2048 residues -> 25.50 GiB
-#   crop 1024 x batch 2  = 2048 residues -> 25.98 GiB
-#   crop 256 x batch 12  = 3072 residues -> 35.93 GiB
-#   crop 1024 x batch 4  = 4096 residues -> out of memory
-#
-# Peak depends on the residue total and not on how it is split, so the card
-# holds roughly 3,000 residues. Length bucketing means a batch can be entirely
-# 1024-residue chains, so the worst case is what has to fit: batch 2 x 1024 =
-# 2048 residues. The exact all-atom lDDT dominates this — its cutoff-neighbour
-# discovery is O(N^2) in atoms and `lddt_pair_chunk_size` bounds the workspace,
-# not the work.
-batch_size: 2
-# Effective batch = batch_size x world_size x grad_accum_steps. At 8 GPUs this
-# is 64 examples / ~65k residues, comparable to SimpleFold's 256 x 256-token
-# batch. PROVISIONAL: the GPU count is not decided.
-grad_accum_steps: 4
+# Self-conditioning: feed the previous step's coordinate prediction back in.
+# Off. The projection is zero-initialised and stays in the autograd graph either
+# way, so turning it on is a config change and not a code change, but it costs
+# ~1.5x per step and has not been measured here.
+self_conditioning: false
+self_condition_prob: 0.0
 
+# SimpleFold's step is one protein per GPU, replicated `multiplicity` times:
+# configs/experiment/train.yaml sets data.batch_size 1 (commented "should be the
+# same as the number of GPUs"), processor.multiplicity 16 ("number of copies per
+# GPU") and trainer.accumulate_grad_batches 1. The copies differ only in their
+# rotation, translation, time and noise, so this is variance reduction on the
+# flow-matching target rather than extra data — a step sees as many distinct
+# proteins as there are GPUs.
+#
+# Memory depends on the total residue count (batch_size x copies x length) and
+# not on how that total is split, which was checked directly: 1024 residues cost
+# 7.37 / 7.44 / 7.58 GiB as crop 256 x 4, 512 x 2 and 1024 x 1, and 2048 cost
+# 9.77 / 9.89 / 10.11. Least squares over the eight measured points at or above
+# 1024 residues (job 57848, RTX A5000, exact all-atom lDDT, bf16, AdamW;
+# data/audit/gpu_probe/train_memory_a5000.json):
+#
+#     peak = 4.89 GiB + 2.538 MiB/residue      max residual 0.223 GiB
+#
+# The intercept is params + grads + two AdamW moments at 370.48M x 4 B. The
+# slope replaces an earlier 4.079 MiB/residue: `atom_mixer: mlp` removed the
+# atom-axis SSM entirely and A went 15 -> 14.
+#
+# Training also carries the EMA copy (1.48 GiB) and DDP's gradient buckets
+# (~1.5 GiB), which the probe does not, so add ~3 GiB. On a 47.4 GiB RTX 6000
+# Ada that projects to:
+#
+#     copies  8 x 1024 = 8,192 residues -> 28.2 GiB   59% of the card
+#     copies 12 x 1024                  -> 38.4 GiB   81%
+#     copies 16 x 1024                  -> 48.5 GiB  over
+#
+# So 16 copies in one pass does not fit and the accumulation below is not a
+# workaround for an unmeasured guess. Note what the same fit says about the
+# common case: the modal chain is 256 residues and 90.2% are under 512, so a
+# typical step is 2,048 residues and 13.0 GiB — 27% of the card. Filling that
+# means batch_size > 1 inside a length bucket, which changes how many distinct
+# proteins a step sees and is a deliberate departure from SimpleFold's one
+# protein per GPU, not a free win.
+batch_size: 1
+# 8 copies per micro-step x 2 micro-steps over the SAME protein == 16 copies in
+# one pass, exactly: the loss is divided by grad_accum_steps, so every one of
+# the 16 terms carries weight 1/16 either way. 16 at once needs 16,384 residues
+# on one card (~70 GiB by the measured fit, 4.89 GiB + 4.08 MiB/residue);
+# 8 needs 8,192 (~37.5 GiB). `accum_same_protein` is what makes the two
+# micro-steps draw the same protein and different noise.
+copies_per_protein: 8
+grad_accum_steps: 2
+accum_same_protein: true
+
+# Checkpoint every 5000 steps. At an estimated 0.34-0.80 s/step that is
+# 28-67 minutes of work at risk, and each checkpoint is ~6 GB (params + two
+# AdamW moments + EMA), so `keep_last_checkpoints: 3` holds ~18 GB.
 ckpt_interval: 5000
 keep_last_checkpoints: 3
-log_interval: 50
 
-wandb_project: mambafold-clean
-wandb_name: run-a-mamba-1024
-wandb_tags: [mamba, pure-ssm, crop1024, esmc6b, simplefold-contract]
+# One stdout line and one wandb point per 200 steps — roughly every 1-3 minutes
+# at the step times above, so ~1500 points across the 300k-step run. That is a
+# readable curve without a log file nobody scrolls.
+#
+# Raising this no longer only quiets the output: the nine scalar metrics used to
+# be all-reduced individually on every step, which is a cost the interval could
+# not touch. They are now reduced in one packed collective per interval, which
+# is the same number for a mean, so a longer interval is genuinely less work.
+# The `perf_*` timings are still reduced every step and are the thing to read
+# first — `data_wait=...ms (x%)` in the stdout line is what says whether the
+# loader is starving the GPU.
+log_interval: 200
+
+# New project. The previous name covered the ESMC-6B track's runs and an earlier
+# 15-atom-slot, single-band-coordinate version of this model; mixing them on one
+# set of axes would compare numbers that are not comparable.
+wandb_project: mambafold-mamba3-allatom
+wandb_name: run-a-mamba3-1024-atom14
+wandb_tags: [mamba3, pure-ssm, no-attention, crop1024, atom14, esmc6b, simplefold-contract]

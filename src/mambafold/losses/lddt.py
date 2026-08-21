@@ -1,4 +1,4 @@
-"""Differentiable all-atom and C-alpha lDDT losses.
+"""Differentiable exact all-atom lDDT loss.
 
 The public parameters use Angstrom units. Coordinates inside MambaFold are
 normalized by ``COORD_SCALE``; converting the distance error back to Angstroms
@@ -13,7 +13,7 @@ import torch
 from torch import Tensor
 from torch.utils.checkpoint import checkpoint
 
-from mambafold.data.constants import CA_ATOM_ID, COORD_SCALE
+from mambafold.data.constants import COORD_SCALE
 
 _LDDT_THRESHOLDS_A = (0.5, 1.0, 2.0, 4.0)
 _Reduction = Literal["mean", "none"]
@@ -38,62 +38,14 @@ def _soft_pair_score(
     )
 
 
-def soft_lddt_ca_loss(
-    pred_coords: Tensor,
-    true_coords: Tensor,
-    ca_mask: Tensor,
-    cutoff_A: float = 15.0,
-    thresholds_A: tuple[float, ...] = _LDDT_THRESHOLDS_A,
-    *,
-    reduction: _Reduction = "mean",
-) -> Tensor:
-    """Soft C-alpha lDDT loss, reduced equally over proteins.
-
-    ``reduction="none"`` returns one loss per batch item so the caller can
-    apply the timestep-dependent SimpleFold weight before reducing the batch.
-    """
-    if cutoff_A <= 0:
-        raise ValueError("cutoff_A must be positive")
-    if not thresholds_A:
-        raise ValueError("thresholds_A must not be empty")
-    pred_ca = pred_coords[:, :, CA_ATOM_ID, :]
-    true_ca = true_coords[:, :, CA_ATOM_ID, :]
-    pred_dist = torch.cdist(pred_ca, pred_ca)
-    true_dist = torch.cdist(true_ca, true_ca)
-
-    pair_mask = ca_mask.unsqueeze(2) & ca_mask.unsqueeze(1)
-    pair_mask &= true_dist < (cutoff_A / COORD_SCALE)
-    pair_mask &= ~torch.eye(
-        pred_ca.shape[1], dtype=torch.bool, device=pred_ca.device
-    ).unsqueeze(0)
-
-    score = _soft_pair_score((pred_dist - true_dist).abs(), thresholds_A)
-    mask_f = pair_mask.to(score.dtype)
-    numerator = (score * mask_f).sum(dim=(-1, -2))
-    denominator = mask_f.sum(dim=(-1, -2)).clamp(min=1)
-    losses = 1.0 - numerator / denominator
-    return _reduce_losses(losses, reduction)
-
-
 def _select_valid_atoms(
     pred_coords: Tensor,
     true_coords: Tensor,
     valid_mask: Tensor,
     batch_index: int,
-    max_atoms: int | None,
 ) -> tuple[Tensor, Tensor]:
     flat_mask = valid_mask[batch_index].reshape(-1)
     atom_index = flat_mask.nonzero(as_tuple=False).squeeze(-1)
-    if max_atoms is not None and max_atoms > 0 and atom_index.numel() > max_atoms:
-        # Retained as an explicit ablation/debug option. The baseline passes
-        # max_atoms=0 and therefore uses every resolved atom.
-        take = torch.linspace(
-            0,
-            atom_index.numel() - 1,
-            max_atoms,
-            device=atom_index.device,
-        ).long()
-        atom_index = atom_index.index_select(0, take)
     pred = pred_coords[batch_index].reshape(-1, 3).index_select(0, atom_index)
     true = true_coords[batch_index].reshape(-1, 3).index_select(0, atom_index)
     return pred, true
@@ -178,16 +130,15 @@ def soft_lddt_all_atom_loss(
     valid_mask: Tensor,
     cutoff_A: float = 15.0,
     thresholds_A: tuple[float, ...] = _LDDT_THRESHOLDS_A,
-    max_atoms: int | None = None,
     pair_chunk_size: int = 512,
     *,
     reduction: _Reduction = "mean",
 ) -> Tensor:
     """Exact differentiable all-atom lDDT loss.
 
-    Every resolved atom is used when ``max_atoms`` is ``None`` or non-positive.
-    ``pair_chunk_size`` bounds the dense ground-truth distance workspace, but
-    exact cutoff-neighbor discovery remains O(N^2) in the number of atoms.
+    Every resolved atom is used. ``pair_chunk_size`` bounds the dense
+    ground-truth distance workspace, but exact cutoff-neighbor discovery
+    remains O(N^2) in the number of atoms.
     """
     if pred_coords.shape != true_coords.shape:
         raise ValueError(
@@ -213,7 +164,6 @@ def soft_lddt_all_atom_loss(
             true_coords,
             valid_mask,
             batch_index,
-            max_atoms,
         )
         losses.append(
             _exact_soft_lddt_single(

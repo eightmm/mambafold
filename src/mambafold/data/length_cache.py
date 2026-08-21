@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from multiprocessing import Pool
+from multiprocessing import get_context
 from pathlib import Path
 
 from mambafold.data.dataset import RCSBDataset
@@ -58,12 +58,22 @@ def _probe_chains_one(path: str):
 
 
 def _dataset_cfg(dataset: RCSBDataset) -> dict:
+    # Directories are resolved before they are hashed. They used to go in as
+    # whatever string the caller happened to pass, which made the key depend on
+    # how a path was spelled rather than on what it pointed at:
+    # `pipeline/13_prebuild_loader_caches.py` builds its dataset from `ROOT /
+    # source["data_dir"]` while the training loader passes the config's relative
+    # string verbatim, so the two produced different keys for the same corpus
+    # and training could never find the index the stage had just spent an hour
+    # building. That is the exact failure the stage's own docstring set out to
+    # avoid, reached by a different route, and it is silent: the loader simply
+    # rebuilds.
     return {
-        "data_dir": str(dataset.data_dir),
+        "data_dir": str(Path(dataset.data_dir).resolve()),
         "max_length": dataset.max_length,
         "min_length": dataset.min_length,
         "min_obs_ratio": dataset.min_obs_ratio,
-        "esm_dir": str(dataset.esm_dir) if dataset.esm_dir else None,
+        "esm_dir": str(Path(dataset.esm_dir).resolve()) if dataset.esm_dir else None,
         "esm_cache_schema": _ESM_CACHE_SCHEMA,
         "chain_validity_schema": _CHAIN_VALIDITY_SCHEMA,
         "single_chain_only": dataset.single_chain_only,
@@ -77,13 +87,60 @@ def _cache_path(dataset: RCSBDataset, cache_dir: Path) -> Path:
     h = hashlib.sha1()
     h.update(json.dumps(cfg, sort_keys=True).encode())
     h.update(str(len(dataset.files)).encode())
-    h.update("\n".join(str(f) for f in dataset.files).encode())
+    # File identities are hashed relative to the resolved data_dir, for the same
+    # reason: an absolute and a relative spelling of the same corpus must hash
+    # the same. `relative_to` is attempted rather than assumed so a file list
+    # pointing outside data_dir still contributes something stable.
+    root = Path(cfg["data_dir"])
+    def _rel(f: Path) -> str:
+        f = Path(f).resolve()
+        try:
+            return str(f.relative_to(root))
+        except ValueError:
+            return str(f)
+    h.update("\n".join(_rel(f) for f in dataset.files).encode())
     name = Path(cfg["data_dir"]).name
     cache_name = (
         f"len_{name}_L{cfg['max_length']}_sc{int(cfg['single_chain_only'])}_"
         f"{h.hexdigest()[:12]}.json"
     )
     return cache_dir / cache_name
+
+
+
+def _worker_pool(num_workers: int, cfg: dict):
+    """Start index workers with `spawn`, never `fork`.
+
+    These pools are built lazily by `RCSBDataset.__init__`, which the training
+    loop calls *after* `setup_distributed` has run `torch.cuda.set_device` and
+    brought up NCCL. Forking a process that already holds a CUDA context
+    segfaults the child, and the parent goes down with it: measured as
+    `exitcode -11 (SIGSEGV)` on both ranks about a second into a two-rank run,
+    with no Python traceback because the interpreter never gets to raise.
+
+    It stayed hidden because a warm cache returns before any worker is started.
+    It therefore only fires when the index has to be rebuilt — exactly the case
+    a stale or unfindable cache produces, so the two failures compound: the
+    cache cannot be found, the rebuild is attempted, and training dies instead
+    of paying the hour.
+
+    `forkserver` is preferred over `spawn` because its children fork from one
+    preloaded server rather than each paying a fresh interpreter import, which
+    matters at the 32 workers this is normally run with. Both avoid inheriting
+    the parent's CUDA context, which is the property that actually matters;
+    `spawn` is the fallback if forkserver is unavailable.
+    """
+    for method in ("forkserver", "spawn"):
+        try:
+            return get_context(method).Pool(
+                num_workers, initializer=_init_worker, initargs=(cfg,)
+            )
+        except (ValueError, RuntimeError, OSError):
+            continue
+    raise RuntimeError(
+        "no fork-free multiprocessing context available; refusing to fork after "
+        "CUDA initialisation"
+    )
 
 
 def build_length_cache(
@@ -105,7 +162,7 @@ def build_length_cache(
     cfg = _dataset_cfg(dataset)
     print(f"[length_cache] building over {len(files)} files ({num_workers} workers) → {path}")
     result: dict[str, int] = {}
-    with Pool(num_workers, initializer=_init_worker, initargs=(cfg,)) as pool:
+    with _worker_pool(num_workers, cfg) as pool:
         for i, (p, L) in enumerate(pool.imap_unordered(_probe_one, files, chunksize=64)):
             if L is not None:
                 result[p] = int(L)
@@ -156,7 +213,7 @@ def build_chain_index(
     cfg = _dataset_cfg(dataset)
     print(f"[chain_index] building over {len(files)} files ({num_workers} workers) → {path}")
     index: list[tuple[int, int, int]] = []
-    with Pool(num_workers, initializer=_init_worker, initargs=(cfg,)) as pool:
+    with _worker_pool(num_workers, cfg) as pool:
         for i, (p, chains) in enumerate(
             pool.imap_unordered(_probe_chains_one, files, chunksize=32)
         ):

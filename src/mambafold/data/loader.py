@@ -10,10 +10,7 @@ from torch.utils.data.distributed import DistributedSampler
 from mambafold.data.collate import ProteinCollator
 from mambafold.data.dataset import AFDBDataset, RCSBDataset
 from mambafold.data.length_cache import index_lengths_for_dataset
-from mambafold.data.length_sampler import (
-    LengthBalancedDistributedSampler,
-    LengthBucketedDistributedBatchSampler,
-)
+from mambafold.data.length_sampler import LengthBucketedDistributedBatchSampler
 
 
 class MixedRCSBDataset:
@@ -64,6 +61,50 @@ class MixedRCSBDataset:
             for name, ds in zip(self.names, self.datasets)
         ]
         return "MixedRCSBDataset(" + "; ".join(parts) + ")"
+
+
+class RepeatBatchSampler:
+    """Yield each batch of indices `repeat` times in a row.
+
+    This is what makes gradient accumulation over the *same* protein identical
+    to running all of its noise copies in one pass. With the loss divided by
+    `grad_accum`, accumulating `copies` copies over `accum` micro-steps sums to
+    exactly the same gradient as `copies * accum` copies in a single step — the
+    same realisation, not merely the same expectation, because every term
+    carries weight 1/(copies*accum) either way. It is how SimpleFold's
+    `multiplicity: 16` is reachable when 16 copies of a 1024-residue chain do
+    not fit in memory at once.
+
+    The repeat has to happen here, on the indices, and not on a collated batch:
+    each micro-step must re-enter the collator so that it draws its own time,
+    its own noise and its own rotation. Repeating the finished batch would give
+    the same 8 samples twice and halve the effective multiplicity while looking
+    like it had doubled.
+    """
+
+    def __init__(self, base, repeat: int):
+        self.base = base
+        self.repeat = max(1, int(repeat))
+
+    def __iter__(self):
+        for batch in self.base:
+            for _ in range(self.repeat):
+                yield batch
+
+    def __len__(self) -> int:
+        return len(self.base) * self.repeat
+
+    def set_epoch(self, epoch: int) -> None:
+        if hasattr(self.base, "set_epoch"):
+            self.base.set_epoch(epoch)
+
+    def set_start_batch(self, batch: int) -> None:
+        # The caller counts micro-steps; the wrapped sampler counts draws.
+        if hasattr(self.base, "set_start_batch"):
+            self.base.set_start_batch(batch // self.repeat)
+
+    def __repr__(self) -> str:
+        return f"RepeatBatchSampler({self.base!r}, repeat={self.repeat})"
 
 
 def inf_loader(loader, sampler=None, *, start_epoch: int = 0, start_batch: int = 0):
@@ -229,38 +270,46 @@ def build_dataloaders(args, is_dist: bool):
         augment=True,
         copies_per_protein=getattr(args, "copies_per_protein", 1),
         t_schedule=getattr(args, "t_schedule", "uniform"),
+        t_uniform_weight=getattr(args, "t_uniform_weight", 0.02),
         max_length=args.max_length,
         length_bin=getattr(args, "length_bin", 0),
     )
-    # Length-balanced sampler — upweights longer proteins to fight the
-    # short-tail bias in PDB.
-    use_length_balance = bool(getattr(args, "length_balanced_sampling", False))
     is_rcsb_like = isinstance(dataset, (RCSBDataset, MixedRCSBDataset))
-    if use_length_balance and not is_rcsb_like:
-        print(
-            "[loader] length_balanced_sampling=True but dataset is not RCSBDataset; "
-            "falling back to DistributedSampler"
-        )
-        use_length_balance = False
 
     # Length bucketing groups near-equal-length proteins per batch so the
     # collator pads to ~batch_max instead of the global max. This reduces
     # padding and shape-specialization waste, and needs batch_size > 1.
-    use_bucketing = (
-        bool(getattr(args, "length_bucketing", False)) and is_rcsb_like and args.batch_size > 1
-    )
-
     rank = dist.get_rank() if is_dist else 0
     world_size = dist.get_world_size() if is_dist else 1
-    meta_path = getattr(args, "metadata_path", "data/splits/metadata.tsv")
-    lb_kw = dict(
-        mode=getattr(args, "length_balance_mode", "power"),
-        exponent=getattr(args, "length_balance_exponent", 0.5),
-        clip_min=getattr(args, "length_balance_clip_min", 1.0),
-        clip_max=getattr(args, "length_balance_clip_max", 5.0),
-        seed=getattr(args, "seed", 0),
-    )
 
+    # Bucketing is about the *global* batch, not the local one. The training
+    # loop pads every rank up to `distributed_max_int(batch.max_len)` so the
+    # TileLang kernels, which specialize on sequence length, see one shape per
+    # step. With independent per-rank draws that global max is the maximum of
+    # `world_size` random chain lengths: measured over this corpus it averages
+    # 624 residues at 8 ranks against a mean own length of 312, so every rank
+    # does 2x the necessary work. Drawing all ranks from one length-sorted group
+    # brings that back to 1.0x. So this stays on even at batch_size 1, where
+    # there is no intra-batch padding to save.
+    use_bucketing = (
+        bool(getattr(args, "length_bucketing", False))
+        and is_rcsb_like
+        # The cross-rank argument below needs more than one sequence in the
+        # global batch, but the batch sampler itself is also what
+        # `accum_same_protein` repeats indices through: without it, a single-GPU
+        # run raises "accum_same_protein needs a batch sampler" and cannot start
+        # at all. Measured on a one-rank smoke before this clause existed. So
+        # bucketing also turns on whenever accumulation is repeating a protein,
+        # where it costs nothing and buys a runnable single-GPU configuration
+        # for debugging.
+        and (
+            args.batch_size * world_size > 1
+            or (
+                int(getattr(args, "grad_accum_steps", 1)) > 1
+                and bool(getattr(args, "accum_same_protein", True))
+            )
+        )
+    )
     sampler = None  # per-item sampler (None when batch_sampler is used)
     batch_sampler = None
     if use_bucketing:
@@ -280,27 +329,23 @@ def build_dataloaders(args, is_dist: bool):
             batch_size=args.batch_size,
             rank=rank,
             world_size=world_size,
-            **lb_kw,
+            seed=getattr(args, "seed", 0),
         )
         if rank == 0:
             print(f"[loader] {batch_sampler}")
-    elif use_length_balance:
-        if isinstance(dataset, MixedRCSBDataset):
-            raise ValueError(
-                "length_balanced_sampling without length_bucketing is not "
-                "supported for train_sources"
-            )
-        sampler = LengthBalancedDistributedSampler(
-            dataset_files=dataset.files,
-            metadata_path=meta_path,
-            rank=rank,
-            world_size=world_size,
-            **lb_kw,
-        )
-        if rank == 0:
-            print(f"[loader] {sampler}")
     elif is_dist:
         sampler = DistributedSampler(dataset, shuffle=True)
+
+    accum = max(1, int(getattr(args, "grad_accum_steps", 1)))
+    if accum > 1 and bool(getattr(args, "accum_same_protein", True)):
+        if batch_sampler is None:
+            raise ValueError(
+                "accum_same_protein needs a batch sampler so the repeat happens on "
+                "indices; enable length_bucketing or set accum_same_protein=False."
+            )
+        batch_sampler = RepeatBatchSampler(batch_sampler, accum)
+        if rank == 0:
+            print(f"[loader] {batch_sampler}")
 
     if batch_sampler is not None:
         # batch_sampler is mutually exclusive with batch_size/shuffle/sampler/drop_last.

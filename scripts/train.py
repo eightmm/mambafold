@@ -27,10 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mambafold.data.loader import build_dataloaders, inf_loader
 from mambafold.train.config import parse_args
-from mambafold.train.crop_schedule import pick_crop_length
 from mambafold.train.distributed import (
     GPUMonitor,
-    all_reduce_mean,
     any_rank_true,
     distributed_max_int,
     enable_cuda_perf_flags,
@@ -45,7 +43,8 @@ from mambafold.train.logging import init_wandb, log_metrics
 from mambafold.train.trainer import (
     build_model,
     capture_rng_state,
-    cosine_warmup_lr,
+    linear_warmup_lr,
+    prewarm_sequence_kernels,
     restore_rng_state,
     save_checkpoint,
     seed_all,
@@ -121,7 +120,7 @@ def main():
             model,
             device_ids=[int(device.split(":")[-1])],
             broadcast_buffers=False,
-            find_unused_parameters=args.find_unused_parameters,
+            find_unused_parameters=False,
             gradient_as_bucket_view=True,
             # NOTE: static_graph=True is incompatible with the grad-accum
             # `model.no_sync()` path below (triggers reducer.cpp
@@ -133,14 +132,10 @@ def main():
     if is_main:
         print(f"Model: {n_params:.2f}M params")
         raw_model = model.module if is_dist else model
-        trunk = getattr(raw_model, "residue_trunk", None)
         print(
             "Architecture: "
-            f"attn_idx={getattr(trunk, 'attn_idx', [])} "
             f"self_conditioning={getattr(raw_model, 'self_conditioning', False)} "
-            f"self_condition_prob={getattr(args, 'self_condition_prob', 0.0)} "
-            f"use_pair_stack={getattr(raw_model, 'use_pair_stack', False)} "
-            f"pairfree_aux_heads={getattr(raw_model, 'pairfree_aux_heads', False)}",
+            f"self_condition_prob={args.self_condition_prob}",
             flush=True,
         )
 
@@ -149,10 +144,32 @@ def main():
     optimizer = optim.AdamW(
         trainable_params,
         lr=args.lr,
-        weight_decay=1e-2,
+        weight_decay=args.weight_decay,
         fused=torch.cuda.is_available(),
     )
-    scheduler = cosine_warmup_lr(optimizer, args.warmup_steps, args.total_steps)
+    scheduler = linear_warmup_lr(
+        optimizer, args.warmup_steps, args.lr, args.min_lr,
+        total_steps=args.total_steps, cooldown_steps=args.lr_cooldown_steps,
+    )
+
+    if args.prewarm_kernels and device.startswith("cuda"):
+        # Every rank runs the same shapes, so this stays in lockstep and no rank
+        # can be stranded in a collective while another compiles.
+        t_warm = time.time()
+        warmed = prewarm_sequence_kernels(
+            model,
+            batch_size=args.batch_size * max(1, int(args.copies_per_protein)),
+            max_length=args.max_length,
+            length_bin=args.length_bin,
+            device=device,
+        )
+        if is_main:
+            print(
+                f"[prewarm] compiled {len(warmed)} sequence shapes "
+                f"({warmed[0] if warmed else '-'}..{warmed[-1] if warmed else '-'}) "
+                f"in {time.time() - t_warm:.1f}s",
+                flush=True,
+            )
 
     # ── resume ───────────────────────────────────────────────────────────────
     start_step = 0
@@ -265,7 +282,6 @@ def main():
     metric_sums: dict[str, float] = {}
     metric_count = 0
     grad_accum = max(1, int(getattr(args, "grad_accum_steps", 1)))
-    crop_schedule = getattr(args, "crop_schedule", None)
     start_epoch, start_batch = divmod(micro_batches_consumed, batches_per_epoch)
     if is_main and micro_batches_consumed:
         print(
@@ -325,8 +341,6 @@ def main():
         while step < args.total_steps:
             step_started = time.perf_counter()
             loader_wait_s = 0.0
-            target_L = pick_crop_length(step, crop_schedule, args.max_length)
-
             optimizer.zero_grad(set_to_none=True)
             accum: dict[str, float] = {}
             oom = False
@@ -348,7 +362,6 @@ def main():
                 if missing_batch:
                     oom = True
                     break
-                batch = batch.truncate_length(target_L)
                 if is_dist:
                     # TileLang kernels specialize on sequence length. Keep all
                     # ranks on the same shape so JIT compilation cannot strand
@@ -371,50 +384,9 @@ def main():
                             use_amp=True,
                             w_fm=args.w_fm,
                             w_lddt_atom=args.w_lddt_atom,
-                            w_lddt_ca=args.w_lddt_ca,
-                            w_bond=args.w_bond,
-                            w_clash=args.w_clash,
-                            w_ca_clash=args.w_ca_clash,
-                            w_distogram=args.w_distogram,
-                            w_drmsd=args.w_drmsd,
-                            w_contact=args.w_contact,
-                            w_pcb=args.w_pcb,
-                            w_conf=args.w_conf,
-                            w_ca_angle=args.w_ca_angle,
-                            w_ca_self_clash=args.w_ca_self_clash,
-                            w_chirality=args.w_chirality,
-                            w_chirality_atom=args.w_chirality_atom,
                             lddt_cutoff_A=args.lddt_cutoff_A,
-                            max_lddt_atoms=args.max_lddt_atoms,
                             lddt_pair_chunk_size=args.lddt_pair_chunk_size,
-                            max_clash_atoms=getattr(args, "max_clash_atoms", 2048),
-                            w_ost_clash=getattr(args, "w_ost_clash", 0.0),
-                            ost_clash_mode=getattr(args, "ost_clash_mode", "huber"),
-                            ost_clash_margin_A=getattr(args, "ost_clash_margin_A", 0.1),
-                            ost_clash_huber_A=getattr(args, "ost_clash_huber_A", 0.25),
-                            ost_clash_softplus_tau_A=getattr(
-                                args, "ost_clash_softplus_tau_A", 0.05
-                            ),
-                            ost_clash_softplus_halo=getattr(args, "ost_clash_softplus_halo", 6.0),
-                            ost_clash_pair_chunk_size=getattr(
-                                args, "ost_clash_pair_chunk_size", 1024
-                            ),
-                            w_covalent_guard=getattr(args, "w_covalent_guard", 0.0),
-                            covalent_guard_tolerance_z=getattr(
-                                args, "covalent_guard_tolerance_z", 3.0
-                            ),
-                            w_peptide_planarity_guard=getattr(
-                                args, "w_peptide_planarity_guard", 0.0
-                            ),
-                            geo_t_start=getattr(args, "geo_t_start", 0.55),
-                            geo_t_ramp_end=getattr(args, "geo_t_ramp_end", 0.65),
-                            geo_t_taper_start=getattr(args, "geo_t_taper_start", 0.95),
-                            geo_t_end=getattr(args, "geo_t_end", 0.98),
-                            geo_jacobian_floor=getattr(args, "geo_jacobian_floor", 0.1),
-                            geo_max_examples_per_batch=getattr(
-                                args, "geo_max_examples_per_batch", 0
-                            ),
-                            self_condition_prob=getattr(args, "self_condition_prob", 0.0),
+                            self_condition_prob=args.self_condition_prob,
                         )
                         nonfinite = not bool(torch.isfinite(loss).item())
                         if is_dist:
@@ -427,7 +399,7 @@ def main():
                     if is_dist:
                         raise RuntimeError(
                             f"rank {rank} CUDA OOM at step={step} "
-                            f"micro_step={micro_idx} target_L={target_L}; "
+                            f"micro_step={micro_idx} length={batch.max_len}; "
                             "failing the DDP run instead of desynchronizing ranks"
                         ) from exc
                     oom = True
@@ -446,7 +418,7 @@ def main():
                 oom = skip_t.item() > 0
             if oom:
                 if is_main:
-                    print(f"[step {step}] OOM/NaN — skipped (target_L={target_L})", flush=True)
+                    print(f"[step {step}] OOM/NaN — skipped", flush=True)
                 continue
 
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip).item()
@@ -475,34 +447,50 @@ def main():
             accum["perf_data_wait_ms_max"] = float(timing_ms[0].item())
             accum["perf_train_step_ms_max"] = float(timing_ms[1].item())
             accum["grad_norm"] = grad_norm
-            accum["target_L"] = float(target_L)
             step += 1
 
-            # Metric accumulation
-            if is_dist:
-                for k, v in list(accum.items()):
-                    if k.startswith("perf_"):
-                        # Timing values were already reduced with MAX above.
-                        continue
-                    t = torch.tensor(v, device=device)
-                    accum[k] = all_reduce_mean(t)
+            # Metric accumulation. Values stay rank-local here and are reduced
+            # once per logging interval, not once per metric per step. For a
+            # mean the two are identical — every rank runs the same number of
+            # accumulated steps, because an OOM/NaN skip is already agreed
+            # across ranks above — so this is the same number for one collective
+            # instead of `len(accum)` of them, each of which also cost a scalar
+            # host-to-device upload and a device sync to read back. The `perf_`
+            # timings keep their own per-step MAX collective: "mean over steps
+            # of the slowest rank" is the throughput diagnostic, and it is not
+            # recoverable from a reduction taken once per interval.
             for k, v in accum.items():
                 metric_sums[k] = metric_sums.get(k, 0.0) + v
             metric_count += 1
 
             # Logging
-            if is_main and step % args.log_interval == 0:
+            if step % args.log_interval == 0:
                 avgs = {k: v / metric_count for k, v in metric_sums.items()}
-                log_metrics(
-                    step,
-                    args.total_steps,
-                    avgs,
-                    scheduler.get_last_lr()[0],
-                    world_size,
-                    args.batch_size,
-                    args.copies_per_protein,
-                    args.grad_accum_steps,
-                )
+                if is_dist:
+                    # One packed collective. Key order is sorted so every rank
+                    # packs the same slots; the key sets cannot diverge because
+                    # every rank took the same accumulated steps.
+                    keys = sorted(k for k in avgs if not k.startswith("perf_"))
+                    packed = torch.tensor(
+                        [avgs[k] for k in keys], device=device, dtype=torch.float32
+                    )
+                    dist.all_reduce(packed, op=dist.ReduceOp.SUM)
+                    packed /= world_size
+                    avgs.update(zip(keys, packed.tolist()))
+                if is_main:
+                    log_metrics(
+                        step,
+                        args.total_steps,
+                        avgs,
+                        scheduler.get_last_lr()[0],
+                        world_size,
+                        args.batch_size,
+                        args.copies_per_protein,
+                        args.grad_accum_steps,
+                    )
+                # Reset on every rank, not just rank 0: the sums are rank-local
+                # now, and a rank that never reset would average over the whole
+                # run instead of the interval.
                 metric_sums, metric_count = {}, 0
 
 

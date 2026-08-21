@@ -1,67 +1,73 @@
-"""Feature embeddings for atom and residue tokens."""
+"""Coordinate and residue-position embeddings used by the folding model."""
+
+import math
 
 import torch
 import torch.nn as nn
 from torch import Tensor
 
-from mambafold.data.constants import AA_TO_ID, MAX_ATOMS_PER_RES, NUM_PAIR_TYPES
-
-NUM_RES_TYPES = len(AA_TO_ID)  # 21 (20 AAs + UNK)
+from mambafold.data.constants import COORD_SCALE
 
 
 class CoordinateFourierEmbedder(nn.Module):
-    """Fourier positional embedding for 3D coordinates."""
+    """Fourier embedding of 3D coordinates over an explicit Angstrom band.
 
-    def __init__(self, d_out: int = 128, num_freqs: int = 16):
-        """
-        Args:
-            d_out (int): Output embedding dimension. Default: 128.
-            num_freqs (int): Number of Fourier frequency bands. The raw input
-                dimension is 3 + 3 * 2 * num_freqs (3 raw coords + sin/cos per
-                coord per frequency). Default: 16.
-        """
+    The band is declared in Angstrom and converted here with `COORD_SCALE`, so
+    it stays pinned to physical distances instead of to whatever normalisation
+    happens to be in force. The band this replaces was written directly in
+    normalised frequency — `2**linspace(-3, 4)` — which at COORD_SCALE 16
+    covered periods of 804 A down to 6.28 A. Both ends were wrong for this
+    model: nothing in a protein has an 800 A period, and the finest band could
+    not resolve a 1.5 A bond, which is the scale an all-atom coordinate model
+    is asked to predict. Fourier features exist to defeat the MLP's bias
+    against fine detail; a band that stops at 6.28 A defeats nothing.
+
+    Args:
+        d_out: Output embedding dimension.
+        num_freqs: Number of Fourier bands, log-spaced across the period range.
+        max_period_A / min_period_A: Coarsest and finest spatial period the
+            embedding can express, in Angstrom.
+        include_norm: Append |coords| as a channel. Used for the CA-relative
+            embedder, where the norm is the atom's distance from its own CA and
+            is the single most direct fine-scale quantity available.
+    """
+
+    def __init__(
+        self,
+        d_out: int = 128,
+        num_freqs: int = 16,
+        min_period_A: float = 1.0,
+        max_period_A: float = 128.0,
+        include_norm: bool = False,
+    ):
         super().__init__()
-        self.num_freqs = num_freqs
-        # 3 coords × (sin + cos) × num_freqs + 3 raw
-        raw_dim = 3 + 3 * 2 * num_freqs
+        if not 0.0 < min_period_A < max_period_A:
+            raise ValueError(
+                f"need 0 < min_period_A < max_period_A, got {min_period_A}, {max_period_A}"
+            )
+        self.include_norm = include_norm
+        raw_dim = 3 + 3 * 2 * num_freqs + (1 if include_norm else 0)
         self.proj = nn.Linear(raw_dim, d_out)
 
-        # Fixed frequency bands: 2^-3 to 2^4 = [0.125, 16]
-        # Coordinates are normalized by the shared SimpleFold scale.
-        # Max phase = 5 * 16 = 80, safe for bfloat16.
-        freqs = 2.0 ** torch.linspace(-3, 4, num_freqs)
-        self.register_buffer("freqs", freqs)  # [num_freqs]
+        periods = torch.logspace(
+            math.log10(max_period_A), math.log10(min_period_A), num_freqs
+        )
+        self.register_buffer("freqs", 2.0 * math.pi * COORD_SCALE / periods)
 
     def forward(self, coords: Tensor) -> Tensor:
-        """
-        Args:
-            coords (Tensor): 3D coordinates of shape [*, 3].
-
-        Returns:
-            Tensor: Fourier-encoded coordinate embedding of shape [*, d_out].
-                Internally expands coords to [*, 3, num_freqs], computes sin/cos,
-                concatenates with raw coords, then projects to d_out.
-        """
-        # Expand: [*, 3, 1] * [num_freqs] -> [*, 3, num_freqs]
-        scaled = coords.unsqueeze(-1) * self.freqs  # [*, 3, F]
+        """Embed coordinates shaped ``[..., 3]`` into ``[..., d_out]``."""
+        scaled = coords.unsqueeze(-1) * self.freqs
         fourier = torch.cat([torch.sin(scaled), torch.cos(scaled)], dim=-1).flatten(-2)
-        return self.proj(torch.cat([coords, fourier], dim=-1))
+        parts = [coords, fourier]
+        if self.include_norm:
+            # sqrt(sum + eps), not `norm`: padded slots and the CA slot itself
+            # are exactly the zero vector, where `norm`'s backward is 0/0.
+            parts.append(coords.pow(2).sum(dim=-1, keepdim=True).add(1e-12).sqrt())
+        return self.proj(torch.cat(parts, dim=-1))
 
 
 class SequenceFourierEmbedder(nn.Module):
-    """AF3 / Boltz / Protenix-style residue-position embedding (1D variant).
-
-    Per-residue features:
-      * per-chain absolute residue index (`rel`, chain-reset; comes pre-computed
-        in `res_seq_nums`) — raw + Fourier sin/cos
-      * categorical chain_id Embedding   — distinguishes chains
-      * categorical entity_id Embedding  — homomer grouping (same sequence)
-      * categorical sym_id Embedding     — copy number within an entity
-
-    Chain-length normalization (`rel/span`, formerly `rel_norm`) is REMOVED —
-    no current SOTA folding model (AF3, Boltz-1/2, Protenix) uses it; it
-    introduces implicit dependency on chain length and crop window.
-    """
+    """Embed per-chain residue position plus chain/entity/symmetry identity."""
 
     MAX_CHAINS = 64
     MAX_ENTITIES = 64
@@ -70,7 +76,7 @@ class SequenceFourierEmbedder(nn.Module):
     def __init__(
         self,
         d_out: int = 64,
-        num_freqs: int = 8,
+        num_freqs: int = 10,
         d_chain: int = 16,
         d_entity: int = 16,
         d_sym: int = 8,
@@ -79,11 +85,16 @@ class SequenceFourierEmbedder(nn.Module):
         self.chain_embed = nn.Embedding(self.MAX_CHAINS, d_chain)
         self.entity_embed = nn.Embedding(self.MAX_ENTITIES, d_entity)
         self.sym_embed = nn.Embedding(self.MAX_SYM, d_sym)
-        # raw rel (1) + sin/cos rel × num_freqs (2F) + categorical embeds
-        in_dim = 1 + 2 * num_freqs + d_chain + d_entity + d_sym
+        in_dim = 3 + 2 * num_freqs + d_chain + d_entity + d_sym
         self.proj = nn.Linear(in_dim, d_out)
-        freqs = 2.0 ** torch.linspace(0, 4, num_freqs)
-        self.register_buffer("freqs", freqs)
+        # Period-based bands, not frequency-based. The previous
+        # `2**linspace(0, 4)` put every band between 1 and 16 radians per
+        # residue: the longest period it could express was 2*pi ~ 6.3 residues,
+        # and seven of the eight bands sat above the Nyquist limit of pi for
+        # integer positions, so they aliased. These cover 2 to 2**(num_freqs)
+        # residues, which spans a helix turn up to a whole chain.
+        periods = 2.0 ** torch.arange(1, num_freqs + 1, dtype=torch.float32)
+        self.register_buffer("freqs", 2.0 * math.pi / periods)
 
     def forward(
         self,
@@ -94,7 +105,7 @@ class SequenceFourierEmbedder(nn.Module):
         sym_id: Tensor | None = None,
     ) -> Tensor:
         valid = mask.to(torch.bool)
-        rel = seq_nums.to(self.freqs.dtype)  # already per-chain 0-base from dataset
+        rel = seq_nums.to(self.freqs.dtype)
 
         if chain_id is None:
             chain_id = torch.zeros_like(seq_nums, dtype=torch.long)
@@ -103,104 +114,27 @@ class SequenceFourierEmbedder(nn.Module):
         if sym_id is None:
             sym_id = torch.zeros_like(seq_nums, dtype=torch.long)
 
+        # Position relative to the first residue actually in the crop, not the
+        # deposited author numbering, whose origin is arbitrary — it can start
+        # at 1, at 100, or below zero. Gaps in the numbering survive, so an
+        # unmodelled loop still shows up as a jump.
+        first = torch.where(valid, rel, torch.full_like(rel, float("inf")))
+        rel = rel - first.min(dim=1, keepdim=True).values.clamp(min=-1e9)
+
         rel_scaled = rel.unsqueeze(-1) * self.freqs
         fourier = torch.cat([torch.sin(rel_scaled), torch.cos(rel_scaled)], dim=-1)
-
-        cid = chain_id.clamp(max=self.MAX_CHAINS - 1)
-        eid = entity_id.clamp(max=self.MAX_ENTITIES - 1)
-        sid = sym_id.clamp(max=self.MAX_SYM - 1)
-        ch_e = self.chain_embed(cid)
-        en_e = self.entity_embed(eid)
-        sy_e = self.sym_embed(sid)
-
-        feat = torch.cat([rel.unsqueeze(-1), fourier, ch_e, en_e, sy_e], dim=-1)
-        out = self.proj(feat)
-        return out * valid.unsqueeze(-1).to(out.dtype)
-
-
-class AtomFeatureEmbedder(nn.Module):
-    """Embed atom features into atom tokens.
-
-    Chemical identity: pair_embed (residue×atom joint, 167 unique pairs)
-    Geometry: coord_embed (Fourier)
-    Auxiliary: optional res_pos, optional atom_slot
-    """
-
-    def __init__(
-        self,
-        d_atom: int = 256,
-        d_fourier: int = 128,
-        d_res_pos: int = 0,
-        d_atom_slot: int = 0,
-        d_res_type_atom: int = 32,
-    ):
-        """
-        Args:
-            d_atom (int): Atom token embedding dimension. Used for pair_embed
-                output and the final projection output [B, L, A, d_atom].
-                Default: 256.
-            d_fourier (int): Output dimension of the coordinate Fourier embedder
-                [B, L, A, d_fourier]. Default: 128.
-            d_res_pos (int): Dimension of an optional residue-level position
-                feature broadcast to each atom [B, L, d_res_pos → B, L, A, d_res_pos].
-                Set to 0 to disable. Default: 0.
-            d_atom_slot (int): Dimension of per-slot (intra-residue atom index)
-                learnable embedding [A, d_atom_slot]. Set to 0 to disable.
-                Default: 0.
-            d_res_type_atom (int): Dimension of a residue-type embedding
-                broadcast to every atom slot [B, L, d_rt → B, L, A, d_rt].
-                Gives the atom encoder explicit context about which AA the
-                residue is. Set to 0 to disable. Default: 32.
-        """
-        super().__init__()
-        self.pair_embed = nn.Embedding(NUM_PAIR_TYPES, d_atom)
-        self.coord_embed = CoordinateFourierEmbedder(d_out=d_fourier)
-        self.atom_slot_embed = (
-            nn.Embedding(MAX_ATOMS_PER_RES, d_atom_slot) if d_atom_slot > 0 else None
+        # Distance to each terminus, log-compressed. A bidirectional scan sees
+        # both ends, but nothing in the features told it which end it was near.
+        n_valid = valid.sum(dim=1, keepdim=True).to(rel.dtype).clamp(min=1)
+        from_n = torch.log1p(rel.clamp(min=0))
+        from_c = torch.log1p((n_valid - 1 - rel).clamp(min=0))
+        chain = self.chain_embed(chain_id.clamp(max=self.MAX_CHAINS - 1))
+        entity = self.entity_embed(entity_id.clamp(max=self.MAX_ENTITIES - 1))
+        symmetry = self.sym_embed(sym_id.clamp(max=self.MAX_SYM - 1))
+        features = torch.cat(
+            [from_n.unsqueeze(-1), from_c.unsqueeze(-1), rel.unsqueeze(-1),
+             fourier, chain, entity, symmetry],
+            dim=-1,
         )
-        self.res_type_embed = (
-            nn.Embedding(NUM_RES_TYPES, d_res_type_atom) if d_res_type_atom > 0 else None
-        )
-        in_dim = d_atom + d_fourier + d_res_pos + d_atom_slot + d_res_type_atom
-        self.proj = nn.Linear(in_dim, d_atom)
-
-    def forward(
-        self,
-        pair_type: Tensor,  # [B, L, A]
-        coords: Tensor,  # [B, L, A, 3]
-        atom_mask: Tensor,  # [B, L, A]
-        res_pos_feat: Tensor | None = None,  # [B, L, d_res_pos]
-        res_type: Tensor | None = None,  # [B, L]
-    ) -> Tensor:
-        """
-        Args:
-            pair_type (Tensor): Residue-atom pair type indices of shape [B, L, A].
-                Integer values in [0, NUM_PAIR_TYPES).
-            coords (Tensor): Atom 3D coordinates of shape [B, L, A, 3].
-            atom_mask (Tensor): Boolean or float atom validity mask of shape [B, L, A].
-                Padding atoms (mask == 0) are zeroed in the output.
-            res_pos_feat (Tensor | None): Optional residue-level position features
-                of shape [B, L, d_res_pos], broadcast to each atom slot.
-                Pass None when d_res_pos == 0.
-
-        Returns:
-            Tensor: Atom token embeddings of shape [B, L, A, d_atom].
-                Padding atom positions are zeroed via atom_mask.
-        """
-        B, L, A = pair_type.shape
-
-        parts = [self.pair_embed(pair_type), self.coord_embed(coords)]
-
-        if res_pos_feat is not None:
-            parts.append(res_pos_feat.unsqueeze(2).expand(-1, -1, A, -1))
-
-        if self.atom_slot_embed is not None:
-            slot_ids = torch.arange(A, device=coords.device)
-            parts.append(self.atom_slot_embed(slot_ids).view(1, 1, A, -1).expand(B, L, -1, -1))
-
-        if self.res_type_embed is not None and res_type is not None:
-            rt = self.res_type_embed(res_type)  # [B, L, d_res_type_atom]
-            parts.append(rt.unsqueeze(2).expand(-1, -1, A, -1))
-
-        out = self.proj(torch.cat(parts, dim=-1))
-        return out * atom_mask.unsqueeze(-1).to(out.dtype)
+        output = self.proj(features)
+        return output * valid.unsqueeze(-1).to(output.dtype)

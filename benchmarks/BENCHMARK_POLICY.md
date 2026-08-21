@@ -115,10 +115,16 @@ choice, which is why sampler settings are frozen against the post-cutoff pool.
 
 ## Comparator rules
 
-- SimpleFold-360M is the primary size-matched public baseline. It is **not** a
-  controlled ablation: it differs in PLM, corpus size, and training
-  infrastructure. The architecture claim is carried by the two arms trained
-  inside this project under one contract.
+- SimpleFold-360M is the primary size-matched public baseline, and since the
+  in-house transformer arm was cancelled it is now the **only** comparator. It
+  is **not** a controlled ablation: it differs in PLM, corpus size, and training
+  infrastructure, so the reportable claim is "a pure-SSM trunk trained on this
+  corpus under this objective scores X against a published attention baseline",
+  never "the mixer is what accounts for the difference". Any table or abstract
+  that asserts the stronger form is wrong.
+- The weaker claim is not nothing: the corpus, the objective, the crop and the
+  benchmark protocol are all fixed by this project's own contract, so the number
+  is reproducible here even though it is not attributable.
 - Every comparison table must state the exposure asymmetry: this corpus is a
   strict subset of SimpleFold's, which additionally pretrains on AFESM.
 - Report coverage before averages. Never define a common subset by a baseline's

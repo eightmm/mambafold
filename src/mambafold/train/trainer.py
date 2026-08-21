@@ -46,46 +46,166 @@ def build_model(cfg: dict, device: str = "cpu"):
     from mambafold.model.fold import MambaFoldAllAtom
 
     return MambaFoldAllAtom(
-        d_res=cfg.get("d_res", 1024),
-        n_trunk=cfg.get("n_trunk", 12),
+        d_res=cfg.get("d_res", 256),
+        n_trunk=cfg.get("n_trunk", 6),
         d_res_type=cfg.get("d_res_type", 32),
         d_res_pos=cfg.get("d_res_pos", 64),
         d_plm=cfg.get("d_plm", 1536),
         d_plm_proj=cfg.get("d_plm_proj", 256),
+        d_temb=cfg.get("d_temb", 128),
         d_ca_emb=cfg.get("d_ca_emb", 128),
-        use_plm=cfg.get("use_plm", True),
+        use_plm=cfg.get("use_plm", False),
         mimo_rank=cfg.get("mimo_rank", 4),
         d_state=cfg.get("d_state", 64),
         expand=cfg.get("expand", 2),
         headdim=cfg.get("headdim", 64),
-        trunk_time_film=cfg.get("trunk_time_film", False),
-        trunk_adaln_zero=cfg.get("trunk_adaln_zero", False),
         self_conditioning=cfg.get("self_conditioning", False),
         bimamba_share=cfg.get("bimamba_share", False),
         d_atom=cfg.get("d_atom", 128),
         n_atom_layers=cfg.get("n_atom_layers", 4),
-        pairfree_aux_heads=cfg.get("pairfree_aux_heads", False),
-        d_aux_pair=cfg.get("d_aux_pair", 192),
+        atom_mixer=cfg.get("atom_mixer", "mamba"),
+        atom_d_state=cfg.get("atom_d_state", 64),
+        atom_mimo_rank=cfg.get("atom_mimo_rank", 2),
+        n_atom_cross_layers=cfg.get("n_atom_cross_layers", 1),
+        n_backbone_streams=cfg.get("n_backbone_streams", 5),
     ).to(torch.device(device))
 
 
-def cosine_warmup_lr(
+def linear_warmup_lr(
     optimizer,
     warmup_steps: int,
-    total_steps: int,
-    decay_fraction: float = 0.5,
+    max_lr: float,
+    min_lr: float = 1e-6,
+    total_steps: int = 0,
+    cooldown_steps: int = 0,
 ):
-    decay_start = int(total_steps * (1.0 - decay_fraction))
+    """SimpleFold's `LinearWarmup`, plus an optional cosine cooldown.
+
+    The reference schedule ramps min_lr → max_lr and then holds max_lr for the
+    whole run, with no decay; `cooldown_steps=0` reproduces that exactly. A
+    declared deviation is available because the trunk is not a transformer:
+    attention tolerates a flat rate to the last step, while a selective SSM
+    carries learned discretisation parameters that keep moving at 1e-4, and
+    with EMA 0.999 the reported model is an average over only the final ~1000
+    steps — i.e. an average taken at the noise floor. The cooldown costs
+    nothing if the flat rate was fine and rescues the ending if it was not.
+
+    There is no decay phase. The reference schedule
+    (`utils/lr_scheduler.py::LinearWarmup`) interpolates linearly from `min_lr`
+    to `max_lr` across `warmup_steps` and returns `max_lr` for every step after,
+    for the whole run. A cosine tail would be a different training recipe, and
+    this project changes the trunk and nothing else.
+    """
+    if warmup_steps < 0:
+        raise ValueError("warmup_steps must be non-negative")
+    if not (0.0 < min_lr <= max_lr):
+        raise ValueError("require 0 < min_lr <= max_lr")
+
+    # LambdaLR multiplies the optimizer's own lr, which is max_lr, so express the
+    # reference schedule as a fraction of it.
+    floor = min_lr / max_lr
+
+    if cooldown_steps < 0 or cooldown_steps > max(0, total_steps - warmup_steps):
+        raise ValueError("cooldown_steps must fit between warmup_steps and total_steps")
+    decay_start = total_steps - cooldown_steps if cooldown_steps else None
 
     def lr_lambda(step: int) -> float:
         if step < warmup_steps:
-            return step / max(1, warmup_steps)
-        if step < decay_start:
+            return floor + (1.0 - floor) * step / max(1, warmup_steps)
+        if decay_start is None or step < decay_start:
             return 1.0
-        progress = (step - decay_start) / max(1, total_steps - decay_start)
-        return 0.5 * (1.0 + math.cos(math.pi * progress))
+        progress = min(1.0, (step - decay_start) / max(1, cooldown_steps))
+        return floor + (1.0 - floor) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+def prewarm_sequence_kernels(model, batch_size: int, max_length: int, length_bin: int,
+                             device: str, min_length: int = 64) -> list[int]:
+    """Compile every sequence shape training can produce, before step 1.
+
+    The Mamba-3 TileLang kernels specialize on sequence length and are compiled
+    on first use, tens of seconds each. The collator rounds every batch up to a
+    multiple of `length_bin`, so the set of shapes is small and known ahead of
+    time — 16 of them at bin 64 and max_length 1024. Paying for them here turns
+    a scatter of multi-second stalls across the first few hundred steps, each
+    one holding every DDP rank inside a collective, into one bounded cost at
+    startup that also shows up honestly in the log.
+
+    Runs a real backward, not just a forward: the SSD kernels compile separate
+    forward and backward programs, so a `no_grad` pass would leave every
+    backward kernel to compile inside the first training step it is needed —
+    exactly the stall this exists to remove. The loss is a sum over the output,
+    which touches every parameter without needing targets. Returns the lengths
+    it warmed.
+    """
+    import torch
+
+    from mambafold.data.constants import MAX_ATOMS_PER_RES
+
+    if length_bin <= 0:
+        raise ValueError("prewarm requires a positive length_bin; see the config note")
+    lengths = list(range(length_bin, max_length + 1, length_bin))
+    if not lengths:
+        return []
+    torch_device = torch.device(device)
+    d_plm = getattr(model, "d_plm", None) or getattr(getattr(model, "module", None), "d_plm", 2560)
+    was_training = model.training
+    model.train()
+    warmed = []
+    for length in lengths:
+        batch = _synthetic_batch(batch_size, length, MAX_ATOMS_PER_RES, d_plm, torch_device)
+        try:
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                out = model(batch)
+            out["v_atom"].float().sum().backward()
+            model.zero_grad(set_to_none=True)
+            warmed.append(length)
+        except torch.cuda.OutOfMemoryError:
+            # A shape training itself could not run either. Stop rather than
+            # pretend the rest are warm.
+            print(f"[prewarm] out of memory at L={length}; stopping", flush=True)
+            break
+        finally:
+            del batch
+            model.zero_grad(set_to_none=True)
+            torch.cuda.empty_cache()
+    if not was_training:
+        model.eval()
+    return warmed
+
+
+def _synthetic_batch(batch_size: int, length: int, n_atoms: int, d_plm: int, device):
+    """A dense batch of the right shape. Only shapes matter here, not values."""
+    import torch
+
+    from mambafold.data.types import ProteinBatch
+
+    res = (batch_size, length)
+    atom = (batch_size, length, n_atoms)
+    ones_res = torch.ones(res, dtype=torch.bool, device=device)
+    zeros_res = torch.zeros(res, dtype=torch.long, device=device)
+    coords = torch.zeros(batch_size, length, n_atoms, 3, device=device)
+    return ProteinBatch(
+        res_type=zeros_res,
+        res_seq_nums=torch.arange(length, device=device).expand(batch_size, length).contiguous(),
+        atom_type=torch.zeros(atom, dtype=torch.long, device=device),
+        pair_type=torch.zeros(atom, dtype=torch.long, device=device),
+        res_mask=ones_res,
+        atom_mask=torch.ones(atom, dtype=torch.bool, device=device),
+        valid_mask=torch.ones(atom, dtype=torch.bool, device=device),
+        ca_mask=ones_res,
+        chain_id=zeros_res,
+        entity_id=zeros_res,
+        sym_id=zeros_res,
+        is_nterm=torch.zeros(res, dtype=torch.bool, device=device),
+        is_cterm=torch.zeros(res, dtype=torch.bool, device=device),
+        x_clean=coords,
+        x_t=coords.clone(),
+        eps=coords.clone(),
+        t=torch.full((batch_size, 1, 1, 1), 0.5, device=device),
+        esm=torch.zeros(1, length, d_plm, device=device),
+    )
 
 
 def validate_data_resume_state(
@@ -201,46 +321,3 @@ def save_checkpoint(
             old_path.unlink()
     print(f"Saved: {path}", flush=True)
 
-
-def load_from_checkpoint(ckpt_path: str | Path, device: str = "cpu", use_ema: bool = True):
-    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-    a = ckpt["args"]
-    cfg = dict(a if isinstance(a, dict) else vars(a))
-    # `build_model` reads cfg with .get, so keys a stale checkpoint still
-    # carries for the removed pair stack and trunk attention are ignored rather
-    # than fatal. Only keys the current model reads need a default here.
-    cfg.setdefault("trunk_time_film", False)
-    cfg.setdefault("trunk_adaln_zero", False)
-    cfg.setdefault("self_conditioning", False)
-    cfg.setdefault("bimamba_share", False)
-    cfg.setdefault("pairfree_aux_heads", False)
-    cfg.setdefault("d_aux_pair", 192)
-    model = build_model(cfg, device)
-    key = "ema" if (use_ema and "ema" in ckpt) else "model"
-    missing, unexpected = model.load_state_dict(ckpt[key], strict=False)
-    if missing:
-        print(f"  [load] freshly initialized: {missing}")
-    if unexpected:
-        print(f"  [load] dropped unexpected keys: {unexpected}")
-    model.eval()
-    step = ckpt.get("step", "?")
-    n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"Loaded checkpoint step={step} ({key}): {ckpt_path} [{n_params:.1f}M params]")
-    return model
-
-
-def load_checkpoint(path: Path, model, ema, optimizer, scheduler, device) -> int:
-    ckpt = torch.load(path, map_location=device, weights_only=False)
-    raw_model = model.module if isinstance(model, DDP) else model
-    missing, unexpected = raw_model.load_state_dict(ckpt["model"], strict=False)
-    ema_missing, ema_unexpected = ema.load_state_dict(ckpt["ema"], strict=False)
-    if missing or unexpected:
-        print(f"[resume] model missing={len(missing)} unexpected={len(unexpected)}", flush=True)
-    if ema_missing or ema_unexpected:
-        print(
-            f"[resume] ema missing={len(ema_missing)} unexpected={len(ema_unexpected)}",
-            flush=True,
-        )
-    optimizer.load_state_dict(ckpt["optimizer"])
-    scheduler.load_state_dict(ckpt["scheduler"])
-    return int(ckpt["step"])

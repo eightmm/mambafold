@@ -2,6 +2,9 @@
 # hard-link farms; it is never tracked.
 /data/
 /outputs/
+# Training and smoke run directories: checkpoints are large binaries and are
+# reproducible from a config plus a seed.
+/out/
 /logs/
 /wandb/
 setup_report*.json

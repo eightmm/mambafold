@@ -17,6 +17,8 @@ def parse_args(argv=None):
     if pre_args.config:
         with open(pre_args.config) as f:
             cfg = yaml.safe_load(f) or {}
+        if not isinstance(cfg, dict):
+            pre.error("training config must be a YAML mapping")
 
     parser = argparse.ArgumentParser(description="MambaFold training")
     parser.add_argument("--config", default=None)
@@ -40,6 +42,14 @@ def parse_args(argv=None):
     )
     parser.add_argument("--copies_per_protein", type=int, default=1)
     parser.add_argument(
+        "--accum_same_protein",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Accumulate gradient over the same protein across micro-steps, so "
+        "copies_per_protein x grad_accum_steps equals that many noise copies in "
+        "one pass. Requires length_bucketing.",
+    )
+    parser.add_argument(
         "--single_chain_only",
         action="store_true",
         default=False,
@@ -52,7 +62,33 @@ def parse_args(argv=None):
     parser.add_argument("--total_steps", type=int, default=200_000)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--warmup_steps", type=int, default=2_000)
-    parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument(
+        "--min_lr",
+        type=float,
+        default=1e-6,
+        help="Warmup start LR. SimpleFold's LinearWarmup ramps from here to --lr.",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=0.0,
+        help="SimpleFold's AdamW uses 0.0; this was silently 1e-2 before.",
+    )
+    parser.add_argument("--grad_clip", type=float, default=2.0)
+    parser.add_argument(
+        "--lr_cooldown_steps",
+        type=int,
+        default=0,
+        help="Cosine decay to --min_lr over the final N steps. 0 reproduces "
+        "SimpleFold's flat rate exactly.",
+    )
+    parser.add_argument(
+        "--prewarm_kernels",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Compile every binned sequence shape before step 1, so no training "
+        "step stalls on a first-use TileLang compile.",
+    )
     parser.add_argument("--log_interval", type=int, default=50)
     parser.add_argument("--ckpt_interval", type=int, default=5_000)
     parser.add_argument(
@@ -74,6 +110,15 @@ def parse_args(argv=None):
         default="logit_normal",
         help="Time sampling schedule. The SimpleFold baseline uses logit_normal.",
     )
+    parser.add_argument(
+        "--t_uniform_weight",
+        type=float,
+        default=0.02,
+        help="Uniform mixture weight inside the logit-normal time schedule. "
+        "SimpleFold uses 0.02; raising it widens coverage of low t, where the "
+        "global fold has to be built out of noise and where a scan has the "
+        "least local signal to work from.",
+    )
     parser.add_argument("--ema_decay", type=float, default=0.999)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -83,68 +128,6 @@ def parse_args(argv=None):
         help="Gradient accumulation: effective batch = "
         "batch_size × world_size × grad_accum_steps. "
         "DDP all-reduce is throttled to the last micro-step.",
-    )
-    parser.add_argument(
-        "--find_unused_parameters",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable DDP unused-parameter detection for ablations with disabled heads.",
-    )
-    parser.add_argument(
-        "--crop_schedule",
-        default=None,
-        help="Mixed-crop schedule (optional). YAML list of phases: "
-        "[{until: <step>, weights: {<L>: <prob>, ...}}, ...].",
-    )
-    # Geometric / auxiliary loss weights
-    parser.add_argument(
-        "--w_bond",
-        type=float,
-        default=0.0,
-        help="Weight for backbone + Cβ bond-length loss (0 disables).",
-    )
-    parser.add_argument(
-        "--w_clash", type=float, default=0.0, help="Weight for sampled all-atom steric clash loss."
-    )
-    parser.add_argument(
-        "--w_ca_clash", type=float, default=0.0, help="Weight for C-alpha steric clash loss."
-    )
-    parser.add_argument(
-        "--w_ost_clash",
-        type=float,
-        default=0.0,
-        help="Weight for the atom-normalized OpenStructure-aligned clash surrogate.",
-    )
-    parser.add_argument(
-        "--ost_clash_mode",
-        choices=("huber", "softplus"),
-        default="huber",
-    )
-    parser.add_argument("--ost_clash_margin_A", type=float, default=0.1)
-    parser.add_argument("--ost_clash_huber_A", type=float, default=0.25)
-    parser.add_argument("--ost_clash_softplus_tau_A", type=float, default=0.05)
-    parser.add_argument("--ost_clash_softplus_halo", type=float, default=6.0)
-    parser.add_argument("--ost_clash_pair_chunk_size", type=int, default=1024)
-    parser.add_argument("--w_covalent_guard", type=float, default=0.0)
-    parser.add_argument("--covalent_guard_tolerance_z", type=float, default=3.0)
-    parser.add_argument("--w_peptide_planarity_guard", type=float, default=0.0)
-    parser.add_argument("--geo_t_start", type=float, default=0.55)
-    parser.add_argument("--geo_t_ramp_end", type=float, default=0.65)
-    parser.add_argument("--geo_t_taper_start", type=float, default=0.95)
-    parser.add_argument("--geo_t_end", type=float, default=0.98)
-    parser.add_argument("--geo_jacobian_floor", type=float, default=0.1)
-    parser.add_argument(
-        "--geo_max_examples_per_batch",
-        type=int,
-        default=0,
-        help="Bound costly geometry examples per rank/microbatch (0 means all).",
-    )
-    parser.add_argument(
-        "--w_distogram",
-        type=float,
-        default=0.0,
-        help="Auxiliary distogram CE loss (binned Cα-Cα distance). "
-        "AF2/AF3-style aux supervision; helps fold geometry.",
     )
     parser.add_argument(
         "--alpha_mode",
@@ -208,35 +191,6 @@ def parse_args(argv=None):
     parser.add_argument("--use_plm", action="store_true", default=False)
     parser.add_argument("--d_plm", type=int, default=1536)
     parser.add_argument("--esm_dir", default=None)
-    # Pair-free aux heads. There is no pair stack and no trunk attention to
-    # configure: both were removed from the model rather than defaulted off.
-    parser.add_argument(
-        "--pairfree_aux_heads",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Build O(L^2) distogram/contact heads from residue features. "
-        "Output-only — nothing is fed back into the trunk.",
-    )
-    parser.add_argument(
-        "--d_aux_pair",
-        type=int,
-        default=192,
-        help="Width of the pairfree aux-head outer sum. Unused unless "
-        "--pairfree_aux_heads.",
-    )
-    parser.add_argument(
-        "--trunk_time_film",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Inject FM time embedding before every residue trunk block.",
-    )
-    parser.add_argument(
-        "--trunk_adaln_zero",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Use AdaLN-Zero time-conditioned scale/shift/gates inside "
-        "each residue trunk residual branch.",
-    )
     parser.add_argument(
         "--self_conditioning",
         action=argparse.BooleanOptionalAction,
@@ -254,47 +208,58 @@ def parse_args(argv=None):
     # Atom-level BiMamba encoder/decoder (intra-residue SSM; atom→token→atom).
     parser.add_argument("--d_atom", type=int, default=128)
     parser.add_argument("--n_atom_layers", type=int, default=4)
+    # The atom levels are a fixed 14-slot tuple per residue, not a sequence, so
+    # they carry their own settings rather than the trunk's.
+    parser.add_argument(
+        "--atom_mixer",
+        choices=("mamba", "mlp"),
+        default="mamba",
+        help="'mlp' swaps the atom-slot scan for an MLP-Mixer over slots.",
+    )
+    parser.add_argument("--atom_d_state", type=int, default=64)
+    parser.add_argument(
+        "--n_atom_cross_layers",
+        type=int,
+        default=1,
+        help="BiMamba layers along the residue axis over the backbone atom "
+        "streams. 0 leaves the atom levels strictly intra-residue.",
+    )
+    parser.add_argument(
+        "--n_backbone_streams",
+        type=int,
+        default=5,
+        help="Atom slots carried across residues: N, CA, C, O, CB.",
+    )
+    parser.add_argument(
+        "--atom_mimo_rank",
+        type=int,
+        default=2,
+        help="Sets the SSM chunk size: rank 1 gives chunk 64 and pads A=14 to "
+        "64; rank 2 gives chunk 16 and pads to 16.",
+    )
     parser.add_argument("--d_plm_proj", type=int, default=256)
     parser.add_argument("--d_ca_emb", type=int, default=128)
-    # Auxiliary loss weights.
-    # Weight on the core flow-matching velocity loss (the generative objective).
-    # 1.0 = current behaviour; lower the aux weights or raise this if the ~5-6x
-    # nominal aux mass is found to drown the learned vector field.
+    parser.add_argument(
+        "--d_temb",
+        type=int,
+        default=128,
+        help="Width the FM time embedding is carried at. AdaLN-Zero projects "
+        "d_temb -> 6*d_res in every trunk block, so this multiplies through "
+        "the budget; SimpleFold's DiT uses the full trunk width.",
+    )
+    # Folding objective: aligned all-atom FM + exact all-atom soft lDDT.
     parser.add_argument("--w_fm", type=float, default=1.0)
     parser.add_argument("--w_lddt_atom", type=float, default=1.0)
-    parser.add_argument("--w_lddt_ca", type=float, default=0.0)
-    parser.add_argument("--w_drmsd", type=float, default=0.0)
-    parser.add_argument("--w_contact", type=float, default=0.0)
-    parser.add_argument("--w_pcb", type=float, default=0.0)
-    parser.add_argument("--w_conf", type=float, default=0.0)
-    parser.add_argument("--w_ca_angle", type=float, default=0.0)
-    parser.add_argument("--w_ca_self_clash", type=float, default=0.0)
-    # Chirality (handedness) loss: penalizes mirror-image predictions — the
-    # dominant holdout failure (~35% are internally-correct mirror images that
-    # every reflection-invariant aux misses). Key term; tune if it fights local
-    # geometry early.
-    parser.add_argument("--w_chirality", type=float, default=0.0)
-    # All-atom (Cα N/C/CB tetrahedron) chirality — per-residue side-chain
-    # stereochemistry, complements the CA-CA-CA global-handedness term above.
-    parser.add_argument("--w_chirality_atom", type=float, default=0.0)
     parser.add_argument("--lddt_cutoff_A", type=float, default=15.0)
-    parser.add_argument(
-        "--max_lddt_atoms",
-        type=int,
-        default=0,
-        help="All-atom lDDT atom cap; 0 uses every resolved atom (baseline).",
-    )
     parser.add_argument(
         "--lddt_pair_chunk_size",
         type=int,
         default=512,
         help="Rows per exact lDDT ground-truth distance chunk.",
     )
-    parser.add_argument("--max_clash_atoms", type=int, default=2048)
     # Length-balanced sampler — counters the PDB short-tail bias (90% < 500 aa)
     # by upweighting longer proteins. dataset audit identified this as the main
     # cause of mono lDDT degradation at L=512-1024 (0.80 → 0.72).
-    parser.add_argument("--length_balanced_sampling", action="store_true", default=False)
     # Padding-waste controls. length_bin>0: collator pads each batch to the next
     # multiple of length_bin above batch_max (dynamic padding, bounded shapes).
     # length_bucketing: group near-equal-length proteins per batch (needs
@@ -323,16 +288,6 @@ def parse_args(argv=None):
         help="With --extract_monomer_chains, keep one chain per distinct "
         "sequence per entry (the one resolving the most atoms).",
     )
-    parser.add_argument("--metadata_path", default="data/splits/metadata.tsv")
-    parser.add_argument("--length_balance_mode", default="power", choices=["power", "linear_clip"])
-    parser.add_argument(
-        "--length_balance_exponent",
-        type=float,
-        default=0.5,
-        help="Used when mode=power. w = (L/200)^exponent clipped.",
-    )
-    parser.add_argument("--length_balance_clip_min", type=float, default=1.0)
-    parser.add_argument("--length_balance_clip_max", type=float, default=1.5)
     # W&B
     parser.add_argument("--wandb_project", default="mambafold")
     parser.add_argument("--wandb_name", default=None)
@@ -340,30 +295,24 @@ def parse_args(argv=None):
     parser.add_argument("--wandb_offline", action="store_true", default=False)
     parser.add_argument("--no_wandb", action="store_true", default=False)
 
+    valid_config_keys = {action.dest for action in parser._actions} | {"train_sources"}
+    unknown_config_keys = sorted(set(cfg) - valid_config_keys)
+    if unknown_config_keys:
+        parser.error("unknown config key(s): " + ", ".join(unknown_config_keys))
+
     parser.set_defaults(**cfg)
     args = parser.parse_args(argv)
 
-    if args.max_lddt_atoms < 0:
-        parser.error("--max_lddt_atoms must be non-negative (0 means all atoms)")
     if args.lddt_pair_chunk_size <= 0:
         parser.error("--lddt_pair_chunk_size must be positive")
     if args.lddt_cutoff_A <= 0:
         parser.error("--lddt_cutoff_A must be positive")
-    if args.geo_max_examples_per_batch < 0:
-        parser.error("--geo_max_examples_per_batch must be non-negative")
-    if not (
-        0.0
-        <= args.geo_t_start
-        < args.geo_t_ramp_end
-        <= args.geo_t_taper_start
-        < args.geo_t_end
-        <= 1.0
-    ):
-        parser.error(
-            "geometry time bounds must satisfy 0 <= start < ramp_end <= taper_start < end <= 1"
-        )
-    if not (0.0 < args.geo_jacobian_floor <= 1.0):
-        parser.error("--geo_jacobian_floor must be in (0, 1]")
+    if args.w_fm < 0 or args.w_lddt_atom < 0:
+        parser.error("folding loss weights must be non-negative")
+    if args.copies_per_protein < 1:
+        parser.error("--copies_per_protein must be positive")
+    if not (0.0 <= args.self_condition_prob <= 1.0):
+        parser.error("--self_condition_prob must be in [0, 1]")
     if args.initialize_model_from_ema and not (args.resume and args.reset_optimizer):
         parser.error("--initialize_model_from_ema requires --resume and --reset_optimizer")
     if args.expected_resume_step is not None and not args.resume:

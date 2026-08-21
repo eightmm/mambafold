@@ -22,12 +22,16 @@ class ProteinCollator:
         augment: bool = True,
         copies_per_protein: int = 1,
         t_schedule: str = "uniform",
+        t_uniform_weight: float = 0.02,
         max_length: Optional[int] = None,
         length_bin: int = 0,
     ):
+        if copies_per_protein < 1:
+            raise ValueError("copies_per_protein must be positive")
         self.augment = augment
-        self.copies_per_protein = copies_per_protein
+        self.copies_per_protein = int(copies_per_protein)
         self.t_schedule = t_schedule
+        self.t_uniform_weight = t_uniform_weight
         self.max_length = max_length
         # length_bin > 0: pad to the next multiple of `length_bin` above the
         # batch's longest sequence (dynamic padding), instead of always to
@@ -42,11 +46,18 @@ class ProteinCollator:
         if len(examples) == 0:
             return None
 
-        processed = []
-        for ex in examples:
-            ex = center_and_scale(ex)
-            for _ in range(self.copies_per_protein):
-                processed.append(random_se3_augment(ex) if self.augment else ex)
+        # `copies_per_protein` is SimpleFold's `multiplicity`: the same protein
+        # enters the step several times, each copy with its own rotation,
+        # translation, time and noise. Everything else about the copies —
+        # sequence, atom typing, masks, chain indexing, the PLM embedding — is
+        # identical, so it is written once per protein rather than once per row.
+        copies = self.copies_per_protein
+        base = [center_and_scale(ex) for ex in examples]
+        processed = [
+            random_se3_augment(ex) if self.augment else ex
+            for ex in base
+            for _ in range(copies)
+        ]
 
         B = len(processed)
         batch_max = max(ex.seq_len for ex in processed)
@@ -77,27 +88,43 @@ class ProteinCollator:
         eps = torch.zeros(B, max_L, A, 3)
         t = torch.zeros(B, 1, 1, 1)
 
+        # Copy-invariant fields: one slice assignment per protein, broadcast
+        # across that protein's block of rows.
+        for j, ex in enumerate(base):
+            lo, hi = j * copies, (j + 1) * copies
+            L = ex.seq_len
+            res_type[lo:hi, :L] = ex.res_type
+            res_seq_nums[lo:hi, :L] = ex.res_seq_nums
+            atom_type[lo:hi, :L] = ex.atom_type
+            pair_type[lo:hi, :L] = ex.pair_type
+            res_mask[lo:hi, :L] = True
+            atom_mask[lo:hi, :L] = ex.atom_mask
+            valid_mask[lo:hi, :L] = ex.atom_mask & ex.observed_mask
+            ca_mask[lo:hi, :L] = ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID]
+            chain_id[lo:hi, :L] = ex.chain_id
+            entity_id[lo:hi, :L] = ex.entity_id
+            sym_id[lo:hi, :L] = ex.sym_id
+            is_nterm[lo:hi, :L] = ex.is_nterm
+            is_cterm[lo:hi, :L] = ex.is_cterm
+
+        # Per-copy fields: the augmented coordinates and an independent draw of
+        # (t, noise) for each.
         for i, ex in enumerate(processed):
             L = ex.seq_len
-            res_type[i, :L] = ex.res_type
-            res_seq_nums[i, :L] = ex.res_seq_nums
-            atom_type[i, :L] = ex.atom_type
-            pair_type[i, :L] = ex.pair_type
-            res_mask[i, :L] = True
-            atom_mask[i, :L] = ex.atom_mask
-            valid_mask[i, :L] = ex.atom_mask & ex.observed_mask
-            ca_mask[i, :L] = ex.atom_mask[:, CA_ATOM_ID] & ex.observed_mask[:, CA_ATOM_ID]
-            chain_id[i, :L] = ex.chain_id
-            entity_id[i, :L] = ex.entity_id
-            sym_id[i, :L] = ex.sym_id
-            is_nterm[i, :L] = ex.is_nterm
-            is_cterm[i, :L] = ex.is_cterm
             x_clean[i, :L] = ex.coords
 
+            # `atom_mask`, not `atom_mask & observed_mask`. SimpleFold draws
+            # `torch.randn_like(coords)` and interpolates with no resolved-atom
+            # masking at all; only the loss takes `atom_resolved_mask`. Masking
+            # here instead left every unresolved slot at exactly zero — a
+            # constant that no real atom takes and that never occurs at
+            # inference, where each atom starts from noise. Padding slots stay
+            # zero either way, which is what `atom_mask` is for.
             xt, ep, ti = flow_corrupt(
                 ex.coords,
-                ex.atom_mask & ex.observed_mask,
+                ex.atom_mask,
                 self.t_schedule,
+                self.t_uniform_weight,
             )
             x_t[i, :L] = xt
             eps[i, :L] = ep
@@ -105,7 +132,7 @@ class ProteinCollator:
 
         # ESM embeddings from pre-computed dataset
         esm = None
-        esm_list = [ex.esm for ex in processed]
+        esm_list = [ex.esm for ex in base]
         if all(e is not None and e.shape[0] > 0 for e in esm_list):
             d_esm = esm_list[0].shape[-1]
             # Preserve the cache dtype through collation and host-to-device
@@ -116,10 +143,21 @@ class ProteinCollator:
             esm_dtype = esm_list[0].dtype
             for embedding in esm_list[1:]:
                 esm_dtype = torch.promote_types(esm_dtype, embedding.dtype)
-            esm = torch.zeros(B, max_L, d_esm, dtype=esm_dtype)
-            for i, ex in enumerate(processed):
+            # Every copy of a protein carries the same embedding, so when the
+            # whole batch is one protein the tensor is emitted with a single
+            # row and the model broadcasts it. At d_plm 2560 and L 1024 that is
+            # the largest tensor in the batch; sending 16 identical copies over
+            # PCIe, and projecting all 16 to d_plm_proj, is pure waste.
+            rows = 1 if len(base) == 1 and B > 1 else B
+            esm = torch.zeros(rows, max_L, d_esm, dtype=esm_dtype)
+            if rows == 1:
+                ex = base[0]
                 n = min(ex.seq_len, ex.esm.shape[0], max_L)
-                esm[i, :n] = ex.esm[:n]
+                esm[0, :n] = ex.esm[:n]
+            else:
+                for i, ex in enumerate(processed):
+                    n = min(ex.seq_len, ex.esm.shape[0], max_L)
+                    esm[i, :n] = ex.esm[:n]
 
         return ProteinBatch(
             res_type=res_type,
