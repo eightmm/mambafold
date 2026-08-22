@@ -280,6 +280,17 @@ PYTHONPATH=src python scripts/train.py --config configs/run_a_mamba.yaml
 4. **No transformer control arm** — cancelled 2026-08-21 on cost.
 5. **Crop**: one fixed 1024. No schedule.
 
+## The geometric fine-tune is load-bearing
+
+It was recorded as a phase that "may or may not happen". The measurements say it
+has to. lDDT is the only term in the main run that sees bond-scale geometry — a
+1.5 A bond is 0.19-0.39% of the FM target's variance — and its gradient scales
+with `(1-t)`, so under `alpha_mode: const` the 31.5% of draws above t = 0.8
+carry 9.8% of it. The main run therefore learns global structure and leaves
+stereochemistry to the fine-tune, which is SimpleFold's split and is why `const`
+stays. Skipping the fine-tune means shipping a model whose bonds were never
+directly supervised.
+
 ## Validated on GPU (2026-08-22, jobs 57848 / 57856 / 57859)
 
 Everything here is measured. Nothing in this section is an estimate.

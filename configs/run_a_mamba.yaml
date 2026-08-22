@@ -58,6 +58,20 @@ min_obs_ratio: 0.0
 # ── Crop ────────────────────────────────────────────────────────────────────
 # One fixed crop, no schedule. At 1024 the corpus is essentially fully covered:
 # 98.85% of chains fit whole and 98.4% of all residues are inside the crop.
+#
+# 1024 is a CEILING, not the length of a step. `length_bin` below pads each
+# batch up to a multiple of 64 above its own longest sequence and only then
+# clamps to this value, so the tensor a step actually runs is its bucket's
+# length. Measured over the built index, batches land at roughly:
+#
+#     ~128  23% / 15%      ~384  23% / 26%      ~768   6% /  9%
+#     ~256  35% / 30%      ~512  10% / 16%      ~1024  3% /  3%     (rcsb / afdb)
+#
+# So about 3% of steps run at 1024 and the modal step is 256. Padding every
+# batch to 1024 instead would waste 73.7% of the residue axis, which is the
+# `padding_waste_at_fixed_crop` figure in data/audit/loader_caches.json. "One
+# fixed crop" is about there being no 256 -> 512 -> 1024 curriculum, not about
+# every tensor being 1024 wide.
 max_length: 1024
 
 # Bucketing stays on, for a different reason than intra-batch padding — at
@@ -213,7 +227,27 @@ bimamba_share: false
 # training phase on top of a frozen folding model and is not part of this model.
 w_fm: 1.0
 w_lddt_atom: 1.0
-alpha_mode: const           # SimpleFold pretraining; switch to ramp only for fine-tuning
+# `const` for the main run, and that is a decision with a consequence worth
+# stating rather than a default.
+#
+# lDDT is the only term that sees bond-scale geometry: the FM target is
+# `x1 - eps`, and a 1.5 A bond is 0.19-0.39% of that target's variance, so
+# getting every bond right moves the FM loss by well under a percent. But the
+# reconstruction lDDT scores is `x_hat = x_t + (1-t)*v`, so `d lDDT / d v`
+# scales with `(1-t)` and vanishes exactly where the structure is nearly
+# resolved and fine geometry is learnable. Sampled 400k times from this config's
+# schedule: t > 0.8 is 31.5% of draws and carries 9.8% of lDDT's gradient mass
+# under `const`, against 23.1% under `ramp`.
+#
+# That is not a defect, it is the two-phase split: the main run learns global
+# structure, and the geometric fine-tune — `alpha_mode: ramp` plus the geometry
+# losses — is where stereochemistry comes from. `ramp` here would also fight the
+# clipping, since grad norms already run 4-6 against `grad_clip: 2.0`.
+#
+# The consequence: the geometric fine-tune is load-bearing, not optional. A run
+# that stops after this phase should be expected to place atoms with poor bond
+# geometry, and `scripts/rollout.py`'s reference-free report is what will say so.
+alpha_mode: const
 use_rigid_align: true
 lddt_cutoff_A: 15.0
 lddt_pair_chunk_size: 512   # bounds workspace, not the exact atom set
