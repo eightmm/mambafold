@@ -5,7 +5,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=48
 #SBATCH --mem=200G
-#SBATCH --time=30-00:00:00
+#SBATCH --qos=verylong
+#SBATCH --time=7-00:00:00
 #SBATCH --signal=B:USR1@300
 #SBATCH --output=logs/slurm/mf-train-%j.out
 #SBATCH --error=logs/slurm/mf-train-%j.out
@@ -38,6 +39,21 @@
 # 4.89 GiB + 2.538 MiB/residue (job 57848), and `copies 8 x 1024` = 8,192
 # residues projects to 28.2 GiB per rank once the EMA copy and DDP's gradient
 # buckets are added — 59% of a 47.4 GiB card.
+#
+# qos verylong / time 7d. The 6000ada partition advertises MaxTime=30 days but
+# the QOS caps it, and a request above the cap does not fail — it sits PENDING
+# with reason QOSMaxWallDurationPerJobLimit forever. The ceilings available to
+# this account are veryshort 4h, short 12h, normal 1d, long 3d, verylong 7d,
+# and verylong allows two concurrent jobs, which is enough to chain a run.
+#
+# 300k steps should fit: extrapolating the A5000 measurement (422 ms at 768
+# residues with the real loss) to a typical 2,560-residue micro-step and two
+# micro-steps per optimiser step puts an Ada step near 850 ms, so about three
+# days. That is an estimate on a card this has never run on, so read the first
+# logged step time and re-plan if it disagrees. If a run needs more than seven
+# days, chain it:
+#
+#   sbatch scripts/slurm_train.sh --resume out/<run>/ckpt_latest.pt
 #
 # signal B:USR1@300 gives the trainer five minutes to checkpoint before the wall
 # clock kills it; scripts/train.py writes .requeue_requested when it catches it.
