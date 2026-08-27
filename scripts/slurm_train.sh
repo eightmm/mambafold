@@ -68,6 +68,21 @@ CONFIG="${MF_CONFIG:-configs/run_a_mamba.yaml}"
 OUT_DIR="${MF_OUT_DIR:-out/run-a-mamba3-1024-atom14}"
 NPROC="${SLURM_GPUS_ON_NODE:-8}"
 
+# PCIe peer-to-peer hangs on these nodes, so NCCL must not choose it. The cards
+# are RTX 6000 Ada: no NVLink, and `nvidia-smi topo -m` on gpu3 shows four PIX
+# pairs (0-1, 2-3, 4-5, 6-7) with everything else NODE across two NUMA domains.
+# NCCL reads those PIX pairs as P2P-capable and then never completes a single
+# collective — job 59157 hung all eight ranks on the first barrier (a 1-element
+# ALLREDUCE, SeqNum=1) until the 120s watchdog fired, with `last completed work:
+# -1`. Probe 59499 separated the variable: P2P off passes at 2, 4 and 8 ranks;
+# SHM off alone still hangs; the rank count is irrelevant. An earlier 2-rank
+# probe passed only because a --gres=gpu:2 allocation exposes no P2P peer at all
+# and NCCL fell back to NET/Socket on its own.
+#
+# The cost is that gradient all-reduce now goes through host memory rather than
+# card to card. That is measured from the first logged step times, not assumed.
+export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
+
 echo "node=$(hostname) job=${SLURM_JOB_ID:-none} gpus=$NPROC cpus=${SLURM_CPUS_PER_TASK:-?}"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
@@ -115,22 +130,48 @@ PYCHECK
 # immediate; it is falling back to gloo unnoticed, because gloo all-reduces
 # 370M parameters over CPU and would stretch this run by days with nothing in
 # the log to say why. So the probe decides, and gloo needs an explicit opt-in.
+#
+# The probe's output is kept. Job 57910 aborted here claiming "NCCL FAILED on
+# gpu3" while a standalone probe on that same node passed all four variants
+# sixty seconds later in twenty-one seconds total. The preflight had discarded
+# both the output and the exit status, so a `timeout` expiry on a cold node was
+# indistinguishable from a segfault — the one distinction the check exists to
+# make. The budget is also no longer 300s: on a cold node the first `import
+# torch` off the shared filesystem is minutes on its own, and that time is
+# charged to the probe rather than to the import. The chain-index check above
+# runs first partly to pay that import once, before the clock starts.
 if [ "${DIST_BACKEND:-nccl}" = "nccl" ] && [ "$NPROC" -gt 1 ]; then
   echo
   echo "=== preflight: NCCL on $(hostname) ==="
-  if timeout 300 "$MFCLEAN_PYTHON" -m torch.distributed.run \
-       --standalone --nproc_per_node=2 benchmarks/probe_nccl.py >/dev/null 2>&1; then
-    echo "  NCCL ok"
-  elif [ "${MF_ALLOW_GLOO:-0}" = "1" ]; then
-    echo "  NCCL FAILED — falling back to gloo because MF_ALLOW_GLOO=1."
-    echo "  Expect gradient all-reduce over CPU on 370M parameters: much slower."
-    export DIST_BACKEND=gloo
+  PROBE_LOG="logs/slurm/mf-train-${SLURM_JOB_ID:-none}-nccl.out"
+  PYTHONFAULTHANDLER=1 timeout "${MF_NCCL_TIMEOUT:-900}" \
+    "$MFCLEAN_PYTHON" -m torch.distributed.run \
+      --standalone --nproc_per_node="$NPROC" --tee 3 \
+      benchmarks/probe_nccl.py >"$PROBE_LOG" 2>&1
+  PROBE_RC=$?
+  if [ "$PROBE_RC" = "0" ]; then
+    echo "  NCCL ok ($NPROC ranks)"
   else
-    echo "  NCCL FAILED on this node. Refusing to start."
-    echo "  Reproduce:  sbatch -p \$PARTITION --gres=gpu:2 scripts/slurm_probe_nccl.sh"
-    echo "  To run anyway on gloo, and accept a much slower run:"
-    echo "      MF_ALLOW_GLOO=1 sbatch scripts/slurm_train.sh"
-    exit 1
+    if [ "$PROBE_RC" = "124" ]; then
+      echo "  probe TIMED OUT after ${MF_NCCL_TIMEOUT:-900}s (rc=124) — not necessarily an"
+      echo "  NCCL fault. Raise it with MF_NCCL_TIMEOUT=<seconds>."
+    else
+      echo "  probe FAILED with rc=$PROBE_RC"
+    fi
+    echo "  --- last 30 lines of $PROBE_LOG ---"
+    tail -30 "$PROBE_LOG" | sed 's/^/  /'
+    echo "  --- end ---"
+    if [ "${MF_ALLOW_GLOO:-0}" = "1" ]; then
+      echo "  Falling back to gloo because MF_ALLOW_GLOO=1."
+      echo "  Expect gradient all-reduce over CPU on 370M parameters: much slower."
+      export DIST_BACKEND=gloo
+    else
+      echo "  Refusing to start."
+      echo "  Reproduce:  sbatch -p \$PARTITION --gres=gpu:2 scripts/slurm_probe_nccl.sh"
+      echo "  To run anyway on gloo, and accept a much slower run:"
+      echo "      MF_ALLOW_GLOO=1 sbatch scripts/slurm_train.sh"
+      exit 1
+    fi
   fi
 fi
 
