@@ -273,11 +273,20 @@ weight_decay: 0.0
 min_lr: 1.0e-6
 ema_decay: 0.999
 t_schedule: logit_normal
-# SimpleFold uses 0.02. Low t is where the fold has to be built out of noise —
-# maximum long-range routing demand and minimum local signal, which is exactly
-# where a scan is weakest — and the logit-normal puts its median at 0.69, so it
-# samples that regime least. A declared deviation, and a modest one: the shape
-# is unchanged, only the floor is widened.
+# SimpleFold uses 0.02 (`simplefold.py:389`); the functional form here is its
+# form exactly, and this constant is the only divergence.
+#
+# It was raised to widen low-t coverage, and it does the reverse. The form is a
+# convex combination, not a mixture: averaging a logit-normal draw against
+# U(0,1) pulls it toward 0.5 and narrows both tails. Measured over 4M draws,
+# P(t<0.1) is 3.44% at w=0.02 and 1.81% at w=0.10 — this run samples the
+# high-noise regime half as often as SimpleFold does, not more often. A true
+# mixture at w=0.10 would give 4.50%.
+#
+# Left at 0.10 deliberately. Changing it mid-run would splice two different time
+# distributions into one optimisation, and the benefit is unmeasured: only the
+# density is known, not its effect on final accuracy. The geometric fine-tune
+# takes `t_schedule: uniform` instead — see PROJECT.md.
 t_uniform_weight: 0.10
 seed: 0
 

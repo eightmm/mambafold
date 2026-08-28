@@ -238,7 +238,9 @@ not materialize a dense differentiable pair matrix.
 ## Evaluation
 
 Two gates, both run. Coverage after exclusions: **CASP14 62/70, CASP15 19/22,
-CASP16 18/21**.
+CASP16 18/21**. CAMEO22 has 68/183 targets admitted by the same full-chain
+gate, but lacks a frozen domain-local gate and is reported as a secondary
+diagnostic rather than a clean-generalization set.
 
 The exact gate alone called CASP14 completely clean and it is not: `T1045s1` is
 a 154-residue prefix of a 157-residue training sequence, invisible to
@@ -290,6 +292,34 @@ carry 9.8% of it. The main run therefore learns global structure and leaves
 stereochemistry to the fine-tune, which is SimpleFold's split and is why `const`
 stays. Skipping the fine-tune means shipping a model whose bonds were never
 directly supervised.
+
+### Its time schedule is `uniform`, paired with `ramp`
+
+Decided 2026-08-28. The main run samples `t` from SimpleFold's convex form with
+`t_uniform_weight: 0.10`, which — measured, not assumed — puts only 1.8% of
+draws below t = 0.1 and 4.4% of lDDT's gradient mass there. Raising that
+constant from SimpleFold's 0.02 was meant to widen the low-t floor and narrows
+it instead, because averaging against `U(0,1)` shrinks both tails rather than
+fattening the left one.
+
+The fine-tune uses `t_schedule: uniform` rather than a repaired mixture: it is
+already implemented, it removes the schedule as a confound, and it needs no new
+sampler. Over 4M draws, against the main run's `logit_normal`/`const`:
+
+| | t<0.1 draws | t<0.1 grad mass | t>0.8 draws | t>0.8 grad mass |
+|---|---|---|---|---|
+| main run, `logit_normal` w=0.10 / `const` | 1.8% | 4.4% | 31.5% | 9.8% |
+| fine-tune, `uniform` / `ramp` | 10.0% | 14.3% | 20.0% | 11.8% |
+
+Low-t exposure rises 5.5x and its gradient mass 3.3x. High t loses draws yet
+*gains* gradient mass, because `ramp` offsets the `(1-t)` decay — which is why
+the two go together. `uniform` with `const` would leave t > 0.8 holding 4.0% of
+the gradient, and that band is where bond-scale error is the residual, so
+`uniform` alone would trade one starved end for the other.
+
+Not yet written as a config. `src/mambafold/losses/` holds only `lddt.py`; the
+bond and clash terms the phase is named for do not exist, and a config naming a
+schedule while silently running without them would be worse than none.
 
 ## Validated on GPU (2026-08-22, jobs 57848 / 57856 / 57859)
 

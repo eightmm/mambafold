@@ -31,8 +31,15 @@ set -a; source config/paths.env; set +a
 mkdir -p logs/slurm
 export PYTHONUNBUFFERED=1
 
-CKPT=out/smoke-ddp-57859/ckpt_latest.pt
-OUT=out/rollout-smoke-${SLURM_JOB_ID:-local}
+# Defaults reproduce the original plumbing smoke. Override to point the same
+# comparison at a real checkpoint — the ODE/SDE split is a property of the
+# sampler, so the script that exercises both is the one to reuse.
+CKPT="${MF_CKPT:-out/smoke-ddp-57859/ckpt_latest.pt}"
+RCONFIG="${MF_CONFIG:-configs/smoke_ddp.yaml}"
+FASTA="${MF_FASTA:-benchmarks/external_testsets/casp16_single_chain_21.fasta}"
+STEPS="${MF_STEPS:-20}"
+LIMIT="${MF_LIMIT:-6}"
+OUT="${MF_OUT:-out/rollout-smoke-${SLURM_JOB_ID:-local}}"
 rc=0
 
 echo "node=$(hostname) job=${SLURM_JOB_ID:-none}"
@@ -40,14 +47,14 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 [ -e "$CKPT" ] || { echo "no smoke checkpoint at $CKPT"; exit 1; }
 
 for method in ode sde; do
-  echo; echo "=== $method, 6 CASP16 targets, 20 steps ==="
+  echo; echo "=== $method, $LIMIT targets from $(basename "$FASTA"), $STEPS steps ==="
   "$MFCLEAN_PYTHON" scripts/rollout.py \
-    --config configs/smoke_ddp.yaml \
+    --config "$RCONFIG" \
     --checkpoint "$CKPT" \
-    --fasta benchmarks/external_testsets/casp16_single_chain_21.fasta \
+    --fasta "$FASTA" \
     --esm_dir data/casp_esmc6b \
     --out_dir "${OUT}-${method}" \
-    --method "$method" --n_steps 20 --limit 6 --max_batch_residues 2048
+    --method "$method" --n_steps "$STEPS" --limit "$LIMIT" --max_batch_residues 2048
   r=$?
   echo "  rc=$r"; [ $r -ne 0 ] && rc=1
 done

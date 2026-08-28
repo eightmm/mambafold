@@ -118,7 +118,7 @@ so the difference is never invisible.
 | Crop size | one fixed 1024, no schedule | SimpleFold's `pdb.yaml` sets `max_tokens: 256` |
 | Crop shape | contiguous sequence window | **SimpleFold crops spatially** — `BoltzCropper` anchors on a resolved token and expands by distance, so its crop can be sequence-discontiguous and can span chains |
 | Validation | none; one `admitted_all` list, fixed steps, last EMA | none — SimpleFold also disables it |
-| Time sampling | `0.98·logit_normal(m=0.8, s=1.7) + 0.02·U(0,1)`, bounded by `t_eps=1e-4` | none — same constants; SimpleFold hardcodes this in `flow_matching_train_step` |
+| Time sampling | `0.90·logit_normal(m=0.8, s=1.7) + 0.10·U(0,1)`, bounded by `t_eps=1e-4` | **the uniform weight is 0.10, SimpleFold's is 0.02** — same functional form and same `m`, `s`, `t_eps` (`simplefold.py:389`), only the mixing constant differs. The intent was to widen low-`t` coverage; measured over 4M draws it does the opposite, because the form is a convex combination and averaging against `U(0,1)` pulls draws toward 0.5: `P(t<0.1)` falls from 3.44% at 0.02 to 1.81% at 0.10. Run A ships with 0.10 and the geometric fine-tune switches to `t_schedule: uniform` instead |
 | lDDT time weight | α(t)=1 in pretraining | none — SimpleFold's `lddt_weight_schedule` is `False` in `configs/experiment/train.yaml`, "set to True in finetuning phase" |
 | Coordinate scale | divide by 16.0 | none — `processor.scale: 16.0`. `ref_scale: 5.0` applies to reference conformers, which this model has no input for |
 | Centering | centroid over every canonical atom slot | none — SimpleFold centres with `atom_pad_mask`, not the resolved mask |
