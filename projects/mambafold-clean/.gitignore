@@ -1,0 +1,34 @@
+# Data is materialised by scripts/setup_mambafold_clean.py as symlink and
+# hard-link farms; it is never tracked.
+/data/
+/outputs/
+# Training and smoke run directories: checkpoints are large binaries and are
+# reproducible from a config plus a seed.
+/out/
+/logs/
+/wandb/
+setup_report*.json
+
+# Environment
+.venv/
+__pycache__/
+*.pyc
+.uv-cache/
+
+# Secrets never enter this repository.
+.env
+*.key
+
+# Machine-specific absolute paths; config/paths.env.example is the tracked template.
+config/paths.env
+
+# Loader-side caches
+.cache/
+
+# Stage 06 rebuilds this in ~2 minutes from the archive.
+data/afdb_swissprot_v4/member_index.json
+
+# Tool caches
+.oms/
+.pytest_cache/
+.ruff_cache/

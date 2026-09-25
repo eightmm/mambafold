@@ -1,0 +1,3661 @@
+{
+  "schema_version": 1,
+  "model": "MambaFold Run A final EMA",
+  "checkpoint_sha256": "8ad6079edff800912e3c6b175e896221344cb4bb6b866bd7b3dd7e474b325f1e",
+  "sampler": {
+    "method": "sde",
+    "steps": 500,
+    "tau": 0.01,
+    "seed": 0
+  },
+  "scorer": "OpenStructure 2.9.1",
+  "datasets": {
+    "casp14": {
+      "full_target_count": 70,
+      "admitted_target_count": 62,
+      "admitted_ids_sha256": "3280798603080db7a4b70c7974c17a35c9bbbb320e12141ea43cf1411a1cae0c",
+      "model_summary_sha256": "4fa0c3b0eccd23e166561a337264147d4f462d8b32413350746675684c65707f",
+      "baseline_summary_sha256": "a3aebac5a4df7e22af0c71072e66f92ef4ee1bbf6704f915899e3f91fe8a0cd3",
+      "model_full_means": {
+        "oligo_gdtts": 0.5264,
+        "oligo_gdtha": 0.3860571428571429,
+        "tm_score": 0.6339285714285714,
+        "lddt": 0.4703571428571428,
+        "bb_lddt": 0.6585428571428571,
+        "rmsd": 9.596
+      },
+      "admitted_means": {
+        "mambafold": {
+          "oligo_gdtts": 0.5106451612903226,
+          "oligo_gdtha": 0.37245161290322576,
+          "tm_score": 0.6147741935483871,
+          "lddt": 0.4523064516129032,
+          "bb_lddt": 0.6469838709677419,
+          "rmsd": 9.75016129032258
+        },
+        "simplefold_360m": {
+          "oligo_gdtts": 0.5710322580645162,
+          "oligo_gdtha": 0.4386935483870968,
+          "tm_score": 0.6567741935483871,
+          "lddt": 0.6189354838709678,
+          "bb_lddt": 0.6979677419354838,
+          "rmsd": 9.580209677419354
+        }
+      },
+      "target_rows": [
+        {
+          "target_id": "t1024",
+          "mambafold": {
+            "target_id": "t1024",
+            "oligo_gdtts": 0.635,
+            "oligo_gdtha": 0.441,
+            "tm_score": 0.79,
+            "lddt": 0.713,
+            "bb_lddt": 0.832,
+            "rmsd": 4.233
+          },
+          "simplefold_360m": {
+            "target_id": "t1024",
+            "oligo_gdtts": 0.67,
+            "oligo_gdtha": 0.467,
+            "tm_score": 0.843,
+            "lddt": 0.798,
+            "bb_lddt": 0.858,
+            "rmsd": 3.741
+          }
+        },
+        {
+          "target_id": "t1026",
+          "mambafold": {
+            "target_id": "t1026",
+            "oligo_gdtts": 0.663,
+            "oligo_gdtha": 0.481,
+            "tm_score": 0.788,
+            "lddt": 0.418,
+            "bb_lddt": 0.581,
+            "rmsd": 11.269
+          },
+          "simplefold_360m": {
+            "target_id": "t1026",
+            "oligo_gdtts": 0.652,
+            "oligo_gdtha": 0.442,
+            "tm_score": 0.805,
+            "lddt": 0.591,
+            "bb_lddt": 0.674,
+            "rmsd": 3.428
+          }
+        },
+        {
+          "target_id": "t1027",
+          "mambafold": {
+            "target_id": "t1027",
+            "oligo_gdtts": 0.223,
+            "oligo_gdtha": 0.126,
+            "tm_score": 0.318,
+            "lddt": 0.107,
+            "bb_lddt": 0.369,
+            "rmsd": 16.563
+          },
+          "simplefold_360m": {
+            "target_id": "t1027",
+            "oligo_gdtts": 0.256,
+            "oligo_gdtha": 0.144,
+            "tm_score": 0.368,
+            "lddt": 0.388,
+            "bb_lddt": 0.435,
+            "rmsd": 14.718
+          }
+        },
+        {
+          "target_id": "t1029",
+          "mambafold": {
+            "target_id": "t1029",
+            "oligo_gdtts": 0.304,
+            "oligo_gdtha": 0.188,
+            "tm_score": 0.393,
+            "lddt": 0.167,
+            "bb_lddt": 0.461,
+            "rmsd": 14.711
+          },
+          "simplefold_360m": {
+            "target_id": "t1029",
+            "oligo_gdtts": 0.476,
+            "oligo_gdtha": 0.284,
+            "tm_score": 0.582,
+            "lddt": 0.465,
+            "bb_lddt": 0.564,
+            "rmsd": 6.999
+          }
+        },
+        {
+          "target_id": "t1030",
+          "mambafold": {
+            "target_id": "t1030",
+            "oligo_gdtts": 0.544,
+            "oligo_gdtha": 0.387,
+            "tm_score": 0.683,
+            "lddt": 0.713,
+            "bb_lddt": 0.844,
+            "rmsd": 6.462
+          },
+          "simplefold_360m": {
+            "target_id": "t1030",
+            "oligo_gdtts": 0.484,
+            "oligo_gdtha": 0.339,
+            "tm_score": 0.625,
+            "lddt": 0.682,
+            "bb_lddt": 0.757,
+            "rmsd": 12.888
+          }
+        },
+        {
+          "target_id": "t1031",
+          "mambafold": {
+            "target_id": "t1031",
+            "oligo_gdtts": 0.221,
+            "oligo_gdtha": 0.147,
+            "tm_score": 0.359,
+            "lddt": 0.193,
+            "bb_lddt": 0.365,
+            "rmsd": 12.877
+          },
+          "simplefold_360m": {
+            "target_id": "t1031",
+            "oligo_gdtts": 0.271,
+            "oligo_gdtha": 0.158,
+            "tm_score": 0.318,
+            "lddt": 0.356,
+            "bb_lddt": 0.404,
+            "rmsd": 12.841
+          }
+        },
+        {
+          "target_id": "t1032",
+          "mambafold": {
+            "target_id": "t1032",
+            "oligo_gdtts": 0.621,
+            "oligo_gdtha": 0.416,
+            "tm_score": 0.723,
+            "lddt": 0.495,
+            "bb_lddt": 0.686,
+            "rmsd": 4.439
+          },
+          "simplefold_360m": {
+            "target_id": "t1032",
+            "oligo_gdtts": 0.653,
+            "oligo_gdtha": 0.494,
+            "tm_score": 0.719,
+            "lddt": 0.701,
+            "bb_lddt": 0.766,
+            "rmsd": 5.132
+          }
+        },
+        {
+          "target_id": "t1033",
+          "mambafold": {
+            "target_id": "t1033",
+            "oligo_gdtts": 0.48,
+            "oligo_gdtha": 0.338,
+            "tm_score": 0.484,
+            "lddt": 0.417,
+            "bb_lddt": 0.625,
+            "rmsd": 8.556
+          },
+          "simplefold_360m": {
+            "target_id": "t1033",
+            "oligo_gdtts": 0.3,
+            "oligo_gdtha": 0.218,
+            "tm_score": 0.34,
+            "lddt": 0.427,
+            "bb_lddt": 0.495,
+            "rmsd": 12.347
+          }
+        },
+        {
+          "target_id": "t1034",
+          "mambafold": {
+            "target_id": "t1034",
+            "oligo_gdtts": 0.894,
+            "oligo_gdtha": 0.748,
+            "tm_score": 0.927,
+            "lddt": 0.719,
+            "bb_lddt": 0.869,
+            "rmsd": 2.235
+          },
+          "simplefold_360m": {
+            "target_id": "t1034",
+            "oligo_gdtts": 0.912,
+            "oligo_gdtha": 0.801,
+            "tm_score": 0.944,
+            "lddt": 0.835,
+            "bb_lddt": 0.905,
+            "rmsd": 1.4
+          }
+        },
+        {
+          "target_id": "t1035",
+          "mambafold": {
+            "target_id": "t1035",
+            "oligo_gdtts": 0.252,
+            "oligo_gdtha": 0.174,
+            "tm_score": 0.358,
+            "lddt": 0.32,
+            "bb_lddt": 0.4,
+            "rmsd": 11.936
+          },
+          "simplefold_360m": {
+            "target_id": "t1035",
+            "oligo_gdtts": 0.304,
+            "oligo_gdtha": 0.206,
+            "tm_score": 0.348,
+            "lddt": 0.367,
+            "bb_lddt": 0.475,
+            "rmsd": 13.017
+          }
+        },
+        {
+          "target_id": "t1037",
+          "mambafold": {
+            "target_id": "t1037",
+            "oligo_gdtts": 0.128,
+            "oligo_gdtha": 0.088,
+            "tm_score": 0.31,
+            "lddt": 0.073,
+            "bb_lddt": 0.336,
+            "rmsd": 18.762
+          },
+          "simplefold_360m": {
+            "target_id": "t1037",
+            "oligo_gdtts": 0.09,
+            "oligo_gdtha": 0.062,
+            "tm_score": 0.273,
+            "lddt": 0.249,
+            "bb_lddt": 0.3,
+            "rmsd": 24.226
+          }
+        },
+        {
+          "target_id": "t1038",
+          "mambafold": {
+            "target_id": "t1038",
+            "oligo_gdtts": 0.27,
+            "oligo_gdtha": 0.188,
+            "tm_score": 0.407,
+            "lddt": 0.149,
+            "bb_lddt": 0.44,
+            "rmsd": 15.92
+          },
+          "simplefold_360m": {
+            "target_id": "t1038",
+            "oligo_gdtts": 0.268,
+            "oligo_gdtha": 0.167,
+            "tm_score": 0.408,
+            "lddt": 0.358,
+            "bb_lddt": 0.419,
+            "rmsd": 13.816
+          }
+        },
+        {
+          "target_id": "t1039",
+          "mambafold": {
+            "target_id": "t1039",
+            "oligo_gdtts": 0.256,
+            "oligo_gdtha": 0.175,
+            "tm_score": 0.31,
+            "lddt": 0.221,
+            "bb_lddt": 0.423,
+            "rmsd": 17.787
+          },
+          "simplefold_360m": {
+            "target_id": "t1039",
+            "oligo_gdtts": 0.242,
+            "oligo_gdtha": 0.141,
+            "tm_score": 0.292,
+            "lddt": 0.363,
+            "bb_lddt": 0.43,
+            "rmsd": 14.285
+          }
+        },
+        {
+          "target_id": "t1040",
+          "mambafold": {
+            "target_id": "t1040",
+            "oligo_gdtts": 0.271,
+            "oligo_gdtha": 0.194,
+            "tm_score": 0.353,
+            "lddt": 0.179,
+            "bb_lddt": 0.476,
+            "rmsd": 18.813
+          },
+          "simplefold_360m": {
+            "target_id": "t1040",
+            "oligo_gdtts": 0.248,
+            "oligo_gdtha": 0.179,
+            "tm_score": 0.303,
+            "lddt": 0.375,
+            "bb_lddt": 0.433,
+            "rmsd": 20.231
+          }
+        },
+        {
+          "target_id": "t1041",
+          "mambafold": {
+            "target_id": "t1041",
+            "oligo_gdtts": 0.156,
+            "oligo_gdtha": 0.092,
+            "tm_score": 0.275,
+            "lddt": 0.127,
+            "bb_lddt": 0.348,
+            "rmsd": 20.212
+          },
+          "simplefold_360m": {
+            "target_id": "t1041",
+            "oligo_gdtts": 0.217,
+            "oligo_gdtha": 0.127,
+            "tm_score": 0.372,
+            "lddt": 0.313,
+            "bb_lddt": 0.368,
+            "rmsd": 16.574
+          }
+        },
+        {
+          "target_id": "t1042",
+          "mambafold": {
+            "target_id": "t1042",
+            "oligo_gdtts": 0.132,
+            "oligo_gdtha": 0.079,
+            "tm_score": 0.28,
+            "lddt": 0.109,
+            "bb_lddt": 0.38,
+            "rmsd": 21.391
+          },
+          "simplefold_360m": {
+            "target_id": "t1042",
+            "oligo_gdtts": 0.13,
+            "oligo_gdtha": 0.082,
+            "tm_score": 0.255,
+            "lddt": 0.321,
+            "bb_lddt": 0.377,
+            "rmsd": 25.92
+          }
+        },
+        {
+          "target_id": "t1043",
+          "mambafold": {
+            "target_id": "t1043",
+            "oligo_gdtts": 0.162,
+            "oligo_gdtha": 0.101,
+            "tm_score": 0.306,
+            "lddt": 0.074,
+            "bb_lddt": 0.294,
+            "rmsd": 15.233
+          },
+          "simplefold_360m": {
+            "target_id": "t1043",
+            "oligo_gdtts": 0.164,
+            "oligo_gdtha": 0.113,
+            "tm_score": 0.275,
+            "lddt": 0.252,
+            "bb_lddt": 0.297,
+            "rmsd": 16.887
+          }
+        },
+        {
+          "target_id": "t1045s2",
+          "mambafold": {
+            "target_id": "t1045s2",
+            "oligo_gdtts": 0.791,
+            "oligo_gdtha": 0.595,
+            "tm_score": 0.847,
+            "lddt": 0.623,
+            "bb_lddt": 0.794,
+            "rmsd": 3.409
+          },
+          "simplefold_360m": {
+            "target_id": "t1045s2",
+            "oligo_gdtts": 0.81,
+            "oligo_gdtha": 0.639,
+            "tm_score": 0.86,
+            "lddt": 0.756,
+            "bb_lddt": 0.809,
+            "rmsd": 6.899
+          }
+        },
+        {
+          "target_id": "t1046s1",
+          "mambafold": {
+            "target_id": "t1046s1",
+            "oligo_gdtts": 0.632,
+            "oligo_gdtha": 0.431,
+            "tm_score": 0.604,
+            "lddt": 0.421,
+            "bb_lddt": 0.634,
+            "rmsd": 3.504
+          },
+          "simplefold_360m": {
+            "target_id": "t1046s1",
+            "oligo_gdtts": 0.719,
+            "oligo_gdtha": 0.531,
+            "tm_score": 0.749,
+            "lddt": 0.624,
+            "bb_lddt": 0.721,
+            "rmsd": 3.402
+          }
+        },
+        {
+          "target_id": "t1046s2",
+          "mambafold": {
+            "target_id": "t1046s2",
+            "oligo_gdtts": 0.844,
+            "oligo_gdtha": 0.656,
+            "tm_score": 0.894,
+            "lddt": 0.624,
+            "bb_lddt": 0.816,
+            "rmsd": 1.756
+          },
+          "simplefold_360m": {
+            "target_id": "t1046s2",
+            "oligo_gdtts": 0.817,
+            "oligo_gdtha": 0.647,
+            "tm_score": 0.861,
+            "lddt": 0.654,
+            "bb_lddt": 0.765,
+            "rmsd": 2.352
+          }
+        },
+        {
+          "target_id": "t1047s1",
+          "mambafold": {
+            "target_id": "t1047s1",
+            "oligo_gdtts": 0.39,
+            "oligo_gdtha": 0.241,
+            "tm_score": 0.488,
+            "lddt": 0.443,
+            "bb_lddt": 0.709,
+            "rmsd": 9.238
+          },
+          "simplefold_360m": {
+            "target_id": "t1047s1",
+            "oligo_gdtts": 0.395,
+            "oligo_gdtha": 0.32,
+            "tm_score": 0.447,
+            "lddt": 0.667,
+            "bb_lddt": 0.741,
+            "rmsd": 19.423
+          }
+        },
+        {
+          "target_id": "t1048",
+          "mambafold": {
+            "target_id": "t1048",
+            "oligo_gdtts": 0.877,
+            "oligo_gdtha": 0.707,
+            "tm_score": 0.823,
+            "lddt": 0.786,
+            "bb_lddt": 0.918,
+            "rmsd": 1.939
+          },
+          "simplefold_360m": {
+            "target_id": "t1048",
+            "oligo_gdtts": 0.761,
+            "oligo_gdtha": 0.63,
+            "tm_score": 0.71,
+            "lddt": 0.681,
+            "bb_lddt": 0.832,
+            "rmsd": 6.195
+          }
+        },
+        {
+          "target_id": "t1049",
+          "mambafold": {
+            "target_id": "t1049",
+            "oligo_gdtts": 0.207,
+            "oligo_gdtha": 0.121,
+            "tm_score": 0.35,
+            "lddt": 0.06,
+            "bb_lddt": 0.322,
+            "rmsd": 12.995
+          },
+          "simplefold_360m": {
+            "target_id": "t1049",
+            "oligo_gdtts": 0.841,
+            "oligo_gdtha": 0.67,
+            "tm_score": 0.886,
+            "lddt": 0.76,
+            "bb_lddt": 0.807,
+            "rmsd": 2.756
+          }
+        },
+        {
+          "target_id": "t1050",
+          "mambafold": {
+            "target_id": "t1050",
+            "oligo_gdtts": 0.492,
+            "oligo_gdtha": 0.343,
+            "tm_score": 0.709,
+            "lddt": 0.528,
+            "bb_lddt": 0.816,
+            "rmsd": 7.935
+          },
+          "simplefold_360m": {
+            "target_id": "t1050",
+            "oligo_gdtts": 0.692,
+            "oligo_gdtha": 0.474,
+            "tm_score": 0.925,
+            "lddt": 0.709,
+            "bb_lddt": 0.842,
+            "rmsd": 2.991
+          }
+        },
+        {
+          "target_id": "t1052",
+          "mambafold": {
+            "target_id": "t1052",
+            "oligo_gdtts": 0.358,
+            "oligo_gdtha": 0.269,
+            "tm_score": 0.482,
+            "lddt": 0.499,
+            "bb_lddt": 0.679,
+            "rmsd": 27.917
+          },
+          "simplefold_360m": {
+            "target_id": "t1052",
+            "oligo_gdtts": 0.38,
+            "oligo_gdtha": 0.272,
+            "tm_score": 0.566,
+            "lddt": 0.568,
+            "bb_lddt": 0.742,
+            "rmsd": 22.069
+          }
+        },
+        {
+          "target_id": "t1053",
+          "mambafold": {
+            "target_id": "t1053",
+            "oligo_gdtts": 0.31,
+            "oligo_gdtha": 0.201,
+            "tm_score": 0.489,
+            "lddt": 0.149,
+            "bb_lddt": 0.509,
+            "rmsd": 22.294
+          },
+          "simplefold_360m": {
+            "target_id": "t1053",
+            "oligo_gdtts": 0.313,
+            "oligo_gdtha": 0.208,
+            "tm_score": 0.539,
+            "lddt": 0.424,
+            "bb_lddt": 0.5,
+            "rmsd": 20.146
+          }
+        },
+        {
+          "target_id": "t1054",
+          "mambafold": {
+            "target_id": "t1054",
+            "oligo_gdtts": 0.823,
+            "oligo_gdtha": 0.668,
+            "tm_score": 0.855,
+            "lddt": 0.762,
+            "bb_lddt": 0.863,
+            "rmsd": 4.461
+          },
+          "simplefold_360m": {
+            "target_id": "t1054",
+            "oligo_gdtts": 0.897,
+            "oligo_gdtha": 0.829,
+            "tm_score": 0.894,
+            "lddt": 0.864,
+            "bb_lddt": 0.921,
+            "rmsd": 4.675
+          }
+        },
+        {
+          "target_id": "t1055",
+          "mambafold": {
+            "target_id": "t1055",
+            "oligo_gdtts": 0.303,
+            "oligo_gdtha": 0.201,
+            "tm_score": 0.432,
+            "lddt": 0.251,
+            "bb_lddt": 0.395,
+            "rmsd": 11.296
+          },
+          "simplefold_360m": {
+            "target_id": "t1055",
+            "oligo_gdtts": 0.809,
+            "oligo_gdtha": 0.617,
+            "tm_score": 0.863,
+            "lddt": 0.724,
+            "bb_lddt": 0.783,
+            "rmsd": 1.997
+          }
+        },
+        {
+          "target_id": "t1056",
+          "mambafold": {
+            "target_id": "t1056",
+            "oligo_gdtts": 0.72,
+            "oligo_gdtha": 0.541,
+            "tm_score": 0.801,
+            "lddt": 0.442,
+            "bb_lddt": 0.707,
+            "rmsd": 4.235
+          },
+          "simplefold_360m": {
+            "target_id": "t1056",
+            "oligo_gdtts": 0.811,
+            "oligo_gdtha": 0.688,
+            "tm_score": 0.853,
+            "lddt": 0.747,
+            "bb_lddt": 0.815,
+            "rmsd": 3.074
+          }
+        },
+        {
+          "target_id": "t1057",
+          "mambafold": {
+            "target_id": "t1057",
+            "oligo_gdtts": 0.852,
+            "oligo_gdtha": 0.679,
+            "tm_score": 0.927,
+            "lddt": 0.728,
+            "bb_lddt": 0.853,
+            "rmsd": 2.056
+          },
+          "simplefold_360m": {
+            "target_id": "t1057",
+            "oligo_gdtts": 0.892,
+            "oligo_gdtha": 0.764,
+            "tm_score": 0.933,
+            "lddt": 0.824,
+            "bb_lddt": 0.889,
+            "rmsd": 2.58
+          }
+        },
+        {
+          "target_id": "t1058",
+          "mambafold": {
+            "target_id": "t1058",
+            "oligo_gdtts": 0.544,
+            "oligo_gdtha": 0.329,
+            "tm_score": 0.787,
+            "lddt": 0.48,
+            "bb_lddt": 0.747,
+            "rmsd": 4.656
+          },
+          "simplefold_360m": {
+            "target_id": "t1058",
+            "oligo_gdtts": 0.746,
+            "oligo_gdtha": 0.549,
+            "tm_score": 0.906,
+            "lddt": 0.755,
+            "bb_lddt": 0.843,
+            "rmsd": 2.888
+          }
+        },
+        {
+          "target_id": "t1060s2",
+          "mambafold": {
+            "target_id": "t1060s2",
+            "oligo_gdtts": 0.64,
+            "oligo_gdtha": 0.423,
+            "tm_score": 0.837,
+            "lddt": 0.417,
+            "bb_lddt": 0.682,
+            "rmsd": 3.749
+          },
+          "simplefold_360m": {
+            "target_id": "t1060s2",
+            "oligo_gdtts": 0.614,
+            "oligo_gdtha": 0.419,
+            "tm_score": 0.79,
+            "lddt": 0.659,
+            "bb_lddt": 0.753,
+            "rmsd": 6.697
+          }
+        },
+        {
+          "target_id": "t1060s3",
+          "mambafold": {
+            "target_id": "t1060s3",
+            "oligo_gdtts": 0.732,
+            "oligo_gdtha": 0.518,
+            "tm_score": 0.808,
+            "lddt": 0.675,
+            "bb_lddt": 0.775,
+            "rmsd": 2.656
+          },
+          "simplefold_360m": {
+            "target_id": "t1060s3",
+            "oligo_gdtts": 0.833,
+            "oligo_gdtha": 0.64,
+            "tm_score": 0.863,
+            "lddt": 0.753,
+            "bb_lddt": 0.842,
+            "rmsd": 2.385
+          }
+        },
+        {
+          "target_id": "t1061",
+          "mambafold": {
+            "target_id": "t1061",
+            "oligo_gdtts": 0.222,
+            "oligo_gdtha": 0.12,
+            "tm_score": 0.454,
+            "lddt": 0.25,
+            "bb_lddt": 0.537,
+            "rmsd": 27.612
+          },
+          "simplefold_360m": {
+            "target_id": "t1061",
+            "oligo_gdtts": 0.421,
+            "oligo_gdtha": 0.268,
+            "tm_score": 0.663,
+            "lddt": 0.449,
+            "bb_lddt": 0.611,
+            "rmsd": 27.347
+          }
+        },
+        {
+          "target_id": "t1062",
+          "mambafold": {
+            "target_id": "t1062",
+            "oligo_gdtts": 0.821,
+            "oligo_gdtha": 0.693,
+            "tm_score": 0.659,
+            "lddt": 0.713,
+            "bb_lddt": 0.871,
+            "rmsd": 2.094
+          },
+          "simplefold_360m": {
+            "target_id": "t1062",
+            "oligo_gdtts": 0.614,
+            "oligo_gdtha": 0.5,
+            "tm_score": 0.476,
+            "lddt": 0.593,
+            "bb_lddt": 0.667,
+            "rmsd": 6.94
+          }
+        },
+        {
+          "target_id": "t1064",
+          "mambafold": {
+            "target_id": "t1064",
+            "oligo_gdtts": 0.181,
+            "oligo_gdtha": 0.105,
+            "tm_score": 0.271,
+            "lddt": 0.062,
+            "bb_lddt": 0.281,
+            "rmsd": 15.228
+          },
+          "simplefold_360m": {
+            "target_id": "t1064",
+            "oligo_gdtts": 0.529,
+            "oligo_gdtha": 0.358,
+            "tm_score": 0.61,
+            "lddt": 0.497,
+            "bb_lddt": 0.56,
+            "rmsd": 7.043
+          }
+        },
+        {
+          "target_id": "t1065s1",
+          "mambafold": {
+            "target_id": "t1065s1",
+            "oligo_gdtts": 0.838,
+            "oligo_gdtha": 0.641,
+            "tm_score": 0.887,
+            "lddt": 0.736,
+            "bb_lddt": 0.856,
+            "rmsd": 1.832
+          },
+          "simplefold_360m": {
+            "target_id": "t1065s1",
+            "oligo_gdtts": 0.916,
+            "oligo_gdtha": 0.761,
+            "tm_score": 0.934,
+            "lddt": 0.865,
+            "bb_lddt": 0.923,
+            "rmsd": 1.19
+          }
+        },
+        {
+          "target_id": "t1065s2",
+          "mambafold": {
+            "target_id": "t1065s2",
+            "oligo_gdtts": 0.936,
+            "oligo_gdtha": 0.793,
+            "tm_score": 0.939,
+            "lddt": 0.827,
+            "bb_lddt": 0.902,
+            "rmsd": 1.004
+          },
+          "simplefold_360m": {
+            "target_id": "t1065s2",
+            "oligo_gdtts": 0.957,
+            "oligo_gdtha": 0.875,
+            "tm_score": 0.949,
+            "lddt": 0.875,
+            "bb_lddt": 0.942,
+            "rmsd": 1.03
+          }
+        },
+        {
+          "target_id": "t1067",
+          "mambafold": {
+            "target_id": "t1067",
+            "oligo_gdtts": 0.64,
+            "oligo_gdtha": 0.455,
+            "tm_score": 0.77,
+            "lddt": 0.474,
+            "bb_lddt": 0.71,
+            "rmsd": 7.324
+          },
+          "simplefold_360m": {
+            "target_id": "t1067",
+            "oligo_gdtts": 0.558,
+            "oligo_gdtha": 0.451,
+            "tm_score": 0.642,
+            "lddt": 0.55,
+            "bb_lddt": 0.642,
+            "rmsd": 12.72
+          }
+        },
+        {
+          "target_id": "t1068",
+          "mambafold": {
+            "target_id": "t1068",
+            "oligo_gdtts": 0.292,
+            "oligo_gdtha": 0.197,
+            "tm_score": 0.391,
+            "lddt": 0.209,
+            "bb_lddt": 0.406,
+            "rmsd": 12.933
+          },
+          "simplefold_360m": {
+            "target_id": "t1068",
+            "oligo_gdtts": 0.337,
+            "oligo_gdtha": 0.23,
+            "tm_score": 0.521,
+            "lddt": 0.361,
+            "bb_lddt": 0.418,
+            "rmsd": 16.537
+          }
+        },
+        {
+          "target_id": "t1070",
+          "mambafold": {
+            "target_id": "t1070",
+            "oligo_gdtts": 0.317,
+            "oligo_gdtha": 0.246,
+            "tm_score": 0.399,
+            "lddt": 0.621,
+            "bb_lddt": 0.735,
+            "rmsd": 14.963
+          },
+          "simplefold_360m": {
+            "target_id": "t1070",
+            "oligo_gdtts": 0.371,
+            "oligo_gdtha": 0.296,
+            "tm_score": 0.414,
+            "lddt": 0.694,
+            "bb_lddt": 0.765,
+            "rmsd": 24.601
+          }
+        },
+        {
+          "target_id": "t1072s1",
+          "mambafold": {
+            "target_id": "t1072s1",
+            "oligo_gdtts": 0.793,
+            "oligo_gdtha": 0.637,
+            "tm_score": 0.793,
+            "lddt": 0.858,
+            "bb_lddt": 0.998,
+            "rmsd": 1.958
+          },
+          "simplefold_360m": {
+            "target_id": "t1072s1",
+            "oligo_gdtts": 0.801,
+            "oligo_gdtha": 0.626,
+            "tm_score": 0.794,
+            "lddt": 0.859,
+            "bb_lddt": 0.994,
+            "rmsd": 1.891
+          }
+        },
+        {
+          "target_id": "t1073",
+          "mambafold": {
+            "target_id": "t1073",
+            "oligo_gdtts": 0.843,
+            "oligo_gdtha": 0.729,
+            "tm_score": 0.769,
+            "lddt": 0.742,
+            "bb_lddt": 0.867,
+            "rmsd": 2.686
+          },
+          "simplefold_360m": {
+            "target_id": "t1073",
+            "oligo_gdtts": 0.873,
+            "oligo_gdtha": 0.784,
+            "tm_score": 0.808,
+            "lddt": 0.814,
+            "bb_lddt": 0.907,
+            "rmsd": 2.604
+          }
+        },
+        {
+          "target_id": "t1074",
+          "mambafold": {
+            "target_id": "t1074",
+            "oligo_gdtts": 0.343,
+            "oligo_gdtha": 0.199,
+            "tm_score": 0.458,
+            "lddt": 0.226,
+            "bb_lddt": 0.456,
+            "rmsd": 10.178
+          },
+          "simplefold_360m": {
+            "target_id": "t1074",
+            "oligo_gdtts": 0.742,
+            "oligo_gdtha": 0.578,
+            "tm_score": 0.784,
+            "lddt": 0.785,
+            "bb_lddt": 0.847,
+            "rmsd": 2.993
+          }
+        },
+        {
+          "target_id": "t1078",
+          "mambafold": {
+            "target_id": "t1078",
+            "oligo_gdtts": 0.872,
+            "oligo_gdtha": 0.686,
+            "tm_score": 0.89,
+            "lddt": 0.783,
+            "bb_lddt": 0.852,
+            "rmsd": 2.054
+          },
+          "simplefold_360m": {
+            "target_id": "t1078",
+            "oligo_gdtts": 0.87,
+            "oligo_gdtha": 0.694,
+            "tm_score": 0.883,
+            "lddt": 0.84,
+            "bb_lddt": 0.884,
+            "rmsd": 3.055
+          }
+        },
+        {
+          "target_id": "t1079",
+          "mambafold": {
+            "target_id": "t1079",
+            "oligo_gdtts": 0.581,
+            "oligo_gdtha": 0.355,
+            "tm_score": 0.838,
+            "lddt": 0.583,
+            "bb_lddt": 0.773,
+            "rmsd": 3.916
+          },
+          "simplefold_360m": {
+            "target_id": "t1079",
+            "oligo_gdtts": 0.714,
+            "oligo_gdtha": 0.497,
+            "tm_score": 0.913,
+            "lddt": 0.744,
+            "bb_lddt": 0.832,
+            "rmsd": 2.731
+          }
+        },
+        {
+          "target_id": "t1080",
+          "mambafold": {
+            "target_id": "t1080",
+            "oligo_gdtts": 0.677,
+            "oligo_gdtha": 0.481,
+            "tm_score": 0.733,
+            "lddt": 0.759,
+            "bb_lddt": 0.833,
+            "rmsd": 3.671
+          },
+          "simplefold_360m": {
+            "target_id": "t1080",
+            "oligo_gdtts": 0.769,
+            "oligo_gdtha": 0.598,
+            "tm_score": 0.832,
+            "lddt": 0.824,
+            "bb_lddt": 0.876,
+            "rmsd": 2.827
+          }
+        },
+        {
+          "target_id": "t1082",
+          "mambafold": {
+            "target_id": "t1082",
+            "oligo_gdtts": 0.39,
+            "oligo_gdtha": 0.307,
+            "tm_score": 0.424,
+            "lddt": 0.267,
+            "bb_lddt": 0.386,
+            "rmsd": 10.902
+          },
+          "simplefold_360m": {
+            "target_id": "t1082",
+            "oligo_gdtts": 0.94,
+            "oligo_gdtha": 0.797,
+            "tm_score": 0.923,
+            "lddt": 0.86,
+            "bb_lddt": 0.915,
+            "rmsd": 1.1
+          }
+        },
+        {
+          "target_id": "t1083",
+          "mambafold": {
+            "target_id": "t1083",
+            "oligo_gdtts": 0.821,
+            "oligo_gdtha": 0.666,
+            "tm_score": 0.832,
+            "lddt": 0.74,
+            "bb_lddt": 0.903,
+            "rmsd": 2.716
+          },
+          "simplefold_360m": {
+            "target_id": "t1083",
+            "oligo_gdtts": 0.872,
+            "oligo_gdtha": 0.739,
+            "tm_score": 0.872,
+            "lddt": 0.8,
+            "bb_lddt": 0.897,
+            "rmsd": 2.362
+          }
+        },
+        {
+          "target_id": "t1084",
+          "mambafold": {
+            "target_id": "t1084",
+            "oligo_gdtts": 0.915,
+            "oligo_gdtha": 0.817,
+            "tm_score": 0.881,
+            "lddt": 0.897,
+            "bb_lddt": 0.969,
+            "rmsd": 2.885
+          },
+          "simplefold_360m": {
+            "target_id": "t1084",
+            "oligo_gdtts": 0.947,
+            "oligo_gdtha": 0.852,
+            "tm_score": 0.916,
+            "lddt": 0.885,
+            "bb_lddt": 0.989,
+            "rmsd": 1.63
+          }
+        },
+        {
+          "target_id": "t1087",
+          "mambafold": {
+            "target_id": "t1087",
+            "oligo_gdtts": 0.849,
+            "oligo_gdtha": 0.718,
+            "tm_score": 0.857,
+            "lddt": 0.744,
+            "bb_lddt": 0.864,
+            "rmsd": 2.706
+          },
+          "simplefold_360m": {
+            "target_id": "t1087",
+            "oligo_gdtts": 0.833,
+            "oligo_gdtha": 0.699,
+            "tm_score": 0.803,
+            "lddt": 0.801,
+            "bb_lddt": 0.883,
+            "rmsd": 3.248
+          }
+        },
+        {
+          "target_id": "t1088",
+          "mambafold": {
+            "target_id": "t1088",
+            "oligo_gdtts": 0.5,
+            "oligo_gdtha": 0.319,
+            "tm_score": 0.603,
+            "lddt": 0.483,
+            "bb_lddt": 0.62,
+            "rmsd": 6.541
+          },
+          "simplefold_360m": {
+            "target_id": "t1088",
+            "oligo_gdtts": 0.485,
+            "oligo_gdtha": 0.31,
+            "tm_score": 0.534,
+            "lddt": 0.584,
+            "bb_lddt": 0.71,
+            "rmsd": 7.024
+          }
+        },
+        {
+          "target_id": "t1089",
+          "mambafold": {
+            "target_id": "t1089",
+            "oligo_gdtts": 0.791,
+            "oligo_gdtha": 0.599,
+            "tm_score": 0.915,
+            "lddt": 0.594,
+            "bb_lddt": 0.785,
+            "rmsd": 2.751
+          },
+          "simplefold_360m": {
+            "target_id": "t1089",
+            "oligo_gdtts": 0.817,
+            "oligo_gdtha": 0.655,
+            "tm_score": 0.919,
+            "lddt": 0.731,
+            "bb_lddt": 0.807,
+            "rmsd": 2.711
+          }
+        },
+        {
+          "target_id": "t1090",
+          "mambafold": {
+            "target_id": "t1090",
+            "oligo_gdtts": 0.462,
+            "oligo_gdtha": 0.294,
+            "tm_score": 0.635,
+            "lddt": 0.295,
+            "bb_lddt": 0.523,
+            "rmsd": 10.46
+          },
+          "simplefold_360m": {
+            "target_id": "t1090",
+            "oligo_gdtts": 0.869,
+            "oligo_gdtha": 0.708,
+            "tm_score": 0.918,
+            "lddt": 0.813,
+            "bb_lddt": 0.866,
+            "rmsd": 2.122
+          }
+        },
+        {
+          "target_id": "t1091",
+          "mambafold": {
+            "target_id": "t1091",
+            "oligo_gdtts": 0.499,
+            "oligo_gdtha": 0.327,
+            "tm_score": 0.693,
+            "lddt": 0.619,
+            "bb_lddt": 0.8,
+            "rmsd": 6.799
+          },
+          "simplefold_360m": {
+            "target_id": "t1091",
+            "oligo_gdtts": 0.433,
+            "oligo_gdtha": 0.284,
+            "tm_score": 0.613,
+            "lddt": 0.725,
+            "bb_lddt": 0.8,
+            "rmsd": 10.563
+          }
+        },
+        {
+          "target_id": "t1092",
+          "mambafold": {
+            "target_id": "t1092",
+            "oligo_gdtts": 0.413,
+            "oligo_gdtha": 0.229,
+            "tm_score": 0.652,
+            "lddt": 0.523,
+            "bb_lddt": 0.724,
+            "rmsd": 8.122
+          },
+          "simplefold_360m": {
+            "target_id": "t1092",
+            "oligo_gdtts": 0.337,
+            "oligo_gdtha": 0.234,
+            "tm_score": 0.489,
+            "lddt": 0.573,
+            "bb_lddt": 0.649,
+            "rmsd": 14.905
+          }
+        },
+        {
+          "target_id": "t1093",
+          "mambafold": {
+            "target_id": "t1093",
+            "oligo_gdtts": 0.184,
+            "oligo_gdtha": 0.098,
+            "tm_score": 0.396,
+            "lddt": 0.249,
+            "bb_lddt": 0.52,
+            "rmsd": 30.386
+          },
+          "simplefold_360m": {
+            "target_id": "t1093",
+            "oligo_gdtts": 0.186,
+            "oligo_gdtha": 0.1,
+            "tm_score": 0.419,
+            "lddt": 0.397,
+            "bb_lddt": 0.474,
+            "rmsd": 21.779
+          }
+        },
+        {
+          "target_id": "t1094",
+          "mambafold": {
+            "target_id": "t1094",
+            "oligo_gdtts": 0.345,
+            "oligo_gdtha": 0.164,
+            "tm_score": 0.662,
+            "lddt": 0.314,
+            "bb_lddt": 0.606,
+            "rmsd": 7.739
+          },
+          "simplefold_360m": {
+            "target_id": "t1094",
+            "oligo_gdtts": 0.306,
+            "oligo_gdtha": 0.168,
+            "tm_score": 0.57,
+            "lddt": 0.429,
+            "bb_lddt": 0.499,
+            "rmsd": 14.886
+          }
+        },
+        {
+          "target_id": "t1095",
+          "mambafold": {
+            "target_id": "t1095",
+            "oligo_gdtts": 0.372,
+            "oligo_gdtha": 0.192,
+            "tm_score": 0.709,
+            "lddt": 0.352,
+            "bb_lddt": 0.653,
+            "rmsd": 7.244
+          },
+          "simplefold_360m": {
+            "target_id": "t1095",
+            "oligo_gdtts": 0.327,
+            "oligo_gdtha": 0.187,
+            "tm_score": 0.573,
+            "lddt": 0.501,
+            "bb_lddt": 0.604,
+            "rmsd": 18.661
+          }
+        },
+        {
+          "target_id": "t1096",
+          "mambafold": {
+            "target_id": "t1096",
+            "oligo_gdtts": 0.108,
+            "oligo_gdtha": 0.071,
+            "tm_score": 0.255,
+            "lddt": 0.119,
+            "bb_lddt": 0.436,
+            "rmsd": 28.541
+          },
+          "simplefold_360m": {
+            "target_id": "t1096",
+            "oligo_gdtts": 0.118,
+            "oligo_gdtha": 0.071,
+            "tm_score": 0.241,
+            "lddt": 0.376,
+            "bb_lddt": 0.442,
+            "rmsd": 24.224
+          }
+        },
+        {
+          "target_id": "t1099",
+          "mambafold": {
+            "target_id": "t1099",
+            "oligo_gdtts": 0.202,
+            "oligo_gdtha": 0.144,
+            "tm_score": 0.319,
+            "lddt": 0.203,
+            "bb_lddt": 0.437,
+            "rmsd": 19.687
+          },
+          "simplefold_360m": {
+            "target_id": "t1099",
+            "oligo_gdtts": 0.191,
+            "oligo_gdtha": 0.137,
+            "tm_score": 0.294,
+            "lddt": 0.371,
+            "bb_lddt": 0.466,
+            "rmsd": 20.296
+          }
+        },
+        {
+          "target_id": "t1101",
+          "mambafold": {
+            "target_id": "t1101",
+            "oligo_gdtts": 0.726,
+            "oligo_gdtha": 0.524,
+            "tm_score": 0.835,
+            "lddt": 0.719,
+            "bb_lddt": 0.862,
+            "rmsd": 4.083
+          },
+          "simplefold_360m": {
+            "target_id": "t1101",
+            "oligo_gdtts": 0.604,
+            "oligo_gdtha": 0.421,
+            "tm_score": 0.698,
+            "lddt": 0.768,
+            "bb_lddt": 0.843,
+            "rmsd": 5.974
+          }
+        }
+      ]
+    },
+    "casp15": {
+      "full_target_count": 22,
+      "admitted_target_count": 19,
+      "admitted_ids_sha256": "22b3bc5f252a87d4ca50654e201fb3b88f7b9b4875e53edd8a8a20aae8db1d42",
+      "model_summary_sha256": "2e42185a7a051b895deb50f479a0b6f7fc3434fe6b3d40003f01fa4295e91e0c",
+      "baseline_summary_sha256": "1a09bca9c9851c98ca0eb256752cd734f463f2305e26e98690b2a9adb91c8c52",
+      "model_full_means": {
+        "oligo_gdtts": 0.5878388900921659,
+        "oligo_gdtha": 0.44162990829710613,
+        "tm_score": 0.6788897388013125,
+        "lddt": 0.5519153500455731,
+        "bb_lddt": 0.7599561727051204,
+        "rmsd": 13.50408441416195
+      },
+      "admitted_means": {
+        "mambafold": {
+          "oligo_gdtts": 0.5450696903426531,
+          "oligo_gdtha": 0.4034039364674296,
+          "tm_score": 0.6409790668879082,
+          "lddt": 0.5159270523213714,
+          "bb_lddt": 0.7392746836404116,
+          "rmsd": 15.328699262677539
+        },
+        "simplefold_360m": {
+          "oligo_gdtts": 0.54580088674726,
+          "oligo_gdtha": 0.4230747802477059,
+          "tm_score": 0.6306164655148605,
+          "lddt": 0.658783338494365,
+          "bb_lddt": 0.7448737498771937,
+          "rmsd": 15.87006180479186
+        }
+      },
+      "target_rows": [
+        {
+          "target_id": "t1104",
+          "mambafold": {
+            "target_id": "t1104",
+            "oligo_gdtts": 0.5509999999999999,
+            "oligo_gdtha": 0.382,
+            "tm_score": 0.608,
+            "lddt": 0.372,
+            "bb_lddt": 0.569,
+            "rmsd": 5.867
+          },
+          "simplefold_360m": {
+            "target_id": "t1104",
+            "oligo_gdtts": 0.797,
+            "oligo_gdtha": 0.609,
+            "tm_score": 0.852,
+            "lddt": 0.696,
+            "bb_lddt": 0.7779999999999999,
+            "rmsd": 2.124
+          }
+        },
+        {
+          "target_id": "t1106s1",
+          "mambafold": {
+            "target_id": "t1106s1",
+            "oligo_gdtts": 0.47500000000000003,
+            "oligo_gdtha": 0.363,
+            "tm_score": 0.506,
+            "lddt": 0.31,
+            "bb_lddt": 0.746,
+            "rmsd": 11.809
+          },
+          "simplefold_360m": {
+            "target_id": "t1106s1",
+            "oligo_gdtts": 0.384,
+            "oligo_gdtha": 0.278,
+            "tm_score": 0.416,
+            "lddt": 0.583,
+            "bb_lddt": 0.696,
+            "rmsd": 14.529
+          }
+        },
+        {
+          "target_id": "t1120",
+          "mambafold": {
+            "target_id": "t1120",
+            "oligo_gdtts": 0.7140701754385964,
+            "oligo_gdtha": 0.5295438596491229,
+            "tm_score": 0.7716666666666666,
+            "lddt": 0.6446842105263157,
+            "bb_lddt": 0.8035877192982456,
+            "rmsd": 4.38528947368421
+          },
+          "simplefold_360m": {
+            "target_id": "t1120",
+            "oligo_gdtts": 0.748,
+            "oligo_gdtha": 0.5745701754385966,
+            "tm_score": 0.7809736842105264,
+            "lddt": 0.7421140350877193,
+            "bb_lddt": 0.8270350877192982,
+            "rmsd": 4.009894736842105
+          }
+        },
+        {
+          "target_id": "t1129s2",
+          "mambafold": {
+            "target_id": "t1129s2",
+            "oligo_gdtts": 0.064,
+            "oligo_gdtha": 0.032,
+            "tm_score": 0.24200000000000002,
+            "lddt": 0.026,
+            "bb_lddt": 0.195,
+            "rmsd": 26.471
+          },
+          "simplefold_360m": {
+            "target_id": "t1129s2",
+            "oligo_gdtts": 0.065,
+            "oligo_gdtha": 0.035,
+            "tm_score": 0.314,
+            "lddt": 0.141,
+            "bb_lddt": 0.199,
+            "rmsd": 25.425
+          }
+        },
+        {
+          "target_id": "t1137s1",
+          "mambafold": {
+            "target_id": "t1137s1",
+            "oligo_gdtts": 0.46053846153846156,
+            "oligo_gdtha": 0.32569230769230767,
+            "tm_score": 0.5413076923076924,
+            "lddt": 0.5474615384615384,
+            "bb_lddt": 0.7608461538461538,
+            "rmsd": 25.639769230769232
+          },
+          "simplefold_360m": {
+            "target_id": "t1137s1",
+            "oligo_gdtts": 0.4258461538461538,
+            "oligo_gdtha": 0.33076923076923076,
+            "tm_score": 0.46153846153846156,
+            "lddt": 0.6629230769230768,
+            "bb_lddt": 0.7560769230769231,
+            "rmsd": 22.461230769230767
+          }
+        },
+        {
+          "target_id": "t1137s2",
+          "mambafold": {
+            "target_id": "t1137s2",
+            "oligo_gdtts": 0.4631603498542273,
+            "oligo_gdtha": 0.3445160349854227,
+            "tm_score": 0.4974139941690962,
+            "lddt": 0.6120408163265306,
+            "bb_lddt": 0.8646559766763848,
+            "rmsd": 28.83937900874636
+          },
+          "simplefold_360m": {
+            "target_id": "t1137s2",
+            "oligo_gdtts": 0.4253702623906705,
+            "oligo_gdtha": 0.3369795918367347,
+            "tm_score": 0.4543061224489796,
+            "lddt": 0.7004548104956269,
+            "bb_lddt": 0.8632361516034984,
+            "rmsd": 28.396935860058313
+          }
+        },
+        {
+          "target_id": "t1137s3",
+          "mambafold": {
+            "target_id": "t1137s3",
+            "oligo_gdtts": 0.48970287539936097,
+            "oligo_gdtha": 0.3677156549520767,
+            "tm_score": 0.49089137380191694,
+            "lddt": 0.6173578274760384,
+            "bb_lddt": 0.8961501597444089,
+            "rmsd": 21.151293929712462
+          },
+          "simplefold_360m": {
+            "target_id": "t1137s3",
+            "oligo_gdtts": 0.44482747603833867,
+            "oligo_gdtha": 0.35855271565495206,
+            "tm_score": 0.5113258785942493,
+            "lddt": 0.784670926517572,
+            "bb_lddt": 0.9034760383386582,
+            "rmsd": 25.339718849840253
+          }
+        },
+        {
+          "target_id": "t1137s4",
+          "mambafold": {
+            "target_id": "t1137s4",
+            "oligo_gdtts": 0.3802023529411765,
+            "oligo_gdtha": 0.2966094117647059,
+            "tm_score": 0.4249435294117647,
+            "lddt": 0.32401647058823535,
+            "bb_lddt": 0.7218447058823529,
+            "rmsd": 30.47437176470588
+          },
+          "simplefold_360m": {
+            "target_id": "t1137s4",
+            "oligo_gdtts": 0.40878117647058826,
+            "oligo_gdtha": 0.3292258823529412,
+            "tm_score": 0.4599929411764706,
+            "lddt": 0.6442305882352941,
+            "bb_lddt": 0.7214094117647059,
+            "rmsd": 32.66770117647059
+          }
+        },
+        {
+          "target_id": "t1137s5",
+          "mambafold": {
+            "target_id": "t1137s5",
+            "oligo_gdtts": 0.4374972067039106,
+            "oligo_gdtha": 0.3327234636871509,
+            "tm_score": 0.5114134078212291,
+            "lddt": 0.6516759776536313,
+            "bb_lddt": 0.8264916201117319,
+            "rmsd": 32.99895530726257
+          },
+          "simplefold_360m": {
+            "target_id": "t1137s5",
+            "oligo_gdtts": 0.3732513966480447,
+            "oligo_gdtha": 0.30039106145251393,
+            "tm_score": 0.4053379888268156,
+            "lddt": 0.6855782122905029,
+            "bb_lddt": 0.7749972067039107,
+            "rmsd": 32.70235754189944
+          }
+        },
+        {
+          "target_id": "t1137s6",
+          "mambafold": {
+            "target_id": "t1137s6",
+            "oligo_gdtts": 0.40260651629072686,
+            "oligo_gdtha": 0.3006240601503759,
+            "tm_score": 0.5151152882205514,
+            "lddt": 0.5489949874686716,
+            "bb_lddt": 0.7754436090225564,
+            "rmsd": 28.592872180451128
+          },
+          "simplefold_360m": {
+            "target_id": "t1137s6",
+            "oligo_gdtts": 0.40744611528822056,
+            "oligo_gdtha": 0.3131152882205514,
+            "tm_score": 0.47960401002506264,
+            "lddt": 0.6508847117794487,
+            "bb_lddt": 0.74434335839599,
+            "rmsd": 29.002461152882205
+          }
+        },
+        {
+          "target_id": "t1137s7",
+          "mambafold": {
+            "target_id": "t1137s7",
+            "oligo_gdtts": 0.81,
+            "oligo_gdtha": 0.614,
+            "tm_score": 0.922,
+            "lddt": 0.548,
+            "bb_lddt": 0.853,
+            "rmsd": 2.458
+          },
+          "simplefold_360m": {
+            "target_id": "t1137s7",
+            "oligo_gdtts": 0.758,
+            "oligo_gdtha": 0.606,
+            "tm_score": 0.816,
+            "lddt": 0.693,
+            "bb_lddt": 0.799,
+            "rmsd": 11.714
+          }
+        },
+        {
+          "target_id": "t1137s8",
+          "mambafold": {
+            "target_id": "t1137s8",
+            "oligo_gdtts": 0.877,
+            "oligo_gdtha": 0.683,
+            "tm_score": 0.951,
+            "lddt": 0.834,
+            "bb_lddt": 0.887,
+            "rmsd": 1.396
+          },
+          "simplefold_360m": {
+            "target_id": "t1137s8",
+            "oligo_gdtts": 0.836,
+            "oligo_gdtha": 0.667,
+            "tm_score": 0.931,
+            "lddt": 0.824,
+            "bb_lddt": 0.867,
+            "rmsd": 1.768
+          }
+        },
+        {
+          "target_id": "t1137s9",
+          "mambafold": {
+            "target_id": "t1137s9",
+            "oligo_gdtts": 0.726,
+            "oligo_gdtha": 0.512,
+            "tm_score": 0.879,
+            "lddt": 0.675,
+            "bb_lddt": 0.803,
+            "rmsd": 2.583
+          },
+          "simplefold_360m": {
+            "target_id": "t1137s9",
+            "oligo_gdtts": 0.712,
+            "oligo_gdtha": 0.518,
+            "tm_score": 0.864,
+            "lddt": 0.798,
+            "bb_lddt": 0.849,
+            "rmsd": 2.85
+          }
+        },
+        {
+          "target_id": "t1139",
+          "mambafold": {
+            "target_id": "t1139",
+            "oligo_gdtts": 0.49199999999999994,
+            "oligo_gdtha": 0.366,
+            "tm_score": 0.613,
+            "lddt": 0.43,
+            "bb_lddt": 0.603,
+            "rmsd": 15.176
+          },
+          "simplefold_360m": {
+            "target_id": "t1139",
+            "oligo_gdtts": 0.518,
+            "oligo_gdtha": 0.416,
+            "tm_score": 0.619,
+            "lddt": 0.574,
+            "bb_lddt": 0.65,
+            "rmsd": 14.834
+          }
+        },
+        {
+          "target_id": "t1145",
+          "mambafold": {
+            "target_id": "t1145",
+            "oligo_gdtts": 0.38354617834394905,
+            "oligo_gdtha": 0.27225000000000005,
+            "tm_score": 0.5348503184713376,
+            "lddt": 0.34338216560509555,
+            "bb_lddt": 0.5871990445859873,
+            "rmsd": 21.684355095541402
+          },
+          "simplefold_360m": {
+            "target_id": "t1145",
+            "oligo_gdtts": 0.3636942675159236,
+            "oligo_gdtha": 0.25981687898089173,
+            "tm_score": 0.5176337579617835,
+            "lddt": 0.4990270700636943,
+            "bb_lddt": 0.5640270700636942,
+            "rmsd": 18.321874203821654
+          }
+        },
+        {
+          "target_id": "t1150",
+          "mambafold": {
+            "target_id": "t1150",
+            "oligo_gdtts": 0.711,
+            "oligo_gdtha": 0.49100000000000005,
+            "tm_score": 0.906,
+            "lddt": 0.531,
+            "bb_lddt": 0.76,
+            "rmsd": 2.398
+          },
+          "simplefold_360m": {
+            "target_id": "t1150",
+            "oligo_gdtts": 0.812,
+            "oligo_gdtha": 0.635,
+            "tm_score": 0.926,
+            "lddt": 0.711,
+            "bb_lddt": 0.796,
+            "rmsd": 2.297
+          }
+        },
+        {
+          "target_id": "t1180",
+          "mambafold": {
+            "target_id": "t1180",
+            "oligo_gdtts": 0.58,
+            "oligo_gdtha": 0.473,
+            "tm_score": 0.653,
+            "lddt": 0.7710000000000001,
+            "bb_lddt": 0.859,
+            "rmsd": 16.104
+          },
+          "simplefold_360m": {
+            "target_id": "t1180",
+            "oligo_gdtts": 0.605,
+            "oligo_gdtha": 0.509,
+            "tm_score": 0.659,
+            "lddt": 0.7930000000000001,
+            "bb_lddt": 0.865,
+            "rmsd": 15.455000000000002
+          }
+        },
+        {
+          "target_id": "t1188",
+          "mambafold": {
+            "target_id": "t1188",
+            "oligo_gdtts": 0.615,
+            "oligo_gdtha": 0.46799999999999997,
+            "tm_score": 0.78,
+            "lddt": 0.551,
+            "bb_lddt": 0.779,
+            "rmsd": 10.362
+          },
+          "simplefold_360m": {
+            "target_id": "t1188",
+            "oligo_gdtts": 0.606,
+            "oligo_gdtha": 0.495,
+            "tm_score": 0.711,
+            "lddt": 0.67,
+            "bb_lddt": 0.739,
+            "rmsd": 14.523
+          }
+        },
+        {
+          "target_id": "t1194",
+          "mambafold": {
+            "target_id": "t1194",
+            "oligo_gdtts": 0.724,
+            "oligo_gdtha": 0.511,
+            "tm_score": 0.831,
+            "lddt": 0.4650000000000001,
+            "bb_lddt": 0.756,
+            "rmsd": 2.855
+          },
+          "simplefold_360m": {
+            "target_id": "t1194",
+            "oligo_gdtts": 0.68,
+            "oligo_gdtha": 0.46699999999999997,
+            "tm_score": 0.803,
+            "lddt": 0.664,
+            "bb_lddt": 0.76,
+            "rmsd": 3.11
+          }
+        }
+      ]
+    },
+    "casp16": {
+      "full_target_count": 21,
+      "admitted_target_count": 18,
+      "admitted_ids_sha256": "203806c131069775f8e45b584dacbb698f5bdeae168545d0a23ba843b44128ab",
+      "model_summary_sha256": "61d63a7d55820a1a63c5a36239ec925e9ef56c98fa2c1d17c169ed215c14f7eb",
+      "baseline_summary_sha256": "7ae58c242ebfbd37f187c7ba370d062cadd9c03afcdd9669c80da31db0a56f3f",
+      "model_full_means": {
+        "oligo_gdtts": 0.5312380952380953,
+        "oligo_gdtha": 0.3878095238095238,
+        "tm_score": 0.6576666666666666,
+        "lddt": 0.5153333333333334,
+        "bb_lddt": 0.7049047619047619,
+        "rmsd": 11.643285714285716
+      },
+      "admitted_means": {
+        "mambafold": {
+          "oligo_gdtts": 0.478,
+          "oligo_gdtha": 0.3387777777777778,
+          "tm_score": 0.6105555555555555,
+          "lddt": 0.4735555555555556,
+          "bb_lddt": 0.6761111111111111,
+          "rmsd": 13.275500000000001
+        },
+        "simplefold_360m": {
+          "oligo_gdtts": 0.47272222222222227,
+          "oligo_gdtha": 0.35238888888888886,
+          "tm_score": 0.5866666666666667,
+          "lddt": 0.579388888888889,
+          "bb_lddt": 0.6678888888888889,
+          "rmsd": 15.298277777777779
+        }
+      },
+      "target_rows": [
+        {
+          "target_id": "t1208s1",
+          "mambafold": {
+            "target_id": "t1208s1",
+            "oligo_gdtts": 0.696,
+            "oligo_gdtha": 0.518,
+            "tm_score": 0.82,
+            "lddt": 0.53,
+            "bb_lddt": 0.752,
+            "rmsd": 11.905
+          },
+          "simplefold_360m": {
+            "target_id": "t1208s1",
+            "oligo_gdtts": 0.711,
+            "oligo_gdtha": 0.564,
+            "tm_score": 0.827,
+            "lddt": 0.678,
+            "bb_lddt": 0.772,
+            "rmsd": 11.618
+          }
+        },
+        {
+          "target_id": "t1208s2",
+          "mambafold": {
+            "target_id": "t1208s2",
+            "oligo_gdtts": 0.66,
+            "oligo_gdtha": 0.479,
+            "tm_score": 0.807,
+            "lddt": 0.509,
+            "bb_lddt": 0.743,
+            "rmsd": 7.237
+          },
+          "simplefold_360m": {
+            "target_id": "t1208s2",
+            "oligo_gdtts": 0.723,
+            "oligo_gdtha": 0.55,
+            "tm_score": 0.842,
+            "lddt": 0.655,
+            "bb_lddt": 0.735,
+            "rmsd": 6.43
+          }
+        },
+        {
+          "target_id": "t1212",
+          "mambafold": {
+            "target_id": "t1212",
+            "oligo_gdtts": 0.467,
+            "oligo_gdtha": 0.293,
+            "tm_score": 0.638,
+            "lddt": 0.41,
+            "bb_lddt": 0.676,
+            "rmsd": 19.167
+          },
+          "simplefold_360m": {
+            "target_id": "t1212",
+            "oligo_gdtts": 0.494,
+            "oligo_gdtha": 0.332,
+            "tm_score": 0.696,
+            "lddt": 0.599,
+            "bb_lddt": 0.684,
+            "rmsd": 11.800999999999998
+          }
+        },
+        {
+          "target_id": "t1226",
+          "mambafold": {
+            "target_id": "t1226",
+            "oligo_gdtts": 0.309,
+            "oligo_gdtha": 0.178,
+            "tm_score": 0.367,
+            "lddt": 0.202,
+            "bb_lddt": 0.376,
+            "rmsd": 13.516
+          },
+          "simplefold_360m": {
+            "target_id": "t1226",
+            "oligo_gdtts": 0.377,
+            "oligo_gdtha": 0.254,
+            "tm_score": 0.442,
+            "lddt": 0.412,
+            "bb_lddt": 0.446,
+            "rmsd": 12.484
+          }
+        },
+        {
+          "target_id": "t1228v1",
+          "mambafold": {
+            "target_id": "t1228v1",
+            "oligo_gdtts": 0.388,
+            "oligo_gdtha": 0.269,
+            "tm_score": 0.549,
+            "lddt": 0.631,
+            "bb_lddt": 0.784,
+            "rmsd": 26.743
+          },
+          "simplefold_360m": {
+            "target_id": "t1228v1",
+            "oligo_gdtts": 0.448,
+            "oligo_gdtha": 0.33,
+            "tm_score": 0.571,
+            "lddt": 0.712,
+            "bb_lddt": 0.802,
+            "rmsd": 19.911
+          }
+        },
+        {
+          "target_id": "t1231",
+          "mambafold": {
+            "target_id": "t1231",
+            "oligo_gdtts": 0.213,
+            "oligo_gdtha": 0.13,
+            "tm_score": 0.328,
+            "lddt": 0.082,
+            "bb_lddt": 0.317,
+            "rmsd": 13.734
+          },
+          "simplefold_360m": {
+            "target_id": "t1231",
+            "oligo_gdtts": 0.225,
+            "oligo_gdtha": 0.144,
+            "tm_score": 0.316,
+            "lddt": 0.259,
+            "bb_lddt": 0.339,
+            "rmsd": 14.450999999999999
+          }
+        },
+        {
+          "target_id": "t1239v1",
+          "mambafold": {
+            "target_id": "t1239v1",
+            "oligo_gdtts": 0.321,
+            "oligo_gdtha": 0.213,
+            "tm_score": 0.52,
+            "lddt": 0.52,
+            "bb_lddt": 0.686,
+            "rmsd": 21.697
+          },
+          "simplefold_360m": {
+            "target_id": "t1239v1",
+            "oligo_gdtts": 0.389,
+            "oligo_gdtha": 0.283,
+            "tm_score": 0.529,
+            "lddt": 0.606,
+            "bb_lddt": 0.686,
+            "rmsd": 31.786
+          }
+        },
+        {
+          "target_id": "t1244s1",
+          "mambafold": {
+            "target_id": "t1244s1",
+            "oligo_gdtts": 0.743,
+            "oligo_gdtha": 0.546,
+            "tm_score": 0.828,
+            "lddt": 0.763,
+            "bb_lddt": 0.927,
+            "rmsd": 2.264
+          },
+          "simplefold_360m": {
+            "target_id": "t1244s1",
+            "oligo_gdtts": 0.4769999999999999,
+            "oligo_gdtha": 0.396,
+            "tm_score": 0.487,
+            "lddt": 0.72,
+            "bb_lddt": 0.824,
+            "rmsd": 27.915
+          }
+        },
+        {
+          "target_id": "t1245s1",
+          "mambafold": {
+            "target_id": "t1245s1",
+            "oligo_gdtts": 0.326,
+            "oligo_gdtha": 0.209,
+            "tm_score": 0.495,
+            "lddt": 0.134,
+            "bb_lddt": 0.463,
+            "rmsd": 17.163
+          },
+          "simplefold_360m": {
+            "target_id": "t1245s1",
+            "oligo_gdtts": 0.575,
+            "oligo_gdtha": 0.453,
+            "tm_score": 0.661,
+            "lddt": 0.551,
+            "bb_lddt": 0.636,
+            "rmsd": 15.188
+          }
+        },
+        {
+          "target_id": "t1246",
+          "mambafold": {
+            "target_id": "t1246",
+            "oligo_gdtts": 0.82,
+            "oligo_gdtha": 0.662,
+            "tm_score": 0.865,
+            "lddt": 0.656,
+            "bb_lddt": 0.835,
+            "rmsd": 3.229
+          },
+          "simplefold_360m": {
+            "target_id": "t1246",
+            "oligo_gdtts": 0.799,
+            "oligo_gdtha": 0.673,
+            "tm_score": 0.848,
+            "lddt": 0.75,
+            "bb_lddt": 0.8139999999999998,
+            "rmsd": 6.067
+          }
+        },
+        {
+          "target_id": "t1267s1",
+          "mambafold": {
+            "target_id": "t1267s1",
+            "oligo_gdtts": 0.383,
+            "oligo_gdtha": 0.248,
+            "tm_score": 0.538,
+            "lddt": 0.459,
+            "bb_lddt": 0.654,
+            "rmsd": 16.546
+          },
+          "simplefold_360m": {
+            "target_id": "t1267s1",
+            "oligo_gdtts": 0.34,
+            "oligo_gdtha": 0.225,
+            "tm_score": 0.483,
+            "lddt": 0.6079999999999999,
+            "bb_lddt": 0.6909999999999998,
+            "rmsd": 20.753
+          }
+        },
+        {
+          "target_id": "t1267s2",
+          "mambafold": {
+            "target_id": "t1267s2",
+            "oligo_gdtts": 0.739,
+            "oligo_gdtha": 0.524,
+            "tm_score": 0.918,
+            "lddt": 0.528,
+            "bb_lddt": 0.762,
+            "rmsd": 3.381
+          },
+          "simplefold_360m": {
+            "target_id": "t1267s2",
+            "oligo_gdtts": 0.718,
+            "oligo_gdtha": 0.51,
+            "tm_score": 0.91,
+            "lddt": 0.694,
+            "bb_lddt": 0.782,
+            "rmsd": 3.246
+          }
+        },
+        {
+          "target_id": "t1271s3",
+          "mambafold": {
+            "target_id": "t1271s3",
+            "oligo_gdtts": 0.312,
+            "oligo_gdtha": 0.213,
+            "tm_score": 0.445,
+            "lddt": 0.267,
+            "bb_lddt": 0.513,
+            "rmsd": 27.234
+          },
+          "simplefold_360m": {
+            "target_id": "t1271s3",
+            "oligo_gdtts": 0.326,
+            "oligo_gdtha": 0.23099999999999998,
+            "tm_score": 0.42099999999999993,
+            "lddt": 0.498,
+            "bb_lddt": 0.574,
+            "rmsd": 32.063
+          }
+        },
+        {
+          "target_id": "t1272s4",
+          "mambafold": {
+            "target_id": "t1272s4",
+            "oligo_gdtts": 0.287,
+            "oligo_gdtha": 0.188,
+            "tm_score": 0.445,
+            "lddt": 0.683,
+            "bb_lddt": 0.807,
+            "rmsd": 14.669
+          },
+          "simplefold_360m": {
+            "target_id": "t1272s4",
+            "oligo_gdtts": 0.3,
+            "oligo_gdtha": 0.192,
+            "tm_score": 0.47,
+            "lddt": 0.615,
+            "bb_lddt": 0.825,
+            "rmsd": 13.631
+          }
+        },
+        {
+          "target_id": "t1272s5",
+          "mambafold": {
+            "target_id": "t1272s5",
+            "oligo_gdtts": 0.293,
+            "oligo_gdtha": 0.192,
+            "tm_score": 0.55,
+            "lddt": 0.636,
+            "bb_lddt": 0.78,
+            "rmsd": 16.969
+          },
+          "simplefold_360m": {
+            "target_id": "t1272s5",
+            "oligo_gdtts": 0.295,
+            "oligo_gdtha": 0.187,
+            "tm_score": 0.438,
+            "lddt": 0.624,
+            "bb_lddt": 0.779,
+            "rmsd": 12.839
+          }
+        },
+        {
+          "target_id": "t1276",
+          "mambafold": {
+            "target_id": "t1276",
+            "oligo_gdtts": 0.5,
+            "oligo_gdtha": 0.387,
+            "tm_score": 0.553,
+            "lddt": 0.541,
+            "bb_lddt": 0.761,
+            "rmsd": 11.093
+          },
+          "simplefold_360m": {
+            "target_id": "t1276",
+            "oligo_gdtts": 0.19199999999999998,
+            "oligo_gdtha": 0.144,
+            "tm_score": 0.304,
+            "lddt": 0.321,
+            "bb_lddt": 0.371,
+            "rmsd": 19.538
+          }
+        },
+        {
+          "target_id": "t1284",
+          "mambafold": {
+            "target_id": "t1284",
+            "oligo_gdtts": 0.345,
+            "oligo_gdtha": 0.248,
+            "tm_score": 0.412,
+            "lddt": 0.238,
+            "bb_lddt": 0.477,
+            "rmsd": 10.865
+          },
+          "simplefold_360m": {
+            "target_id": "t1284",
+            "oligo_gdtts": 0.3,
+            "oligo_gdtha": 0.231,
+            "tm_score": 0.421,
+            "lddt": 0.38,
+            "bb_lddt": 0.421,
+            "rmsd": 13.509
+          }
+        },
+        {
+          "target_id": "t1299",
+          "mambafold": {
+            "target_id": "t1299",
+            "oligo_gdtts": 0.802,
+            "oligo_gdtha": 0.601,
+            "tm_score": 0.912,
+            "lddt": 0.735,
+            "bb_lddt": 0.857,
+            "rmsd": 1.547
+          },
+          "simplefold_360m": {
+            "target_id": "t1299",
+            "oligo_gdtts": 0.82,
+            "oligo_gdtha": 0.644,
+            "tm_score": 0.894,
+            "lddt": 0.747,
+            "bb_lddt": 0.8409999999999999,
+            "rmsd": 2.139
+          }
+        }
+      ]
+    },
+    "cameo22": {
+      "full_target_count": 183,
+      "admitted_target_count": 68,
+      "admitted_ids_sha256": "b4a340e583b39ec3805dcde36fcc3c8d703f6615ef0a250649d4b9b27780fd23",
+      "model_summary_sha256": "13b216a1c56d9ab5c15b426dff0de69c3649d9d9c4a891f8de35ac300e85f662",
+      "baseline_summary_sha256": "4d92a370588dcb7da8ba82a7b7b9f7e206e93a656569f378d012c7a54e5686a0",
+      "model_full_means": {
+        "oligo_gdtts": 0.7721311475409837,
+        "oligo_gdtha": 0.6174207650273223,
+        "tm_score": 0.8242896174863388,
+        "lddt": 0.6870491803278689,
+        "bb_lddt": 0.831360655737705,
+        "rmsd": 4.244622950819672
+      },
+      "admitted_means": {
+        "mambafold": {
+          "oligo_gdtts": 0.6538676470588235,
+          "oligo_gdtha": 0.49579411764705883,
+          "tm_score": 0.7061323529411765,
+          "lddt": 0.5771470588235295,
+          "bb_lddt": 0.7596176470588235,
+          "rmsd": 6.498455882352941
+        },
+        "simplefold_360m": {
+          "oligo_gdtts": 0.6640735294117648,
+          "oligo_gdtha": 0.5260441176470588,
+          "tm_score": 0.7090441176470589,
+          "lddt": 0.6931911764705883,
+          "bb_lddt": 0.7728676470588235,
+          "rmsd": 7.579294117647059
+        }
+      },
+      "target_rows": [
+        {
+          "target_id": "7fac_a",
+          "mambafold": {
+            "target_id": "7fac_a",
+            "oligo_gdtts": 0.072,
+            "oligo_gdtha": 0.044,
+            "tm_score": 0.279,
+            "lddt": 0.054,
+            "bb_lddt": 0.291,
+            "rmsd": 23.761
+          },
+          "simplefold_360m": {
+            "target_id": "7fac_a",
+            "oligo_gdtts": 0.08,
+            "oligo_gdtha": 0.048,
+            "tm_score": 0.255,
+            "lddt": 0.293,
+            "bb_lddt": 0.34,
+            "rmsd": 27.204
+          }
+        },
+        {
+          "target_id": "7fgb_a",
+          "mambafold": {
+            "target_id": "7fgb_a",
+            "oligo_gdtts": 0.379,
+            "oligo_gdtha": 0.199,
+            "tm_score": 0.67,
+            "lddt": 0.133,
+            "bb_lddt": 0.407,
+            "rmsd": 7.487
+          },
+          "simplefold_360m": {
+            "target_id": "7fgb_a",
+            "oligo_gdtts": 0.76,
+            "oligo_gdtha": 0.583,
+            "tm_score": 0.881,
+            "lddt": 0.7,
+            "bb_lddt": 0.767,
+            "rmsd": 4.578
+          }
+        },
+        {
+          "target_id": "7lt7_a",
+          "mambafold": {
+            "target_id": "7lt7_a",
+            "oligo_gdtts": 0.243,
+            "oligo_gdtha": 0.136,
+            "tm_score": 0.187,
+            "lddt": 0.422,
+            "bb_lddt": 0.586,
+            "rmsd": 15.76
+          },
+          "simplefold_360m": {
+            "target_id": "7lt7_a",
+            "oligo_gdtts": 0.264,
+            "oligo_gdtha": 0.136,
+            "tm_score": 0.211,
+            "lddt": 0.452,
+            "bb_lddt": 0.507,
+            "rmsd": 13.522
+          }
+        },
+        {
+          "target_id": "7lx4_a",
+          "mambafold": {
+            "target_id": "7lx4_a",
+            "oligo_gdtts": 0.725,
+            "oligo_gdtha": 0.531,
+            "tm_score": 0.567,
+            "lddt": 0.508,
+            "bb_lddt": 0.693,
+            "rmsd": 3.717
+          },
+          "simplefold_360m": {
+            "target_id": "7lx4_a",
+            "oligo_gdtts": 0.762,
+            "oligo_gdtha": 0.581,
+            "tm_score": 0.577,
+            "lddt": 0.649,
+            "bb_lddt": 0.731,
+            "rmsd": 4.244
+          }
+        },
+        {
+          "target_id": "7mj3_a",
+          "mambafold": {
+            "target_id": "7mj3_a",
+            "oligo_gdtts": 0.703,
+            "oligo_gdtha": 0.517,
+            "tm_score": 0.583,
+            "lddt": 0.496,
+            "bb_lddt": 0.665,
+            "rmsd": 4.08
+          },
+          "simplefold_360m": {
+            "target_id": "7mj3_a",
+            "oligo_gdtts": 0.7560000000000001,
+            "oligo_gdtha": 0.587,
+            "tm_score": 0.605,
+            "lddt": 0.64,
+            "bb_lddt": 0.713,
+            "rmsd": 3.0210000000000004
+          }
+        },
+        {
+          "target_id": "7n3y_a",
+          "mambafold": {
+            "target_id": "7n3y_a",
+            "oligo_gdtts": 0.776,
+            "oligo_gdtha": 0.577,
+            "tm_score": 0.912,
+            "lddt": 0.617,
+            "bb_lddt": 0.787,
+            "rmsd": 2.849
+          },
+          "simplefold_360m": {
+            "target_id": "7n3y_a",
+            "oligo_gdtts": 0.69,
+            "oligo_gdtha": 0.544,
+            "tm_score": 0.802,
+            "lddt": 0.642,
+            "bb_lddt": 0.721,
+            "rmsd": 11.665
+          }
+        },
+        {
+          "target_id": "7oju_a",
+          "mambafold": {
+            "target_id": "7oju_a",
+            "oligo_gdtts": 0.759,
+            "oligo_gdtha": 0.568,
+            "tm_score": 0.847,
+            "lddt": 0.613,
+            "bb_lddt": 0.737,
+            "rmsd": 7.471
+          },
+          "simplefold_360m": {
+            "target_id": "7oju_a",
+            "oligo_gdtts": 0.749,
+            "oligo_gdtha": 0.589,
+            "tm_score": 0.8270000000000001,
+            "lddt": 0.686,
+            "bb_lddt": 0.742,
+            "rmsd": 7.873
+          }
+        },
+        {
+          "target_id": "7pc1_a",
+          "mambafold": {
+            "target_id": "7pc1_a",
+            "oligo_gdtts": 0.729,
+            "oligo_gdtha": 0.6,
+            "tm_score": 0.697,
+            "lddt": 0.739,
+            "bb_lddt": 0.834,
+            "rmsd": 6.82
+          },
+          "simplefold_360m": {
+            "target_id": "7pc1_a",
+            "oligo_gdtts": 0.729,
+            "oligo_gdtha": 0.611,
+            "tm_score": 0.71,
+            "lddt": 0.756,
+            "bb_lddt": 0.847,
+            "rmsd": 7.756
+          }
+        },
+        {
+          "target_id": "7pcv_a",
+          "mambafold": {
+            "target_id": "7pcv_a",
+            "oligo_gdtts": 0.657,
+            "oligo_gdtha": 0.509,
+            "tm_score": 0.685,
+            "lddt": 0.652,
+            "bb_lddt": 0.753,
+            "rmsd": 9.381
+          },
+          "simplefold_360m": {
+            "target_id": "7pcv_a",
+            "oligo_gdtts": 0.681,
+            "oligo_gdtha": 0.567,
+            "tm_score": 0.683,
+            "lddt": 0.675,
+            "bb_lddt": 0.773,
+            "rmsd": 9.623
+          }
+        },
+        {
+          "target_id": "7pk5_a",
+          "mambafold": {
+            "target_id": "7pk5_a",
+            "oligo_gdtts": 0.958,
+            "oligo_gdtha": 0.818,
+            "tm_score": 0.981,
+            "lddt": 0.824,
+            "bb_lddt": 0.939,
+            "rmsd": 0.821
+          },
+          "simplefold_360m": {
+            "target_id": "7pk5_a",
+            "oligo_gdtts": 0.9500000000000001,
+            "oligo_gdtha": 0.8310000000000001,
+            "tm_score": 0.978,
+            "lddt": 0.8679999999999999,
+            "bb_lddt": 0.9330000000000002,
+            "rmsd": 0.9500000000000001
+          }
+        },
+        {
+          "target_id": "7pkw_a",
+          "mambafold": {
+            "target_id": "7pkw_a",
+            "oligo_gdtts": 0.439,
+            "oligo_gdtha": 0.359,
+            "tm_score": 0.453,
+            "lddt": 0.621,
+            "bb_lddt": 0.862,
+            "rmsd": 19.98
+          },
+          "simplefold_360m": {
+            "target_id": "7pkw_a",
+            "oligo_gdtts": 0.424,
+            "oligo_gdtha": 0.371,
+            "tm_score": 0.43,
+            "lddt": 0.78,
+            "bb_lddt": 0.867,
+            "rmsd": 18.194
+          }
+        },
+        {
+          "target_id": "7pl4_a",
+          "mambafold": {
+            "target_id": "7pl4_a",
+            "oligo_gdtts": 0.758,
+            "oligo_gdtha": 0.645,
+            "tm_score": 0.628,
+            "lddt": 0.716,
+            "bb_lddt": 0.821,
+            "rmsd": 4.262
+          },
+          "simplefold_360m": {
+            "target_id": "7pl4_a",
+            "oligo_gdtts": 0.839,
+            "oligo_gdtha": 0.718,
+            "tm_score": 0.625,
+            "lddt": 0.744,
+            "bb_lddt": 0.865,
+            "rmsd": 2.374
+          }
+        },
+        {
+          "target_id": "7pl7_a",
+          "mambafold": {
+            "target_id": "7pl7_a",
+            "oligo_gdtts": 0.876,
+            "oligo_gdtha": 0.692,
+            "tm_score": 0.924,
+            "lddt": 0.726,
+            "bb_lddt": 0.869,
+            "rmsd": 1.535
+          },
+          "simplefold_360m": {
+            "target_id": "7pl7_a",
+            "oligo_gdtts": 0.923,
+            "oligo_gdtha": 0.7969999999999999,
+            "tm_score": 0.9489999999999998,
+            "lddt": 0.82,
+            "bb_lddt": 0.9190000000000002,
+            "rmsd": 1.517
+          }
+        },
+        {
+          "target_id": "7pqw_a",
+          "mambafold": {
+            "target_id": "7pqw_a",
+            "oligo_gdtts": 0.53,
+            "oligo_gdtha": 0.36,
+            "tm_score": 0.459,
+            "lddt": 0.385,
+            "bb_lddt": 0.529,
+            "rmsd": 5.905
+          },
+          "simplefold_360m": {
+            "target_id": "7pqw_a",
+            "oligo_gdtts": 0.55,
+            "oligo_gdtha": 0.385,
+            "tm_score": 0.462,
+            "lddt": 0.445,
+            "bb_lddt": 0.522,
+            "rmsd": 6.99
+          }
+        },
+        {
+          "target_id": "7pwe_a",
+          "mambafold": {
+            "target_id": "7pwe_a",
+            "oligo_gdtts": 0.527,
+            "oligo_gdtha": 0.414,
+            "tm_score": 0.567,
+            "lddt": 0.722,
+            "bb_lddt": 0.867,
+            "rmsd": 10.907
+          },
+          "simplefold_360m": {
+            "target_id": "7pwe_a",
+            "oligo_gdtts": 0.635,
+            "oligo_gdtha": 0.457,
+            "tm_score": 0.668,
+            "lddt": 0.8169999999999998,
+            "bb_lddt": 0.903,
+            "rmsd": 4.632
+          }
+        },
+        {
+          "target_id": "7q83_d",
+          "mambafold": {
+            "target_id": "7q83_d",
+            "oligo_gdtts": 0.824,
+            "oligo_gdtha": 0.689,
+            "tm_score": 0.875,
+            "lddt": 0.655,
+            "bb_lddt": 0.874,
+            "rmsd": 4.051
+          },
+          "simplefold_360m": {
+            "target_id": "7q83_d",
+            "oligo_gdtts": 0.87,
+            "oligo_gdtha": 0.763,
+            "tm_score": 0.898,
+            "lddt": 0.828,
+            "bb_lddt": 0.893,
+            "rmsd": 12.237
+          }
+        },
+        {
+          "target_id": "7qau_a",
+          "mambafold": {
+            "target_id": "7qau_a",
+            "oligo_gdtts": 0.728,
+            "oligo_gdtha": 0.528,
+            "tm_score": 0.872,
+            "lddt": 0.581,
+            "bb_lddt": 0.731,
+            "rmsd": 2.876
+          },
+          "simplefold_360m": {
+            "target_id": "7qau_a",
+            "oligo_gdtts": 0.766,
+            "oligo_gdtha": 0.5789999999999998,
+            "tm_score": 0.879,
+            "lddt": 0.665,
+            "bb_lddt": 0.734,
+            "rmsd": 3.58
+          }
+        },
+        {
+          "target_id": "7r08_e",
+          "mambafold": {
+            "target_id": "7r08_e",
+            "oligo_gdtts": 0.479,
+            "oligo_gdtha": 0.302,
+            "tm_score": 0.703,
+            "lddt": 0.451,
+            "bb_lddt": 0.667,
+            "rmsd": 7.262
+          },
+          "simplefold_360m": {
+            "target_id": "7r08_e",
+            "oligo_gdtts": 0.47700000000000004,
+            "oligo_gdtha": 0.355,
+            "tm_score": 0.582,
+            "lddt": 0.598,
+            "bb_lddt": 0.672,
+            "rmsd": 20.685
+          }
+        },
+        {
+          "target_id": "7r3w_d",
+          "mambafold": {
+            "target_id": "7r3w_d",
+            "oligo_gdtts": 0.488,
+            "oligo_gdtha": 0.38,
+            "tm_score": 0.523,
+            "lddt": 0.534,
+            "bb_lddt": 0.841,
+            "rmsd": 23.261
+          },
+          "simplefold_360m": {
+            "target_id": "7r3w_d",
+            "oligo_gdtts": 0.514,
+            "oligo_gdtha": 0.422,
+            "tm_score": 0.558,
+            "lddt": 0.787,
+            "bb_lddt": 0.8710000000000001,
+            "rmsd": 21.815
+          }
+        },
+        {
+          "target_id": "7rmy_a",
+          "mambafold": {
+            "target_id": "7rmy_a",
+            "oligo_gdtts": 0.663,
+            "oligo_gdtha": 0.446,
+            "tm_score": 0.82,
+            "lddt": 0.667,
+            "bb_lddt": 0.773,
+            "rmsd": 3.141
+          },
+          "simplefold_360m": {
+            "target_id": "7rmy_a",
+            "oligo_gdtts": 0.751,
+            "oligo_gdtha": 0.555,
+            "tm_score": 0.897,
+            "lddt": 0.795,
+            "bb_lddt": 0.871,
+            "rmsd": 2.248
+          }
+        },
+        {
+          "target_id": "7roa_a",
+          "mambafold": {
+            "target_id": "7roa_a",
+            "oligo_gdtts": 0.607,
+            "oligo_gdtha": 0.415,
+            "tm_score": 0.681,
+            "lddt": 0.469,
+            "bb_lddt": 0.611,
+            "rmsd": 4.088
+          },
+          "simplefold_360m": {
+            "target_id": "7roa_a",
+            "oligo_gdtts": 0.559,
+            "oligo_gdtha": 0.378,
+            "tm_score": 0.602,
+            "lddt": 0.507,
+            "bb_lddt": 0.555,
+            "rmsd": 6.326
+          }
+        },
+        {
+          "target_id": "7rt7_d",
+          "mambafold": {
+            "target_id": "7rt7_d",
+            "oligo_gdtts": 0.764,
+            "oligo_gdtha": 0.578,
+            "tm_score": 0.846,
+            "lddt": 0.681,
+            "bb_lddt": 0.847,
+            "rmsd": 2.311
+          },
+          "simplefold_360m": {
+            "target_id": "7rt7_d",
+            "oligo_gdtts": 0.497,
+            "oligo_gdtha": 0.314,
+            "tm_score": 0.616,
+            "lddt": 0.546,
+            "bb_lddt": 0.637,
+            "rmsd": 5.989
+          }
+        },
+        {
+          "target_id": "7rup_a",
+          "mambafold": {
+            "target_id": "7rup_a",
+            "oligo_gdtts": 0.881,
+            "oligo_gdtha": 0.762,
+            "tm_score": 0.847,
+            "lddt": 0.728,
+            "bb_lddt": 0.864,
+            "rmsd": 2.289
+          },
+          "simplefold_360m": {
+            "target_id": "7rup_a",
+            "oligo_gdtts": 0.8930000000000001,
+            "oligo_gdtha": 0.775,
+            "tm_score": 0.851,
+            "lddt": 0.83,
+            "bb_lddt": 0.875,
+            "rmsd": 1.8230000000000002
+          }
+        },
+        {
+          "target_id": "7ruq_a",
+          "mambafold": {
+            "target_id": "7ruq_a",
+            "oligo_gdtts": 0.923,
+            "oligo_gdtha": 0.794,
+            "tm_score": 0.882,
+            "lddt": 0.734,
+            "bb_lddt": 0.882,
+            "rmsd": 1.208
+          },
+          "simplefold_360m": {
+            "target_id": "7ruq_a",
+            "oligo_gdtts": 0.952,
+            "oligo_gdtha": 0.855,
+            "tm_score": 0.9199999999999999,
+            "lddt": 0.875,
+            "bb_lddt": 0.9370000000000002,
+            "rmsd": 1.083
+          }
+        },
+        {
+          "target_id": "7s03_a",
+          "mambafold": {
+            "target_id": "7s03_a",
+            "oligo_gdtts": 0.546,
+            "oligo_gdtha": 0.454,
+            "tm_score": 0.516,
+            "lddt": 0.755,
+            "bb_lddt": 0.91,
+            "rmsd": 8.493
+          },
+          "simplefold_360m": {
+            "target_id": "7s03_a",
+            "oligo_gdtts": 0.534,
+            "oligo_gdtha": 0.498,
+            "tm_score": 0.555,
+            "lddt": 0.869,
+            "bb_lddt": 0.94,
+            "rmsd": 9.348
+          }
+        },
+        {
+          "target_id": "7sz2_b",
+          "mambafold": {
+            "target_id": "7sz2_b",
+            "oligo_gdtts": 0.458,
+            "oligo_gdtha": 0.351,
+            "tm_score": 0.493,
+            "lddt": 0.514,
+            "bb_lddt": 0.72,
+            "rmsd": 13.748
+          },
+          "simplefold_360m": {
+            "target_id": "7sz2_b",
+            "oligo_gdtts": 0.44,
+            "oligo_gdtha": 0.354,
+            "tm_score": 0.482,
+            "lddt": 0.632,
+            "bb_lddt": 0.695,
+            "rmsd": 14.375
+          }
+        },
+        {
+          "target_id": "7t5w_b",
+          "mambafold": {
+            "target_id": "7t5w_b",
+            "oligo_gdtts": 0.872,
+            "oligo_gdtha": 0.72,
+            "tm_score": 0.764,
+            "lddt": 0.802,
+            "bb_lddt": 0.9,
+            "rmsd": 2.0
+          },
+          "simplefold_360m": {
+            "target_id": "7t5w_b",
+            "oligo_gdtts": 0.884,
+            "oligo_gdtha": 0.762,
+            "tm_score": 0.7810000000000001,
+            "lddt": 0.801,
+            "bb_lddt": 0.92,
+            "rmsd": 1.8309999999999997
+          }
+        },
+        {
+          "target_id": "7te2_a",
+          "mambafold": {
+            "target_id": "7te2_a",
+            "oligo_gdtts": 0.746,
+            "oligo_gdtha": 0.549,
+            "tm_score": 0.85,
+            "lddt": 0.759,
+            "bb_lddt": 0.868,
+            "rmsd": 2.741
+          },
+          "simplefold_360m": {
+            "target_id": "7te2_a",
+            "oligo_gdtts": 0.7390000000000001,
+            "oligo_gdtha": 0.546,
+            "tm_score": 0.875,
+            "lddt": 0.796,
+            "bb_lddt": 0.867,
+            "rmsd": 2.277
+          }
+        },
+        {
+          "target_id": "7uav_a",
+          "mambafold": {
+            "target_id": "7uav_a",
+            "oligo_gdtts": 0.739,
+            "oligo_gdtha": 0.546,
+            "tm_score": 0.807,
+            "lddt": 0.721,
+            "bb_lddt": 0.868,
+            "rmsd": 2.6
+          },
+          "simplefold_360m": {
+            "target_id": "7uav_a",
+            "oligo_gdtts": 0.47,
+            "oligo_gdtha": 0.383,
+            "tm_score": 0.495,
+            "lddt": 0.59,
+            "bb_lddt": 0.714,
+            "rmsd": 9.458
+          }
+        },
+        {
+          "target_id": "7ux0_a",
+          "mambafold": {
+            "target_id": "7ux0_a",
+            "oligo_gdtts": 0.376,
+            "oligo_gdtha": 0.274,
+            "tm_score": 0.462,
+            "lddt": 0.251,
+            "bb_lddt": 0.451,
+            "rmsd": 11.326
+          },
+          "simplefold_360m": {
+            "target_id": "7ux0_a",
+            "oligo_gdtts": 0.502,
+            "oligo_gdtha": 0.376,
+            "tm_score": 0.567,
+            "lddt": 0.486,
+            "bb_lddt": 0.514,
+            "rmsd": 7.733
+          }
+        },
+        {
+          "target_id": "7uxt_a",
+          "mambafold": {
+            "target_id": "7uxt_a",
+            "oligo_gdtts": 0.657,
+            "oligo_gdtha": 0.433,
+            "tm_score": 0.889,
+            "lddt": 0.684,
+            "bb_lddt": 0.811,
+            "rmsd": 3.127
+          },
+          "simplefold_360m": {
+            "target_id": "7uxt_a",
+            "oligo_gdtts": 0.66,
+            "oligo_gdtha": 0.462,
+            "tm_score": 0.863,
+            "lddt": 0.748,
+            "bb_lddt": 0.822,
+            "rmsd": 3.597
+          }
+        },
+        {
+          "target_id": "7vbo_a",
+          "mambafold": {
+            "target_id": "7vbo_a",
+            "oligo_gdtts": 0.785,
+            "oligo_gdtha": 0.575,
+            "tm_score": 0.893,
+            "lddt": 0.574,
+            "bb_lddt": 0.751,
+            "rmsd": 2.283
+          },
+          "simplefold_360m": {
+            "target_id": "7vbo_a",
+            "oligo_gdtts": 0.862,
+            "oligo_gdtha": 0.717,
+            "tm_score": 0.92,
+            "lddt": 0.764,
+            "bb_lddt": 0.8180000000000001,
+            "rmsd": 2.433
+          }
+        },
+        {
+          "target_id": "7vd7_b",
+          "mambafold": {
+            "target_id": "7vd7_b",
+            "oligo_gdtts": 0.761,
+            "oligo_gdtha": 0.597,
+            "tm_score": 0.602,
+            "lddt": 0.839,
+            "bb_lddt": 0.935,
+            "rmsd": 2.987
+          },
+          "simplefold_360m": {
+            "target_id": "7vd7_b",
+            "oligo_gdtts": 0.381,
+            "oligo_gdtha": 0.312,
+            "tm_score": 0.317,
+            "lddt": 0.584,
+            "bb_lddt": 0.655,
+            "rmsd": 12.868
+          }
+        },
+        {
+          "target_id": "7vf3_b",
+          "mambafold": {
+            "target_id": "7vf3_b",
+            "oligo_gdtts": 0.85,
+            "oligo_gdtha": 0.7,
+            "tm_score": 0.461,
+            "lddt": 0.338,
+            "bb_lddt": 0.796,
+            "rmsd": 1.912
+          },
+          "simplefold_360m": {
+            "target_id": "7vf3_b",
+            "oligo_gdtts": 0.767,
+            "oligo_gdtha": 0.55,
+            "tm_score": 0.521,
+            "lddt": 0.549,
+            "bb_lddt": 0.675,
+            "rmsd": 2.239
+          }
+        },
+        {
+          "target_id": "7vma_a",
+          "mambafold": {
+            "target_id": "7vma_a",
+            "oligo_gdtts": 0.697,
+            "oligo_gdtha": 0.485,
+            "tm_score": 0.883,
+            "lddt": 0.599,
+            "bb_lddt": 0.81,
+            "rmsd": 3.558
+          },
+          "simplefold_360m": {
+            "target_id": "7vma_a",
+            "oligo_gdtts": 0.772,
+            "oligo_gdtha": 0.582,
+            "tm_score": 0.9179999999999999,
+            "lddt": 0.75,
+            "bb_lddt": 0.855,
+            "rmsd": 2.797
+          }
+        },
+        {
+          "target_id": "7vmf_a",
+          "mambafold": {
+            "target_id": "7vmf_a",
+            "oligo_gdtts": 0.924,
+            "oligo_gdtha": 0.758,
+            "tm_score": 0.923,
+            "lddt": 0.752,
+            "bb_lddt": 0.855,
+            "rmsd": 1.201
+          },
+          "simplefold_360m": {
+            "target_id": "7vmf_a",
+            "oligo_gdtts": 0.956,
+            "oligo_gdtha": 0.862,
+            "tm_score": 0.945,
+            "lddt": 0.851,
+            "bb_lddt": 0.912,
+            "rmsd": 1.019
+          }
+        },
+        {
+          "target_id": "7vp3_c",
+          "mambafold": {
+            "target_id": "7vp3_c",
+            "oligo_gdtts": 0.637,
+            "oligo_gdtha": 0.488,
+            "tm_score": 0.547,
+            "lddt": 0.708,
+            "bb_lddt": 0.811,
+            "rmsd": 5.081
+          },
+          "simplefold_360m": {
+            "target_id": "7vp3_c",
+            "oligo_gdtts": 0.698,
+            "oligo_gdtha": 0.577,
+            "tm_score": 0.657,
+            "lddt": 0.705,
+            "bb_lddt": 0.805,
+            "rmsd": 6.175
+          }
+        },
+        {
+          "target_id": "7vp6_d",
+          "mambafold": {
+            "target_id": "7vp6_d",
+            "oligo_gdtts": 0.766,
+            "oligo_gdtha": 0.614,
+            "tm_score": 0.632,
+            "lddt": 0.788,
+            "bb_lddt": 0.863,
+            "rmsd": 2.897
+          },
+          "simplefold_360m": {
+            "target_id": "7vp6_d",
+            "oligo_gdtts": 0.924,
+            "oligo_gdtha": 0.821,
+            "tm_score": 0.847,
+            "lddt": 0.868,
+            "bb_lddt": 0.952,
+            "rmsd": 1.325
+          }
+        },
+        {
+          "target_id": "7vt4_a",
+          "mambafold": {
+            "target_id": "7vt4_a",
+            "oligo_gdtts": 0.722,
+            "oligo_gdtha": 0.534,
+            "tm_score": 0.848,
+            "lddt": 0.708,
+            "bb_lddt": 0.848,
+            "rmsd": 3.696
+          },
+          "simplefold_360m": {
+            "target_id": "7vt4_a",
+            "oligo_gdtts": 0.788,
+            "oligo_gdtha": 0.642,
+            "tm_score": 0.892,
+            "lddt": 0.807,
+            "bb_lddt": 0.874,
+            "rmsd": 3.372
+          }
+        },
+        {
+          "target_id": "7wbn_a",
+          "mambafold": {
+            "target_id": "7wbn_a",
+            "oligo_gdtts": 0.263,
+            "oligo_gdtha": 0.181,
+            "tm_score": 0.267,
+            "lddt": 0.496,
+            "bb_lddt": 0.657,
+            "rmsd": 18.487
+          },
+          "simplefold_360m": {
+            "target_id": "7wbn_a",
+            "oligo_gdtts": 0.265,
+            "oligo_gdtha": 0.179,
+            "tm_score": 0.298,
+            "lddt": 0.536,
+            "bb_lddt": 0.655,
+            "rmsd": 19.013
+          }
+        },
+        {
+          "target_id": "7wf6_a",
+          "mambafold": {
+            "target_id": "7wf6_a",
+            "oligo_gdtts": 0.866,
+            "oligo_gdtha": 0.678,
+            "tm_score": 0.919,
+            "lddt": 0.727,
+            "bb_lddt": 0.863,
+            "rmsd": 1.539
+          },
+          "simplefold_360m": {
+            "target_id": "7wf6_a",
+            "oligo_gdtts": 0.903,
+            "oligo_gdtha": 0.747,
+            "tm_score": 0.94,
+            "lddt": 0.84,
+            "bb_lddt": 0.916,
+            "rmsd": 1.49
+          }
+        },
+        {
+          "target_id": "7wf8_b",
+          "mambafold": {
+            "target_id": "7wf8_b",
+            "oligo_gdtts": 0.781,
+            "oligo_gdtha": 0.594,
+            "tm_score": 0.848,
+            "lddt": 0.779,
+            "bb_lddt": 0.872,
+            "rmsd": 2.044
+          },
+          "simplefold_360m": {
+            "target_id": "7wf8_b",
+            "oligo_gdtts": 0.842,
+            "oligo_gdtha": 0.668,
+            "tm_score": 0.899,
+            "lddt": 0.818,
+            "bb_lddt": 0.883,
+            "rmsd": 1.519
+          }
+        },
+        {
+          "target_id": "7wf9_a",
+          "mambafold": {
+            "target_id": "7wf9_a",
+            "oligo_gdtts": 0.522,
+            "oligo_gdtha": 0.409,
+            "tm_score": 0.547,
+            "lddt": 0.695,
+            "bb_lddt": 0.831,
+            "rmsd": 20.052
+          },
+          "simplefold_360m": {
+            "target_id": "7wf9_a",
+            "oligo_gdtts": 0.533,
+            "oligo_gdtha": 0.431,
+            "tm_score": 0.553,
+            "lddt": 0.758,
+            "bb_lddt": 0.84,
+            "rmsd": 20.322
+          }
+        },
+        {
+          "target_id": "7whf_g",
+          "mambafold": {
+            "target_id": "7whf_g",
+            "oligo_gdtts": 0.437,
+            "oligo_gdtha": 0.357,
+            "tm_score": 0.466,
+            "lddt": 0.614,
+            "bb_lddt": 0.83,
+            "rmsd": 13.619
+          },
+          "simplefold_360m": {
+            "target_id": "7whf_g",
+            "oligo_gdtts": 0.447,
+            "oligo_gdtha": 0.389,
+            "tm_score": 0.477,
+            "lddt": 0.781,
+            "bb_lddt": 0.864,
+            "rmsd": 18.538
+          }
+        },
+        {
+          "target_id": "7wjt_b",
+          "mambafold": {
+            "target_id": "7wjt_b",
+            "oligo_gdtts": 0.883,
+            "oligo_gdtha": 0.792,
+            "tm_score": 0.809,
+            "lddt": 0.87,
+            "bb_lddt": 0.994,
+            "rmsd": 1.828
+          },
+          "simplefold_360m": {
+            "target_id": "7wjt_b",
+            "oligo_gdtts": 0.838,
+            "oligo_gdtha": 0.7,
+            "tm_score": 0.796,
+            "lddt": 0.869,
+            "bb_lddt": 0.994,
+            "rmsd": 2.275
+          }
+        },
+        {
+          "target_id": "7wq5_a",
+          "mambafold": {
+            "target_id": "7wq5_a",
+            "oligo_gdtts": 0.515,
+            "oligo_gdtha": 0.346,
+            "tm_score": 0.63,
+            "lddt": 0.362,
+            "bb_lddt": 0.762,
+            "rmsd": 6.735
+          },
+          "simplefold_360m": {
+            "target_id": "7wq5_a",
+            "oligo_gdtts": 0.504,
+            "oligo_gdtha": 0.413,
+            "tm_score": 0.538,
+            "lddt": 0.707,
+            "bb_lddt": 0.811,
+            "rmsd": 12.944
+          }
+        },
+        {
+          "target_id": "7x15_a",
+          "mambafold": {
+            "target_id": "7x15_a",
+            "oligo_gdtts": 0.128,
+            "oligo_gdtha": 0.089,
+            "tm_score": 0.301,
+            "lddt": 0.087,
+            "bb_lddt": 0.319,
+            "rmsd": 21.049
+          },
+          "simplefold_360m": {
+            "target_id": "7x15_a",
+            "oligo_gdtts": 0.493,
+            "oligo_gdtha": 0.345,
+            "tm_score": 0.649,
+            "lddt": 0.541,
+            "bb_lddt": 0.612,
+            "rmsd": 9.531
+          }
+        },
+        {
+          "target_id": "7y39_b",
+          "mambafold": {
+            "target_id": "7y39_b",
+            "oligo_gdtts": 0.776,
+            "oligo_gdtha": 0.575,
+            "tm_score": 0.831,
+            "lddt": 0.562,
+            "bb_lddt": 0.757,
+            "rmsd": 3.007
+          },
+          "simplefold_360m": {
+            "target_id": "7y39_b",
+            "oligo_gdtts": 0.786,
+            "oligo_gdtha": 0.605,
+            "tm_score": 0.836,
+            "lddt": 0.693,
+            "bb_lddt": 0.769,
+            "rmsd": 2.909
+          }
+        },
+        {
+          "target_id": "7y78_b",
+          "mambafold": {
+            "target_id": "7y78_b",
+            "oligo_gdtts": 0.603,
+            "oligo_gdtha": 0.401,
+            "tm_score": 0.805,
+            "lddt": 0.459,
+            "bb_lddt": 0.729,
+            "rmsd": 4.073
+          },
+          "simplefold_360m": {
+            "target_id": "7y78_b",
+            "oligo_gdtts": 0.632,
+            "oligo_gdtha": 0.463,
+            "tm_score": 0.827,
+            "lddt": 0.711,
+            "bb_lddt": 0.773,
+            "rmsd": 4.537
+          }
+        },
+        {
+          "target_id": "7y8u_e",
+          "mambafold": {
+            "target_id": "7y8u_e",
+            "oligo_gdtts": 0.605,
+            "oligo_gdtha": 0.388,
+            "tm_score": 0.843,
+            "lddt": 0.468,
+            "bb_lddt": 0.665,
+            "rmsd": 3.9
+          },
+          "simplefold_360m": {
+            "target_id": "7y8u_e",
+            "oligo_gdtts": 0.691,
+            "oligo_gdtha": 0.491,
+            "tm_score": 0.916,
+            "lddt": 0.648,
+            "bb_lddt": 0.7150000000000001,
+            "rmsd": 4.23
+          }
+        },
+        {
+          "target_id": "7y9b_a",
+          "mambafold": {
+            "target_id": "7y9b_a",
+            "oligo_gdtts": 0.302,
+            "oligo_gdtha": 0.217,
+            "tm_score": 0.437,
+            "lddt": 0.246,
+            "bb_lddt": 0.446,
+            "rmsd": 15.107
+          },
+          "simplefold_360m": {
+            "target_id": "7y9b_a",
+            "oligo_gdtts": 0.311,
+            "oligo_gdtha": 0.22700000000000004,
+            "tm_score": 0.477,
+            "lddt": 0.433,
+            "bb_lddt": 0.4729999999999999,
+            "rmsd": 13.066
+          }
+        },
+        {
+          "target_id": "7ymo_a",
+          "mambafold": {
+            "target_id": "7ymo_a",
+            "oligo_gdtts": 0.837,
+            "oligo_gdtha": 0.637,
+            "tm_score": 0.931,
+            "lddt": 0.647,
+            "bb_lddt": 0.867,
+            "rmsd": 1.514
+          },
+          "simplefold_360m": {
+            "target_id": "7ymo_a",
+            "oligo_gdtts": 0.83,
+            "oligo_gdtha": 0.6379999999999999,
+            "tm_score": 0.922,
+            "lddt": 0.755,
+            "bb_lddt": 0.857,
+            "rmsd": 1.781
+          }
+        },
+        {
+          "target_id": "7ywq_a",
+          "mambafold": {
+            "target_id": "7ywq_a",
+            "oligo_gdtts": 0.415,
+            "oligo_gdtha": 0.288,
+            "tm_score": 0.37,
+            "lddt": 0.385,
+            "bb_lddt": 0.552,
+            "rmsd": 11.992
+          },
+          "simplefold_360m": {
+            "target_id": "7ywq_a",
+            "oligo_gdtts": 0.472,
+            "oligo_gdtha": 0.339,
+            "tm_score": 0.455,
+            "lddt": 0.43600000000000005,
+            "bb_lddt": 0.509,
+            "rmsd": 12.41
+          }
+        },
+        {
+          "target_id": "7zgi_b",
+          "mambafold": {
+            "target_id": "7zgi_b",
+            "oligo_gdtts": 0.436,
+            "oligo_gdtha": 0.269,
+            "tm_score": 0.629,
+            "lddt": 0.638,
+            "bb_lddt": 0.759,
+            "rmsd": 6.976
+          },
+          "simplefold_360m": {
+            "target_id": "7zgi_b",
+            "oligo_gdtts": 0.471,
+            "oligo_gdtha": 0.293,
+            "tm_score": 0.68,
+            "lddt": 0.728,
+            "bb_lddt": 0.817,
+            "rmsd": 5.699
+          }
+        },
+        {
+          "target_id": "7zty_a",
+          "mambafold": {
+            "target_id": "7zty_a",
+            "oligo_gdtts": 0.76,
+            "oligo_gdtha": 0.547,
+            "tm_score": 0.925,
+            "lddt": 0.718,
+            "bb_lddt": 0.839,
+            "rmsd": 2.063
+          },
+          "simplefold_360m": {
+            "target_id": "7zty_a",
+            "oligo_gdtts": 0.805,
+            "oligo_gdtha": 0.6,
+            "tm_score": 0.917,
+            "lddt": 0.809,
+            "bb_lddt": 0.872,
+            "rmsd": 2.497
+          }
+        },
+        {
+          "target_id": "7zva_a",
+          "mambafold": {
+            "target_id": "7zva_a",
+            "oligo_gdtts": 0.718,
+            "oligo_gdtha": 0.502,
+            "tm_score": 0.883,
+            "lddt": 0.464,
+            "bb_lddt": 0.72,
+            "rmsd": 3.297
+          },
+          "simplefold_360m": {
+            "target_id": "7zva_a",
+            "oligo_gdtts": 0.55,
+            "oligo_gdtha": 0.399,
+            "tm_score": 0.7410000000000001,
+            "lddt": 0.52,
+            "bb_lddt": 0.618,
+            "rmsd": 11.652999999999999
+          }
+        },
+        {
+          "target_id": "8a4a_a",
+          "mambafold": {
+            "target_id": "8a4a_a",
+            "oligo_gdtts": 0.691,
+            "oligo_gdtha": 0.492,
+            "tm_score": 0.817,
+            "lddt": 0.437,
+            "bb_lddt": 0.699,
+            "rmsd": 5.023
+          },
+          "simplefold_360m": {
+            "target_id": "8a4a_a",
+            "oligo_gdtts": 0.686,
+            "oligo_gdtha": 0.496,
+            "tm_score": 0.784,
+            "lddt": 0.618,
+            "bb_lddt": 0.685,
+            "rmsd": 5.229
+          }
+        },
+        {
+          "target_id": "8ag9_a",
+          "mambafold": {
+            "target_id": "8ag9_a",
+            "oligo_gdtts": 0.868,
+            "oligo_gdtha": 0.684,
+            "tm_score": 0.944,
+            "lddt": 0.604,
+            "bb_lddt": 0.842,
+            "rmsd": 2.682
+          },
+          "simplefold_360m": {
+            "target_id": "8ag9_a",
+            "oligo_gdtts": 0.894,
+            "oligo_gdtha": 0.741,
+            "tm_score": 0.953,
+            "lddt": 0.804,
+            "bb_lddt": 0.872,
+            "rmsd": 2.231
+          }
+        },
+        {
+          "target_id": "8b55_a",
+          "mambafold": {
+            "target_id": "8b55_a",
+            "oligo_gdtts": 0.773,
+            "oligo_gdtha": 0.569,
+            "tm_score": 0.893,
+            "lddt": 0.553,
+            "bb_lddt": 0.774,
+            "rmsd": 2.316
+          },
+          "simplefold_360m": {
+            "target_id": "8b55_a",
+            "oligo_gdtts": 0.86,
+            "oligo_gdtha": 0.71,
+            "tm_score": 0.9130000000000001,
+            "lddt": 0.682,
+            "bb_lddt": 0.8509999999999999,
+            "rmsd": 2.693
+          }
+        },
+        {
+          "target_id": "8b73_a",
+          "mambafold": {
+            "target_id": "8b73_a",
+            "oligo_gdtts": 0.807,
+            "oligo_gdtha": 0.617,
+            "tm_score": 0.921,
+            "lddt": 0.672,
+            "bb_lddt": 0.854,
+            "rmsd": 2.344
+          },
+          "simplefold_360m": {
+            "target_id": "8b73_a",
+            "oligo_gdtts": 0.8130000000000001,
+            "oligo_gdtha": 0.636,
+            "tm_score": 0.892,
+            "lddt": 0.819,
+            "bb_lddt": 0.891,
+            "rmsd": 3.389
+          }
+        },
+        {
+          "target_id": "8d03_a",
+          "mambafold": {
+            "target_id": "8d03_a",
+            "oligo_gdtts": 0.569,
+            "oligo_gdtha": 0.442,
+            "tm_score": 0.529,
+            "lddt": 0.417,
+            "bb_lddt": 0.603,
+            "rmsd": 8.173
+          },
+          "simplefold_360m": {
+            "target_id": "8d03_a",
+            "oligo_gdtts": 0.55,
+            "oligo_gdtha": 0.431,
+            "tm_score": 0.503,
+            "lddt": 0.541,
+            "bb_lddt": 0.609,
+            "rmsd": 8.336
+          }
+        },
+        {
+          "target_id": "8d08_d",
+          "mambafold": {
+            "target_id": "8d08_d",
+            "oligo_gdtts": 0.683,
+            "oligo_gdtha": 0.526,
+            "tm_score": 0.553,
+            "lddt": 0.574,
+            "bb_lddt": 0.774,
+            "rmsd": 4.719
+          },
+          "simplefold_360m": {
+            "target_id": "8d08_d",
+            "oligo_gdtts": 0.567,
+            "oligo_gdtha": 0.48499999999999993,
+            "tm_score": 0.529,
+            "lddt": 0.563,
+            "bb_lddt": 0.67,
+            "rmsd": 21.734
+          }
+        },
+        {
+          "target_id": "8d7f_a",
+          "mambafold": {
+            "target_id": "8d7f_a",
+            "oligo_gdtts": 0.607,
+            "oligo_gdtha": 0.422,
+            "tm_score": 0.768,
+            "lddt": 0.414,
+            "bb_lddt": 0.652,
+            "rmsd": 12.366
+          },
+          "simplefold_360m": {
+            "target_id": "8d7f_a",
+            "oligo_gdtts": 0.682,
+            "oligo_gdtha": 0.499,
+            "tm_score": 0.832,
+            "lddt": 0.614,
+            "bb_lddt": 0.696,
+            "rmsd": 6.281
+          }
+        },
+        {
+          "target_id": "8dgg_a",
+          "mambafold": {
+            "target_id": "8dgg_a",
+            "oligo_gdtts": 0.486,
+            "oligo_gdtha": 0.267,
+            "tm_score": 0.747,
+            "lddt": 0.644,
+            "bb_lddt": 0.797,
+            "rmsd": 4.842
+          },
+          "simplefold_360m": {
+            "target_id": "8dgg_a",
+            "oligo_gdtts": 0.375,
+            "oligo_gdtha": 0.268,
+            "tm_score": 0.491,
+            "lddt": 0.733,
+            "bb_lddt": 0.821,
+            "rmsd": 21.405
+          }
+        },
+        {
+          "target_id": "8ds5_a",
+          "mambafold": {
+            "target_id": "8ds5_a",
+            "oligo_gdtts": 0.878,
+            "oligo_gdtha": 0.745,
+            "tm_score": 0.838,
+            "lddt": 0.423,
+            "bb_lddt": 0.95,
+            "rmsd": 1.702
+          },
+          "simplefold_360m": {
+            "target_id": "8ds5_a",
+            "oligo_gdtts": 0.815,
+            "oligo_gdtha": 0.667,
+            "tm_score": 0.816,
+            "lddt": 0.827,
+            "bb_lddt": 0.9160000000000001,
+            "rmsd": 1.928
+          }
+        },
+        {
+          "target_id": "8dt0_a",
+          "mambafold": {
+            "target_id": "8dt0_a",
+            "oligo_gdtts": 0.571,
+            "oligo_gdtha": 0.429,
+            "tm_score": 0.62,
+            "lddt": 0.344,
+            "bb_lddt": 0.577,
+            "rmsd": 12.26
+          },
+          "simplefold_360m": {
+            "target_id": "8dt0_a",
+            "oligo_gdtts": 0.471,
+            "oligo_gdtha": 0.377,
+            "tm_score": 0.624,
+            "lddt": 0.527,
+            "bb_lddt": 0.593,
+            "rmsd": 10.147
+          }
+        },
+        {
+          "target_id": "8dt6_c",
+          "mambafold": {
+            "target_id": "8dt6_c",
+            "oligo_gdtts": 0.791,
+            "oligo_gdtha": 0.587,
+            "tm_score": 0.936,
+            "lddt": 0.772,
+            "bb_lddt": 0.865,
+            "rmsd": 2.64
+          },
+          "simplefold_360m": {
+            "target_id": "8dt6_c",
+            "oligo_gdtts": 0.783,
+            "oligo_gdtha": 0.585,
+            "tm_score": 0.926,
+            "lddt": 0.818,
+            "bb_lddt": 0.886,
+            "rmsd": 2.815
+          }
+        },
+        {
+          "target_id": "8qcw_a",
+          "mambafold": {
+            "target_id": "8qcw_a",
+            "oligo_gdtts": 0.868,
+            "oligo_gdtha": 0.723,
+            "tm_score": 0.952,
+            "lddt": 0.655,
+            "bb_lddt": 0.878,
+            "rmsd": 2.673
+          },
+          "simplefold_360m": {
+            "target_id": "8qcw_a",
+            "oligo_gdtts": 0.84,
+            "oligo_gdtha": 0.704,
+            "tm_score": 0.9299999999999999,
+            "lddt": 0.81,
+            "bb_lddt": 0.874,
+            "rmsd": 4.014
+          }
+        }
+      ]
+    }
+  }
+}
