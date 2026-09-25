@@ -120,6 +120,7 @@ def try_case(cfg: dict, crop: int, batch: int, d_plm: int, steps: int,
         # which is what the config trains. Every number this produced for the
         # current model was therefore wrong.
         model = build_model(cfg, "cuda")
+        result["n_params"] = sum(parameter.numel() for parameter in model.parameters())
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         data = synthetic_batch(batch, crop, d_plm, "cuda")
         # Flow-matching target for the straight interpolant.
@@ -233,7 +234,8 @@ def main() -> int:
                 report["cases"].append(case)
                 print(
                     f"d_res={cfg['d_res']} n_trunk={cfg['n_trunk']} "
-                    f"d_atom={cfg['d_atom']} crop={crop} batch={batch} -> "
+                    f"d_atom={cfg['d_atom']} crop={crop} batch={batch} "
+                    f"params={case.get('n_params', 'unknown')} -> "
                     f"{case['status']} {case.get('peak_alloc_gib', case.get('failure', ''))} "
                     f"{case.get('ms_per_step', '')}",
                     flush=True,

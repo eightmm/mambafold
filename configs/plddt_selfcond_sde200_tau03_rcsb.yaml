@@ -1,0 +1,69 @@
+schema_version: 1
+
+# Full chain-level RCSB confidence corpus. Exact duplicate full sequences are
+# removed before splitting; this is still folding-training data, not a clean
+# external folding benchmark.
+rollout:
+  checkpoint: out/run-a-selfcond-geo-v1/ckpt_0010000.pt
+  expected_checkpoint_step: 10000
+  data_dir: data/rcsb_train
+  esm_dir: data/rcsb_esmc6b
+  conditioning:
+    model: biohub/ESMC-6B
+    revision: 45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a
+    embedding_dimensions: 2560
+  chain_list: data/splits/plddt_rcsb_chain_train.tsv
+  out_dir: out/plddt-selfcond-sde200-tau03-rcsb/rollouts/train
+  device: cuda
+  use_ema: true
+  max_length: 1024
+  min_length: 20
+  min_obs_ratio: 0.0
+  crop_seed: 730019
+  n_seeds: 2
+  seed_offset: 0
+  seed_batch_size: 2
+  length_bin: 64
+  shard_records: 64
+  sampler: sde
+  n_steps: 200
+  sde_tau: 0.3
+  sde_eps: 0.01
+  sde_w_cutoff: 0.99
+  sde_log_timesteps: true
+  filter_invalid_geometry: true
+
+head:
+  d_model: 1024
+  n_bins: 50
+  n_layers: 4
+  n_heads: 16
+  ff_mult: 4
+  dropout: 0.0
+
+data:
+  train_manifests:
+    - out/plddt-selfcond-sde200-tau03-rcsb/rollouts/train/manifest-*.json
+  val_manifests:
+    - out/plddt-selfcond-sde200-tau03-rcsb/rollouts/val/manifest-*.json
+  verify_hashes: true
+  verify_eagerly: false
+  shard_cache_size: 2
+
+training:
+  out_dir: out/plddt-selfcond-sde200-tau03-rcsb/head
+  seed: 730019
+  batch_size: 4
+  num_workers: 4
+  total_steps: 30000
+  warmup_steps: 1500
+  lr: 0.0002
+  weight_decay: 0.01
+  grad_clip: 1.0
+  amp: true
+  amp_dtype: bf16
+  log_interval: 25
+  eval_interval: 1000
+  ckpt_interval: 1000
+  ece_bins: 10
+  max_spearman_residues: 200000

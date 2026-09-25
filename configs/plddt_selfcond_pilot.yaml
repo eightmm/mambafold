@@ -1,0 +1,71 @@
+schema_version: 1
+
+# Confidence is trained after folding from frozen final-sampler latents. This
+# pilot uses exact-sequence-disjoint subsets of pre-cutoff RCSB entries already
+# seen by the folding model, so it tests calibration and seed ranking but is not
+# itself a clean folding benchmark.
+rollout:
+  checkpoint: out/run-a-selfcond-geo-v1/ckpt_0010000.pt
+  expected_checkpoint_step: 10000
+  data_dir: data/rcsb_train
+  esm_dir: data/rcsb_esmc6b
+  conditioning:
+    model: biohub/ESMC-6B
+    revision: 45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a
+    embedding_dimensions: 2560
+  file_list: data/splits/plddt_pilot_train.txt
+  out_dir: out/plddt-selfcond-pilot/rollouts/train
+  device: cuda
+  use_ema: true
+  max_length: 1024
+  min_length: 20
+  min_obs_ratio: 0.0
+  crop_seed: 730019
+  n_seeds: 2
+  seed_offset: 0
+  seed_batch_size: 2
+  length_bin: 64
+  shard_records: 64
+  sampler: sde
+  n_steps: 50
+  sde_tau: 0.01
+  sde_eps: 0.01
+  sde_w_cutoff: 0.99
+  sde_log_timesteps: true
+
+# Four context blocks and 50 bins match SimpleFold's confidence-head shape;
+# this remains a separate artifact and is not counted in the 370M folding model.
+head:
+  d_model: 1024
+  n_bins: 50
+  n_layers: 4
+  n_heads: 16
+  ff_mult: 4
+  dropout: 0.0
+
+data:
+  train_manifests:
+    - out/plddt-selfcond-pilot/rollouts/train/manifest-*.json
+  val_manifests:
+    - out/plddt-selfcond-pilot/rollouts/val/manifest-*.json
+  verify_hashes: true
+  verify_eagerly: false
+  shard_cache_size: 2
+
+training:
+  out_dir: out/plddt-selfcond-pilot/head
+  seed: 730019
+  batch_size: 4
+  num_workers: 4
+  total_steps: 10000
+  warmup_steps: 500
+  lr: 0.0002
+  weight_decay: 0.01
+  grad_clip: 1.0
+  amp: true
+  amp_dtype: bf16
+  log_interval: 25
+  eval_interval: 500
+  ckpt_interval: 500
+  ece_bins: 10
+  max_spearman_residues: 200000

@@ -288,6 +288,7 @@ class RCSBDataset(Dataset):
         min_length: int = 20,
         min_obs_ratio: float = 0.0,   # no filter, matching SimpleFold
         file_list: str | None = None,
+        chain_list: str | None = None,
         esm_dir: str | None = None,
         single_chain_only: bool = False,
         extract_monomer_chains: bool = False,
@@ -303,12 +304,42 @@ class RCSBDataset(Dataset):
         # Monomer-extraction mode: index every protein chain of every entry as
         # its own single-chain example (a 4-chain entry → 4 monomers). Supersedes
         # single_chain_only. Builds a cached chain index [(file_idx, origin, len)].
-        self.extract_monomer_chains = extract_monomer_chains
+        self.extract_monomer_chains = extract_monomer_chains or chain_list is not None
         # Collapse same-sequence chains within an entry to one example. Only
         # meaningful under monomer extraction, where a chain is the unit.
         self.dedup_homomer_chains = dedup_homomer_chains
         self.chain_index: list[tuple[int, int, int]] | None = None
-        if file_list is not None:
+        if file_list is not None and chain_list is not None:
+            raise ValueError("file_list and chain_list are mutually exclusive")
+        if chain_list is not None:
+            chain_rows: list[tuple[str, int, int]] = []
+            for line_number, raw in enumerate(Path(chain_list).read_text().splitlines(), start=1):
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                fields = line.split("\t")
+                if len(fields) != 3:
+                    raise ValueError(
+                        f"{chain_list}:{line_number}: expected filename, origin, length"
+                    )
+                filename, origin_text, length_text = fields
+                origin, length = int(origin_text), int(length_text)
+                if origin < 0 or length < 1:
+                    raise ValueError(
+                        f"{chain_list}:{line_number}: origin must be nonnegative and "
+                        "length must be positive"
+                    )
+                chain_rows.append((filename, origin, length))
+            if not chain_rows:
+                raise ValueError(f"No chain targets found in {chain_list}")
+            filenames = sorted({filename for filename, _, _ in chain_rows})
+            file_indices = {filename: index for index, filename in enumerate(filenames)}
+            self.files = [self.data_dir / filename for filename in filenames]
+            self.chain_index = [
+                (file_indices[filename], origin, length)
+                for filename, origin, length in chain_rows
+            ]
+        elif file_list is not None:
             self.files = sorted(
                 self.data_dir / line.strip()
                 for line in Path(file_list).read_text().splitlines()
@@ -318,7 +349,7 @@ class RCSBDataset(Dataset):
             self.files = sorted(self.data_dir.rglob("*.npz"))
         if len(self.files) == 0:
             raise ValueError(f"No .npz files found in {data_dir}")
-        if extract_monomer_chains:
+        if extract_monomer_chains and chain_list is None:
             from mambafold.data.length_cache import build_chain_index
 
             self.chain_index = build_chain_index(self, num_workers=chain_index_workers)

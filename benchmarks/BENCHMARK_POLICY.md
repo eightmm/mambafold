@@ -62,6 +62,7 @@ than the exact gate:
 | CASP14 whole-chain | 70 | 0 | 8 | **62** |
 | CASP15 strict single-chain | 22 | 1 | 3 | **19** |
 | CASP16 strict single-chain | 21 | 2 | 3 | **18** |
+| CAMEO22 whole-chain | 183 | 3 | 115 | **68** |
 
 Every exclusion, with the identity and query coverage behind it:
 
@@ -96,6 +97,14 @@ before 2020-05-01 and are still 40% and 39% homologs of CASP targets.
 MMseqs2 version, input hashes, and exact command, is in
 `data/audit/homology_gate.json`.
 
+CAMEO22 was screened separately against the same frozen training union and
+thresholds. Its report is `data/audit/cameo22_homology_gate.json`; 115/183
+targets have a qualifying full-chain hit, leaving 68/183. Unlike CASP, this
+artifact has no frozen official evaluation-unit/domain segmentation. The 68
+targets may therefore be called **full-chain homology-admitted**, but not fully
+coordinate-training-clean under the stronger domain-local rule. Report the
+full 183-target diagnostic and the 68-target subset side by side.
+
 ## Dataset roles
 
 | Dataset | Role | Notes |
@@ -103,6 +112,7 @@ MMseqs2 version, input hashes, and exact command, is in
 | CASP14 whole-chain (70) | primary comparison, 62 scoreable | outside the corpus under this contract; usable only while sampler settings are frozen against the post-cutoff pool and not against CASP14 |
 | CASP15 strict single-chain (22) | primary comparison, 19 scoreable | 3 excluded by the homology screen |
 | CASP16 strict single-chain (21) | primary comparison, 18 scoreable | 3 excluded by the homology screen |
+| CAMEO22 (183) | secondary diagnostic, 68 full-chain admitted | 115 excluded by the full-chain homology screen; no frozen domain-local gate |
 | RCSB post-cutoff pool | confirmatory selection set | every entry released after the cutoff; the only set that may be used to choose a checkpoint or sampler |
 
 CASP14 is reportable here in a way it was not under the previous contract,

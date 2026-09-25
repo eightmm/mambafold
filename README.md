@@ -22,7 +22,7 @@ the previous track's configs, results, or benchmark tables carries over.
 sbatch scripts/slurm_build_data.sh # the same, on a compute node
 ```
 
-Nine ordered stages go from an empty `data/` to a frozen, leakage-gated corpus.
+The ordered pipeline goes from an empty `data/` to a frozen, leakage-gated corpus.
 External inputs are declared in [`config/paths.env`](config/paths.env) and
 nowhere else.
 
@@ -119,7 +119,7 @@ set — the only set that may be used to choose a checkpoint or sampler.
   defaulted off, so neither is reachable by config. A trunk that could be given
   attention by flipping a flag cannot carry the claim that a pure SSM trunk
   suffices, and a disabled O(L²) triangle path still has to be sized at every
-  crop decision. The current folding model is 353.68M parameters; its only
+  crop decision. The final Run A folding model is 370.48M parameters; its only
   outputs are all-atom velocity and the trunk latent.
 - **The confidence head.** Confidence is a later training phase on a frozen
   folding model, so neither its head nor its loss is part of this baseline.

@@ -36,7 +36,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCHMARKS = ["casp14_70", "casp15_single_chain_22", "casp16_single_chain_21"]
+DEFAULT_BENCHMARKS = ["casp14_70", "casp15_single_chain_22", "casp16_single_chain_21"]
 
 # Frozen before looking at any model score. Do not tune to improve a result.
 MIN_IDENTITY = 0.30
@@ -55,6 +55,42 @@ def count_records(path: Path) -> int:
     return sum(1 for line in path.read_text().splitlines() if line.startswith(">"))
 
 
+def read_fasta(path: Path) -> list[tuple[str, str]]:
+    records: list[tuple[str, str]] = []
+    identifier: str | None = None
+    chunks: list[str] = []
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if line.startswith(">"):
+            if identifier is not None:
+                records.append((identifier, "".join(chunks)))
+            identifier = line[1:].split(maxsplit=1)[0]
+            chunks = []
+        elif line:
+            if identifier is None:
+                raise ValueError(f"sequence before FASTA header in {path}")
+            chunks.append(line)
+    if identifier is not None:
+        records.append((identifier, "".join(chunks)))
+    return records
+
+
+def write_admitted_set(
+    query: Path,
+    excluded: set[str],
+    ids_path: Path,
+    fasta_path: Path,
+) -> None:
+    admitted = [(identifier, sequence) for identifier, sequence in read_fasta(query)
+                if identifier not in excluded]
+    ids_path.write_text("".join(f"{identifier}\n" for identifier, _ in admitted))
+    with fasta_path.open("w") as handle:
+        for identifier, sequence in admitted:
+            handle.write(f">{identifier}\n")
+            for start in range(0, len(sequence), 80):
+                handle.write(sequence[start : start + 80] + "\n")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=str(ROOT))
@@ -63,11 +99,28 @@ def main() -> int:
     ap.add_argument("--sensitivity", type=float, default=7.5)
     ap.add_argument("--min_identity", type=float, default=MIN_IDENTITY)
     ap.add_argument("--min_query_coverage", type=float, default=MIN_QUERY_COVERAGE)
+    ap.add_argument(
+        "--benchmark",
+        action="append",
+        help=(
+            "benchmark FASTA stem under benchmarks/external_testsets; repeat as needed "
+            f"(default: {', '.join(DEFAULT_BENCHMARKS)})"
+        ),
+    )
+    ap.add_argument(
+        "--out",
+        default="data/audit/homology_gate.json",
+        help="JSON report path, relative to --root unless absolute",
+    )
     ap.add_argument("--keep_tmp", action="store_true")
     args = ap.parse_args()
 
     root = Path(args.root).resolve()
     audit = root / "data" / "audit"
+    benchmarks = args.benchmark or DEFAULT_BENCHMARKS
+    out_path = Path(args.out)
+    if not out_path.is_absolute():
+        out_path = root / out_path
     mmseqs = Path(args.mmseqs)
     if not mmseqs.is_file():
         raise FileNotFoundError(f"MMseqs2 not found at {mmseqs}")
@@ -107,8 +160,10 @@ def main() -> int:
         "benchmarks": {},
     }
 
-    for name in BENCHMARKS:
+    for name in benchmarks:
         query = root / "benchmarks" / "external_testsets" / f"{name}.fasta"
+        if not query.is_file():
+            raise FileNotFoundError(f"benchmark FASTA not found: {query}")
         result = tmp_root / f"{name}.m8"
         work = tmp_root / f"work_{name}"
         command = [
@@ -145,6 +200,14 @@ def main() -> int:
 
         targets = count_records(query)
         excluded = sorted(best)
+        admitted_ids_path = audit / f"{name}-admitted.ids"
+        admitted_fasta_path = audit / f"{name}-admitted.fasta"
+        write_admitted_set(
+            query,
+            set(excluded),
+            admitted_ids_path,
+            admitted_fasta_path,
+        )
         summary["benchmarks"][name] = {  # type: ignore[index]
             "query_fasta": str(query),
             "query_sha256": sha256(query),
@@ -153,6 +216,10 @@ def main() -> int:
             "admitted": targets - len(excluded),
             "command": " ".join(command),
             "hits": {q: best[q] for q in excluded},
+            "admitted_ids": str(admitted_ids_path),
+            "admitted_ids_sha256": sha256(admitted_ids_path),
+            "admitted_fasta": str(admitted_fasta_path),
+            "admitted_fasta_sha256": sha256(admitted_fasta_path),
         }
         print(f"   {len(excluded)} of {targets} excluded by homology", flush=True)
         for q in excluded:
@@ -164,7 +231,7 @@ def main() -> int:
 
         shutil.copy2(result, audit / f"{name}-homology.m8")
 
-    out_path = audit / "homology_gate.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(summary, indent=2) + "\n")
     print(f"report -> {out_path}")
 

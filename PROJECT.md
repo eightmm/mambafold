@@ -2,9 +2,9 @@
 
 ## Status
 
-- State: data contract confirmed; training contract open
-- Root: `/home/jaemin/project/protein/mambafold-clean`
-- Last updated: 2026-08-21
+- State: Run A trained; fixed-checkpoint external evaluation completed; paper draft available
+- Root: repository root
+- Last updated: 2026-09-25
 
 ## Project
 
@@ -13,9 +13,10 @@
 - Goal: single-chain all-atom protein structure generation by direct all-atom
   flow matching, on a corpus that reproduces SimpleFold's data admission so the
   architecture claim and the benchmark claims rest on one contract.
-- Core claim: a pure Mamba trunk — no attention anywhere — can learn global fold
-  and atomistic detail in one path, matching an all-attention transformer
-  trained on the same data under the same objective.
+- Core claim: a Mamba folding trunk without attention or a learned pair stack
+  can produce useful sequence-conditioned, all-atom protein structures from
+  frozen ESMC-6B embeddings. The upstream ESMC-6B encoder uses attention.
+  The current external baseline is not a matched training/control arm.
 - Why a separate root: the previous ESMC-6B track's corpus and this one make
   contradictory statements about the same benchmarks. Under the old contract
   CASP14 carries six exact training matches and is development-only; here it
@@ -207,9 +208,9 @@ Deliberately the same shape as SimpleFold, so the comparison means something.
 
 | | | why |
 | --- | --- | --- |
-| `d_res` / `n_trunk` | 1024 / 16 | 353.68M parameters, measured; the nearest tested grid point to SimpleFold-360M |
-| `d_atom` / `n_atom_layers` | 128 / 4 | the atom levels are under 4M together; the trunk is 98% of the model |
-| `d_state` / `mimo_rank` | 128 / 1 | the only route to `d_state=128` on Ada — MIMO would need 123,216 B against a 101,376 B limit |
+| `d_res` / `n_trunk` | 1024 / 15 | 370.48M folding-model parameters in the final Run A config |
+| `d_atom` / `n_atom_layers` | 128 / 4 | atom encoding and decoding remain outside the residue trunk |
+| `d_state` / `mimo_rank` | 64 / 4 | final Run A uses the MIMO state-space kernel |
 | `max_length` | 1024 | one fixed upper bound; no crop-schedule interface |
 | loss | `w_fm` + `w_lddt_atom` only | no auxiliary loss knobs in the folding trainer |
 | validation | none | no validation loader or CLI knobs; one `admitted_all` list |
@@ -275,9 +276,9 @@ PYTHONPATH=src python scripts/train.py --config configs/run_a_mamba.yaml
 
 1. **Admitted set**: 161,613, the SimpleFold-exact figure, always reported with
    the 158,210 the farm holds.
-2. **Model size**: `d_res=1024`, `n_trunk=16`, `d_atom=128`, `n_atom_layers=4`
-   — 353,679,466 parameters (353.68M).
-3. **Mamba settings**: `d_state=128`, `mimo_rank=1` (SISO), `headdim=64`,
+2. **Final Run A model size**: `d_res=1024`, `n_trunk=15`, `d_atom=128`, `n_atom_layers=4`
+   — 370,480,666 folding-model parameters (370.48M) in the config.
+3. **Final Run A Mamba settings**: `d_state=64`, `mimo_rank=4` (MIMO), `headdim=64`,
    `expand=2`.
 4. **No transformer control arm** — cancelled 2026-08-21 on cost.
 5. **Crop**: one fixed 1024. No schedule.
@@ -317,9 +318,34 @@ the two go together. `uniform` with `const` would leave t > 0.8 holding 4.0% of
 the gradient, and that band is where bond-scale error is the residual, so
 `uniform` alone would trade one starved end for the other.
 
-Not yet written as a config. `src/mambafold/losses/` holds only `lddt.py`; the
-bond and clash terms the phase is named for do not exist, and a config naming a
-schedule while silently running without them would be worse than none.
+The first separately declared phase (`scripts/slurm_geo_finetune.sh`) completed
+10k steps as job 61311 on 2026-09-02 from the final 300k EMA with a fresh
+optimizer: uniform time, ramp weighting, and bond/angle/non-bonded-clash
+weights of 1.0. Its final 2k-step means improved bond MAE from 0.0553 to 0.0476
+A and angle MAE from 3.388 to 3.076 degrees, but the old clash diagnostic only
+moved from 74.3 to 67.7/1k. That v1 clash was not benchmark-aligned: it used a
+0.4-A overlap tolerance, excluded graph distance <=3 (therefore removing 1-3
+and 1-4 pairs), and used the resolved-reference mask even though inference
+emits every canonical atom.
+
+The corrected v2 definition uses OpenStructure's heavy-atom floors: ordinary
+pairs use summed element VDW radii minus 1.5 A, while S-S uses its separate
+2.03-1.00 = 1.03-A floor. Only direct intra-residue bonds and the consecutive
+peptide C(i)-N(i+1) bond are excluded; 1-3 and 1-4 pairs remain active. Clash
+masking uses every canonical output atom, not only atoms resolved in the
+training reference. A Huber barrier begins 0.1 A outside the hard threshold,
+so atoms near the boundary still receive a gradient, and exact coincidences
+receive a deterministic finite descent direction. Detached CA-centred bounding
+spheres find a conservative residue neighbour list; gradient-checkpointed
+256-residue-pair chunks bound the differentiable workspace without a learned
+pair matrix. Hard clashes/1k atoms, smooth clashes/1k atoms, and mean overlap
+are logged separately from the optimization surrogate. The continuation is
+declared by `scripts/slurm_geo_clash_v2.sh` and starts from the v1 EMA.
+
+Baseline defaults for all three geometry terms remain zero, so the 300k Run A
+objective and its comparison contract are unchanged. The fine-tune writes to a
+new output directory, initializes both train weights and EMA from the Run A EMA,
+and refuses to overwrite an existing run.
 
 ## Validated on GPU (2026-08-22, jobs 57848 / 57856 / 57859)
 

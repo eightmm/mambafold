@@ -82,6 +82,15 @@ def log_metrics(step, total_steps, avgs, lr, world_size, batch_size, copies, gra
     data_timing = (
         f" | data_wait={data_wait_ms:.0f}ms ({data_wait_pct:.1f}%)" if train_step_ms > 0 else ""
     )
+    geometry = ""
+    if any(avgs.get(name, 0.0) for name in ("bond", "angle", "clash")):
+        geometry = (
+            f" | bond={avgs.get('bond_mae_A', 0.0):.3f}A"
+            f" angle={avgs.get('angle_mae_deg', 0.0):.2f}deg"
+            f" clash={avgs.get('clashes_per_1000_atoms', 0.0):.1f}/1k"
+            f" soft={avgs.get('soft_clashes_per_1000_atoms', 0.0):.1f}/1k"
+            f" overlap={avgs.get('mean_clash_overlap_A', 0.0):.2f}A"
+        )
 
     fm = avgs["fm_atom"]
     lddt = avgs["lddt_atom"]
@@ -90,7 +99,7 @@ def log_metrics(step, total_steps, avgs, lr, world_size, batch_size, copies, gra
         f"loss={avgs['loss']:.4f} | fm={fm:.4f} | "
         f"lddt={lddt:.4f} | t={avgs['t_mean']:.3f} | "
         f"gnorm={avgs['grad_norm']:.2f} | lr={lr:.2e}{vram}"
-        f"{throughput}{data_timing}",
+        f"{throughput}{data_timing}{geometry}",
         flush=True,
     )
     if wandb.run is not None:

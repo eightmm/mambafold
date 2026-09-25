@@ -20,8 +20,9 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 import torch.optim as optim
-import wandb
 from torch.nn.parallel import DistributedDataParallel as DDP
+
+import wandb
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -194,10 +195,32 @@ def main():
             resume_run_id = ckpt.get("wandb_run_id")
         raw_model = model.module if is_dist else model
         model_state_key = "ema" if args.initialize_model_from_ema else "model"
-        missing, unexpected = raw_model.load_state_dict(
-            ckpt[model_state_key], strict=args.strict_resume
-        )
-        ema_missing, ema_unexpected = ema.load_state_dict(ckpt["ema"], strict=args.strict_resume)
+        # Load non-strictly first so an explicitly declared architecture
+        # transition can still be checked exactly. This keeps --strict_resume
+        # strict: absent a declaration both expected missing-key sets are empty,
+        # reproducing torch's strict=True contract while giving a useful list in
+        # the error. The self-conditioning continuation uses this to admit only
+        # its zero-initialized projection, never an arbitrary partial checkpoint.
+        missing, unexpected = raw_model.load_state_dict(ckpt[model_state_key], strict=False)
+        ema_missing, ema_unexpected = ema.load_state_dict(ckpt["ema"], strict=False)
+        if args.strict_resume:
+            expected_missing = set(args.expected_missing_resume_keys)
+            model_missing = set(missing)
+            shadow_missing = set(ema_missing)
+            if (
+                model_missing != expected_missing
+                or shadow_missing != expected_missing
+                or unexpected
+                or ema_unexpected
+            ):
+                raise RuntimeError(
+                    "Strict resume state mismatch: "
+                    f"expected_missing={sorted(expected_missing)} "
+                    f"model_missing={sorted(model_missing)} "
+                    f"ema_missing={sorted(shadow_missing)} "
+                    f"model_unexpected={sorted(unexpected)} "
+                    f"ema_unexpected={sorted(ema_unexpected)}"
+                )
         if is_main and (missing or unexpected):
             print(
                 f"  [resume] model missing={len(missing)} unexpected={len(unexpected)}",
@@ -384,8 +407,16 @@ def main():
                             use_amp=True,
                             w_fm=args.w_fm,
                             w_lddt_atom=args.w_lddt_atom,
+                            w_bond=args.w_bond,
+                            w_angle=args.w_angle,
+                            w_clash=args.w_clash,
                             lddt_cutoff_A=args.lddt_cutoff_A,
                             lddt_pair_chunk_size=args.lddt_pair_chunk_size,
+                            clash_overlap_tolerance_A=args.clash_overlap_tolerance_A,
+                            clash_margin_A=args.clash_margin_A,
+                            clash_huber_delta_A=args.clash_huber_delta_A,
+                            clash_soft_count_tau_A=args.clash_soft_count_tau_A,
+                            clash_pair_chunk_size=args.clash_pair_chunk_size,
                             self_condition_prob=args.self_condition_prob,
                         )
                         nonfinite = not bool(torch.isfinite(loss).item())

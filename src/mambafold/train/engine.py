@@ -6,9 +6,9 @@ Flow matching convention::
     velocity target = x_clean - eps
     one-step reconstruction = x_t + (1 - t) * v
 
-The folding baseline deliberately has only two objectives: aligned all-atom
-flow matching and exact all-atom soft lDDT. Confidence is trained separately
-from a frozen folding model.
+Pretraining uses aligned all-atom flow matching and exact all-atom soft lDDT.
+The separately configured geometric fine-tune adds bond, angle and non-bonded
+clash terms. Confidence is trained separately from a frozen folding model.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from torch import Tensor
 
 from mambafold.data.constants import CA_ATOM_ID
 from mambafold.data.types import ProteinBatch
+from mambafold.losses.geometry import stereochemical_losses
 from mambafold.losses.lddt import soft_lddt_all_atom_loss
 from mambafold.utils.geometry import weighted_rigid_align
 
@@ -58,10 +59,18 @@ def allatom_loss_surface(
     use_rigid_align: bool = True,
     w_fm: float = 1.0,
     w_lddt_atom: float = 1.0,
+    w_bond: float = 0.0,
+    w_angle: float = 0.0,
+    w_clash: float = 0.0,
     lddt_cutoff_A: float = 15.0,
     lddt_pair_chunk_size: int = 512,
+    clash_overlap_tolerance_A: float = 1.5,
+    clash_margin_A: float = 0.1,
+    clash_huber_delta_A: float = 0.25,
+    clash_soft_count_tau_A: float = 0.05,
+    clash_pair_chunk_size: int = 256,
 ) -> tuple[Tensor, dict[str, float]]:
-    """Compute aligned all-atom FM plus exact all-atom soft lDDT."""
+    """Compute the complete pretraining or geometric fine-tune objective."""
     v_atom = out["v_atom"].float()
     x_clean = batch.x_clean.float()
     x_t = batch.x_t.float()
@@ -96,7 +105,47 @@ def allatom_loss_surface(
     loss_lddt = lddt_per_example.mean()
     loss_lddt_weighted = (alpha_per_example * lddt_per_example).mean()
 
-    total = w_fm * loss_fm + w_lddt_atom * loss_lddt_weighted
+    geometry_enabled = bool(w_bond or w_angle or w_clash)
+    if geometry_enabled:
+        geometry = stereochemical_losses(
+            x_hat,
+            x_clean,
+            batch.valid_mask,
+            batch.atom_mask,
+            batch.res_mask,
+            batch.res_type,
+            batch.atom_type,
+            batch.res_seq_nums,
+            batch.chain_id,
+            clash_overlap_tolerance_A=clash_overlap_tolerance_A,
+            clash_margin_A=clash_margin_A,
+            clash_huber_delta_A=clash_huber_delta_A,
+            clash_soft_count_tau_A=clash_soft_count_tau_A,
+            clash_pair_chunk_size=clash_pair_chunk_size,
+        )
+    else:
+        zero = x_hat.reshape(x_hat.shape[0], -1).sum(dim=-1) * 0.0
+        geometry = {
+            "bond": zero,
+            "angle": zero,
+            "clash": zero,
+            "bond_mae_A": zero.detach(),
+            "angle_mae_deg": zero.detach(),
+            "clashes_per_1000_atoms": zero.detach(),
+            "soft_clashes_per_1000_atoms": zero.detach(),
+            "mean_clash_overlap_A": zero.detach(),
+        }
+    weighted_bond = (alpha_per_example * geometry["bond"]).mean()
+    weighted_angle = (alpha_per_example * geometry["angle"]).mean()
+    weighted_clash = (alpha_per_example * geometry["clash"]).mean()
+
+    total = (
+        w_fm * loss_fm
+        + w_lddt_atom * loss_lddt_weighted
+        + w_bond * weighted_bond
+        + w_angle * weighted_angle
+        + w_clash * weighted_clash
+    )
 
     ca_fm = _masked_mse_per_example(
         v_atom[..., CA_ATOM_ID, :],
@@ -109,6 +158,17 @@ def allatom_loss_surface(
         "lddt_atom": loss_lddt.item(),
         "lddt_atom_weighted": loss_lddt_weighted.item(),
         "alpha": alpha_per_example.mean().item(),
+        "bond": geometry["bond"].mean().item(),
+        "bond_weighted": weighted_bond.item(),
+        "bond_mae_A": geometry["bond_mae_A"].mean().item(),
+        "angle": geometry["angle"].mean().item(),
+        "angle_weighted": weighted_angle.item(),
+        "angle_mae_deg": geometry["angle_mae_deg"].mean().item(),
+        "clash": geometry["clash"].mean().item(),
+        "clash_weighted": weighted_clash.item(),
+        "clashes_per_1000_atoms": geometry["clashes_per_1000_atoms"].mean().item(),
+        "soft_clashes_per_1000_atoms": geometry["soft_clashes_per_1000_atoms"].mean().item(),
+        "mean_clash_overlap_A": geometry["mean_clash_overlap_A"].mean().item(),
     }
     return total, metrics
 
@@ -122,8 +182,16 @@ def allatom_forward_and_loss(
     use_amp: bool = True,
     w_fm: float = 1.0,
     w_lddt_atom: float = 1.0,
+    w_bond: float = 0.0,
+    w_angle: float = 0.0,
+    w_clash: float = 0.0,
     lddt_cutoff_A: float = 15.0,
     lddt_pair_chunk_size: int = 512,
+    clash_overlap_tolerance_A: float = 1.5,
+    clash_margin_A: float = 0.1,
+    clash_huber_delta_A: float = 0.25,
+    clash_soft_count_tau_A: float = 0.05,
+    clash_pair_chunk_size: int = 256,
     self_condition_prob: float = 0.0,
 ) -> tuple[Tensor, dict[str, float]]:
     """Run the folding model and compute its complete training objective."""
@@ -154,10 +222,20 @@ def allatom_forward_and_loss(
         use_rigid_align=use_rigid_align,
         w_fm=w_fm,
         w_lddt_atom=w_lddt_atom,
+        w_bond=w_bond,
+        w_angle=w_angle,
+        w_clash=w_clash,
         lddt_cutoff_A=lddt_cutoff_A,
         lddt_pair_chunk_size=lddt_pair_chunk_size,
+        clash_overlap_tolerance_A=clash_overlap_tolerance_A,
+        clash_margin_A=clash_margin_A,
+        clash_huber_delta_A=clash_huber_delta_A,
+        clash_soft_count_tau_A=clash_soft_count_tau_A,
+        clash_pair_chunk_size=clash_pair_chunk_size,
     )
     metrics["loss"] = loss.item()
     metrics["t_mean"] = batch.t.mean().item()
+    metrics["t_lt_0_1"] = (batch.t < 0.1).float().mean().item()
+    metrics["t_lt_0_2"] = (batch.t < 0.2).float().mean().item()
     metrics["self_cond"] = float(used_self_cond)
     return loss, metrics

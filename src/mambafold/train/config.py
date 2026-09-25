@@ -114,10 +114,9 @@ def parse_args(argv=None):
         "--t_uniform_weight",
         type=float,
         default=0.02,
-        help="Uniform mixture weight inside the logit-normal time schedule. "
-        "SimpleFold uses 0.02; raising it widens coverage of low t, where the "
-        "global fold has to be built out of noise and where a scan has the "
-        "least local signal to work from.",
+        help="Interpolation weight between a logit-normal draw and a uniform draw. "
+        "This is not a mixture: raising it pulls samples toward 0.5 and narrows "
+        "both tails. SimpleFold uses 0.02.",
     )
     parser.add_argument("--ema_decay", type=float, default=0.999)
     parser.add_argument("--seed", type=int, default=0)
@@ -166,6 +165,14 @@ def parse_args(argv=None):
         action="store_true",
         default=False,
         help="Fail on missing or unexpected model/EMA checkpoint keys.",
+    )
+    parser.add_argument(
+        "--expected_missing_resume_keys",
+        nargs="*",
+        default=[],
+        help="With --strict_resume, permit exactly these missing model and EMA keys. "
+        "This is intended for an explicit zero-initialized architecture addition, "
+        "such as enabling self-conditioning on an older checkpoint.",
     )
     parser.add_argument(
         "--expected_resume_step",
@@ -247,15 +254,52 @@ def parse_args(argv=None):
         "d_temb -> 6*d_res in every trunk block, so this multiplies through "
         "the budget; SimpleFold's DiT uses the full trunk width.",
     )
-    # Folding objective: aligned all-atom FM + exact all-atom soft lDDT.
+    # Folding objective. Geometry weights stay zero for pretraining and are
+    # enabled only by the declared fine-tune invocation.
     parser.add_argument("--w_fm", type=float, default=1.0)
     parser.add_argument("--w_lddt_atom", type=float, default=1.0)
+    parser.add_argument("--w_bond", type=float, default=0.0)
+    parser.add_argument("--w_angle", type=float, default=0.0)
+    parser.add_argument("--w_clash", type=float, default=0.0)
     parser.add_argument("--lddt_cutoff_A", type=float, default=15.0)
     parser.add_argument(
         "--lddt_pair_chunk_size",
         type=int,
         default=512,
         help="Rows per exact lDDT ground-truth distance chunk.",
+    )
+    parser.add_argument(
+        "--clash_overlap_tolerance_A",
+        type=float,
+        default=1.5,
+        help="OpenStructure-style allowed overlap between summed atom VDW radii. "
+        "The 1.5-A default is intentionally more tolerant than MolProbity's "
+        "hydrogen-aware 0.4-A clashscore threshold; S-S keeps OpenStructure's "
+        "separate 2.03-1.00-A floor.",
+    )
+    parser.add_argument(
+        "--clash_margin_A",
+        type=float,
+        default=0.1,
+        help="Start the differentiable clash barrier this far outside the hard threshold.",
+    )
+    parser.add_argument(
+        "--clash_huber_delta_A",
+        type=float,
+        default=0.25,
+        help="Transition width of the clash Huber penalty in Angstroms.",
+    )
+    parser.add_argument(
+        "--clash_soft_count_tau_A",
+        type=float,
+        default=0.05,
+        help="Temperature of the smooth clash-count diagnostic in Angstroms.",
+    )
+    parser.add_argument(
+        "--clash_pair_chunk_size",
+        type=int,
+        default=256,
+        help="Candidate residue pairs per differentiable clash chunk.",
     )
     # Length-balanced sampler — counters the PDB short-tail bias (90% < 500 aa)
     # by upweighting longer proteins. dataset audit identified this as the main
@@ -307,8 +351,21 @@ def parse_args(argv=None):
         parser.error("--lddt_pair_chunk_size must be positive")
     if args.lddt_cutoff_A <= 0:
         parser.error("--lddt_cutoff_A must be positive")
-    if args.w_fm < 0 or args.w_lddt_atom < 0:
+    if any(
+        weight < 0
+        for weight in (args.w_fm, args.w_lddt_atom, args.w_bond, args.w_angle, args.w_clash)
+    ):
         parser.error("folding loss weights must be non-negative")
+    if args.clash_pair_chunk_size <= 0:
+        parser.error("--clash_pair_chunk_size must be positive")
+    if args.clash_overlap_tolerance_A < 0:
+        parser.error("--clash_overlap_tolerance_A must be non-negative")
+    if args.clash_margin_A < 0:
+        parser.error("--clash_margin_A must be non-negative")
+    if args.clash_huber_delta_A <= 0:
+        parser.error("--clash_huber_delta_A must be positive")
+    if args.clash_soft_count_tau_A <= 0:
+        parser.error("--clash_soft_count_tau_A must be positive")
     if args.copies_per_protein < 1:
         parser.error("--copies_per_protein must be positive")
     if not (0.0 <= args.self_condition_prob <= 1.0):
@@ -317,6 +374,10 @@ def parse_args(argv=None):
         parser.error("--initialize_model_from_ema requires --resume and --reset_optimizer")
     if args.expected_resume_step is not None and not args.resume:
         parser.error("--expected_resume_step requires --resume")
+    if args.expected_missing_resume_keys and not (args.resume and args.strict_resume):
+        parser.error("--expected_missing_resume_keys requires --resume and --strict_resume")
+    if len(args.expected_missing_resume_keys) != len(set(args.expected_missing_resume_keys)):
+        parser.error("--expected_missing_resume_keys must not contain duplicates")
 
     if args.out_dir is None:
         job_id = os.environ.get("SLURM_JOB_ID", None)

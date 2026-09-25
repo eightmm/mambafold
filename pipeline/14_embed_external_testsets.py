@@ -9,7 +9,9 @@ count against the two training caches finds 0 of 70, 1 of 22 and 2 of 21 — the
 three that do hit are coincidental matches, not leakage of the structures.
 
 Written into a separate `data/casp_esmc6b` rather than the training caches, so
-a benchmark sequence can never be mistaken for a training record.
+a benchmark sequence can never be mistaken for a training record. The legacy
+directory name now includes CAMEO22 as well as CASP; changing it would only
+duplicate a large sequence-addressed cache.
 """
 
 from __future__ import annotations
