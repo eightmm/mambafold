@@ -320,4 +320,3 @@ def save_checkpoint(
         if old_path not in recent and old_step not in milestones:
             old_path.unlink()
     print(f"Saved: {path}", flush=True)
-
