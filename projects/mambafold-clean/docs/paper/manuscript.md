@@ -1,10 +1,10 @@
 # MambaFold: Sequence-Conditioned All-Atom Protein Folding with a Mamba Trunk
 
-**Draft status:** research manuscript, 25 September 2026. Authors and affiliations to be supplied by the research team. Numerical results below refer to the fixed Run A final EMA and one seed; they should not be read as a claim of state-of-the-art accuracy or architecture superiority.
+**Draft status:** research manuscript, 28 September 2026. Authors and affiliations to be supplied by the research team. The primary external comparison uses the fixed Run A final EMA and seed 0; it should not be read as a claim of state-of-the-art accuracy or architecture superiority. A second sampler seed checks the within-model geometry-guidance effect, not the SimpleFold comparison.
 
 ## Abstract
 
-Protein structure prediction commonly uses attention or explicit pair representations in its folding module. We study whether a state-space sequence mixer can support single-chain, sequence-conditioned, all-atom structure generation. MambaFold combines frozen ESMC-6B sequence embeddings with a 370.48M-parameter folding model whose residue trunk and cross-residue atom streams use Mamba-3 blocks, without attention or a learned pair tensor in the folding model. We train with rigid-aligned flow matching and all-atom lDDT on experimental structures admitted by a 1 May 2020 release cutoff and AlphaFold DB SwissProt v4 structures. A fixed 500-step SDE sampler yields mean TM-scores of **0.641** on 19 admitted CASP15 targets and **0.611** on 18 admitted CASP16 targets, versus **0.631** and **0.587** for SimpleFold-360M on the identical targets and references. MambaFold's all-atom lDDT is lower (**0.516/0.474** versus **0.659/0.579**), while backbone lDDT is similar. These results demonstrate a workable Mamba folding trunk for global structure prediction, with a clear remaining atom-level accuracy gap. The external comparison is not a controlled mixer ablation: the systems differ in pretrained encoder, training corpus, and optimization.
+Protein structure prediction commonly uses attention or explicit pair representations in its folding module. We study whether a state-space sequence mixer can support single-chain, sequence-conditioned, all-atom structure generation. MambaFold combines frozen ESMC-6B sequence embeddings with a 370.48M-parameter folding model whose residue trunk and cross-residue atom streams use Mamba-3 blocks, without attention or a learned pair tensor in the folding model. We train with rigid-aligned flow matching and all-atom lDDT on experimental structures admitted by a 1 May 2020 release cutoff and AlphaFold DB SwissProt v4 structures. A fixed 500-step SDE sampler yields mean TM-scores of **0.641** on 19 admitted CASP15 targets and **0.611** on 18 admitted CASP16 targets, versus **0.631** and **0.587** for SimpleFold-360M on the identical targets and references. MambaFold's all-atom lDDT is lower (**0.516/0.474** versus **0.659/0.579**), while backbone lDDT is similar. A bounded late-stage geometry correction raises MambaFold's all-atom lDDT to **0.535/0.498** on those cohorts, with little change in mean TM-score. These results demonstrate a workable Mamba folding trunk for global structure prediction, with a clear remaining atom-level accuracy gap. The external comparison is not a controlled mixer ablation: the systems differ in pretrained encoder, training corpus, and optimization.
 
 ## 1. Introduction
 
@@ -32,6 +32,16 @@ Training uses rigid-aligned flow matching plus exact all-atom lDDT. The Run A mo
 
 We sample one prediction per target with 500-step SDE (tau 0.01, seed 0) from the fixed final EMA. The same sampler settings produced the earlier CASP14/CAMEO22 Run A results and were frozen before the new CASP15/16 scores. OpenStructure 2.9.1 computes TM-score, all-atom lDDT, and backbone lDDT using the same command and staged reference coordinates for both systems. CASP15 official domain/EU scores are averaged within target by mapped-residue count, then targets are averaged equally. CASP16 uses official whole-chain references. SimpleFold-360M is reaggregated from complete seed-0 target-level results on precisely the same predeclared target lists, without selecting for baseline success. Reference-file SHA-256 hashes agree for every admitted comparison pair. Full commands, input hashes, and machine-readable target rows are in [`reproducibility.md`](reproducibility.md) and [`data/matched_results.json`](data/matched_results.json).
 
+As a secondary inference experiment, we apply reference-free geometry guidance
+to the estimated clean coordinates during the fixed sampler's late SDE updates.
+The energy combines ideal bond lengths and angles with a clash surrogate;
+its gradient is bounded to 0.02 Å per atom per application, with backbone
+gradients scaled by 0.1. Guidance starts at time 0.90 and runs every ten steps
+(25 applications in a 500-step logarithmic schedule). The four-target CASP14
+pilot informed this fixed setting; all admitted CASP14/15/16 targets were then
+scored with the same references and OpenStructure command as the baseline.
+This is a within-model sampler comparison, not a retrained model.
+
 ## 3. Results
 
 ### 3.1 Same-target external comparison
@@ -58,15 +68,53 @@ lDDT itself compares local interatomic distances. OpenStructure's `compare-struc
 
 The change in the between-model gap under this scoring switch is 0.140 on CASP15, versus a standard-score gap of 0.143, and 0.119 on CASP16, versus a standard-score gap of 0.106. Clashes are substantially more frequent in the MambaFold structures. The diagnostic shows that OpenStructure's stereochemistry preprocessing accounts for most of the *reported* all-atom score gap on these cohorts. It does not show that a geometry repair will recover the same amount: moving atoms can change local distances and the fold. Reference parity, aggregation, local raw-score paths, and compact target-level results are recorded in [`reproducibility.md`](reproducibility.md) and [`data/stereo_diagnosis.json`](data/stereo_diagnosis.json).
 
-### 3.3 Scope of the demonstration
+### 3.3 Late geometry guidance
+
+On the admitted targets, mean standard all-atom lDDT changes from 0.4523 to
+0.4713 on CASP14 (62 targets), 0.5159 to 0.5349 on CASP15 (19 targets), and
+0.4736 to 0.4977 on CASP16 (18 targets). The paired improvements are +0.0190,
++0.0190, and +0.0242, respectively. Backbone lDDT and TM-score change by
+less than 0.001 in cohort mean, although one CASP15 target loses 0.017
+TM-score. The respective counts of targets with higher
+standard all-atom lDDT are 55/62, 17/19, and 17/18; ties reflect scores
+rounded to the scorer's output precision. On CASP15 and CASP16, mean
+OpenStructure-reported clashes per target fall from 349.8 to 286.8 and from
+157.7 to 123.8. Mean reported bad bonds on CASP15 rise slightly from 0.53 to
+0.68, so improvement is not uniform across stereochemical checks. These
+results describe a small effect under one fixed inference setting;
+they do not establish an optimal guidance schedule. Paired rows and complete
+settings are in [`late_geometry_experiment.md`](late_geometry_experiment.md)
+and [`data/late_geometry_full_cohorts.json`](data/late_geometry_full_cohorts.json).
+
+With the same fixed checkpoint and an independent sampler seed (seed 1), the
+paired lDDT gains are +0.0191 on CASP15 and +0.0229 on CASP16. Mean TM-score
+changes by −0.0001 and −0.0026, respectively. One CASP16 target, t1284,
+loses 0.048 TM-score despite gaining 0.018 all-atom lDDT. Mean reported
+clashes per target fall from 377.9 to 310.5 on CASP15 and from 152.8 to
+120.4 on CASP16. This rerun supports the direction of the lDDT and clash
+effect, while exposing a target-level fold-quality risk. Seed-1 paired rows
+and violation counts are in [`data/late_geometry_seed1.json`](data/late_geometry_seed1.json).
+
+A named-atom chirality screen of the seed-0 admitted structures finds no
+Cα or Thr/Ile Cβ inversions in either sampler arm. A coarse χ1 three-state
+screen flags 13/5,737 baseline versus 14/5,737 guided sidechains on CASP15,
+and 9/4,520 versus 8/4,520 on CASP16. This screen is not a residue-specific
+rotamer-library validation, and it does not assess distal sidechain torsions.
+Against the matched experimental residues, mean χ1 agreement within 30°
+changes only from 0.682 to 0.681 on CASP15 and stays at 0.665 on CASP16.
+The much larger remaining clash burden and all-atom lDDT gap therefore remain
+unresolved. The assay definition and target-level counts are recorded in
+[`reproducibility.md`](reproducibility.md).
+
+### 3.4 Scope of the demonstration
 
 All 22 CASP15 and 21 CASP16 inputs produced a prediction and a valid official-reference score. On the predeclared coordinate-homology-admitted subsets, the 500-step Mamba folding model reaches mean TM-score above 0.60 on both sets. CASP14 and CAMEO22 provide wider context but do not serve as untouched prospective tests. The measured outputs support feasibility of a Mamba sequence mixer in this folding architecture. They do not establish which component causes the score difference, nor do they establish accuracy parity in all-atom detail.
 
 ## 4. Limitations and next experiments
 
-The strongest limitation is the lack of a matched transformer trunk trained on the same embeddings, data, and objective. SimpleFold differs in PLM, corpus size/composition, cropping, and optimization, so no mixer-specific causal conclusion follows. A second limit is the frozen ESMC-6B encoder: the pipeline uses attention upstream and its sequence-pretraining exposure is unaudited. Third, CASP14/CAMEO22 were seen during method development, and earlier projects exposed the research team to CASP15/16 target families; the latter are post-freeze checks of this checkpoint rather than fully blind prospective validation. Fourth, only one Run A checkpoint and one sampling seed are reported. Finally, the all-atom lDDT deficit is substantial and a practical obstacle for applications needing accurate side chains, contacts, or steric detail.
+The strongest limitation is the lack of a matched transformer trunk trained on the same embeddings, data, and objective. SimpleFold differs in PLM, corpus size/composition, cropping, and optimization, so no mixer-specific causal conclusion follows. A second limit is the frozen ESMC-6B encoder: the pipeline uses attention upstream and its sequence-pretraining exposure is unaudited. Third, CASP14/CAMEO22 were seen during method development, and earlier projects exposed the research team to CASP15/16 target families; the latter are post-freeze checks of this checkpoint rather than fully blind prospective validation. Fourth, only one Run A checkpoint and one seed for the primary SimpleFold comparison are reported. Finally, the all-atom lDDT deficit is substantial and a practical obstacle for applications needing accurate side chains, contacts, or steric detail.
 
-The immediate accuracy experiment is reference-free geometry refinement of the predicted structures, tuned on development targets and then frozen before testing on CASP15/16 with the standard OpenStructure lDDT. Its acceptance criteria are fewer clashes, higher standard all-atom lDDT, and no material loss in TM-score or backbone lDDT. A previous geometry fine-tune reduced mean reported clashes from 175.1 to 134.1 on CASP14 and from 123.4 to 68.9 on CAMEO22, yet improved all-atom lDDT by only 0.006 and 0.011 while slightly lowering TM-score; further training with the same settings is not yet justified. The next decisive architecture experiment is a parameter- and compute-matched transformer trunk with all other inputs fixed. A separate, genuinely prospective protein set with a declared structure-release cutoff should test generalization. Multiple seeds, per-residue geometry and clash analysis, and end-to-end cost accounting (including ESMC-6B) should accompany any stronger efficiency or biological-utility claim. Confidence calibration is a separate analysis and is not used to support the present folding conclusion.
+The late guidance experiment improves standard all-atom lDDT and reduces clashes on both sampler seeds, with small cohort-mean TM-score changes. The t1284 loss at seed 1 means target-level fold preservation is not guaranteed. The correction does not close the atom-level gap to SimpleFold, and no stronger setting has been tested. A previous geometry fine-tune reduced mean reported clashes from 175.1 to 134.1 on CASP14 and from 123.4 to 68.9 on CAMEO22, yet improved all-atom lDDT by only 0.006 and 0.011 while slightly lowering TM-score; further training with the same settings is not yet justified. The next decisive architecture experiment is a parameter- and compute-matched transformer trunk with all other inputs fixed. A separate, genuinely prospective protein set with a declared structure-release cutoff should test generalization. Per-residue geometry and clash analysis, a formal sidechain rotamer validation, and end-to-end cost accounting (including ESMC-6B) should accompany any stronger efficiency or biological-utility claim. Confidence calibration is a separate analysis and is not used to support the present folding conclusion.
 
 ## References
 
