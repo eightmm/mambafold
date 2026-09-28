@@ -43,14 +43,38 @@ tradeoff to monitor.
 
 ## Frozen follow-up
 
-The same guidance settings have been queued for all admitted CASP14, CASP15,
-and CASP16 targets, using the same fixed 500-step sampler and the exact
-reference PDBs from the original Run A evaluation. The CASP14, CASP15, and
-CASP16 rollout jobs are 86373, 86374, and 86375; dependent scoring jobs are
-86376, 86377, and 86378. Results are not reported until every job exits 0 and
-target/reference counts match 62/62, 19/28 pairs, and 18/18, respectively.
-CASP14 has been inspected during development; CASP15/16 are post-freeze checks
-of this guidance setting, subject to the exposure limits in the manuscript.
+The same guidance settings were evaluated on all admitted CASP14, CASP15, and
+CASP16 targets, using the fixed 500-step sampler and the exact reference PDBs
+from the original Run A evaluation. Rollout jobs 86373–86375 and scoring jobs
+86376–86378 all exited 0. The score files report complete evaluation of
+62/62 CASP14 targets, 28/28 CASP15 domain pairs covering 19 targets, and
+18/18 CASP16 targets. Checkpoint/config hashes and sampling settings match
+the baseline in each cohort. CASP15 target scores are first aggregated over
+domains using mapped-residue weights, then averaged equally across targets.
+Paired target rows and exact values are in
+[`data/late_geometry_full_cohorts.json`](data/late_geometry_full_cohorts.json).
+
+| Admitted cohort | Targets | Default all-atom lDDT baseline → guided | Backbone lDDT baseline → guided | TM-score baseline → guided |
+| --- | ---: | ---: | ---: | ---: |
+| CASP14 | 62 | 0.4523 → 0.4713 (+0.0190) | 0.6470 → 0.6469 | 0.6148 → 0.6153 |
+| CASP15 | 19 | 0.5159 → 0.5349 (+0.0190) | 0.7393 → 0.7392 | 0.6410 → 0.6405 |
+| CASP16 | 18 | 0.4736 → 0.4977 (+0.0242) | 0.6761 → 0.6763 | 0.6106 → 0.6104 |
+
+All-atom lDDT improves on 55/62, 17/19, and 17/18 targets, respectively;
+ties include scores rounded to the OpenStructure output precision. On the
+matched CASP15 and CASP16 targets, reported clashes per 1,000 atoms decrease
+from 93.21 to 75.49 and 66.15 to 51.47, respectively. The CASP14 baseline
+rollout used an older clash diagnostic, so these clash rates cannot be compared
+there. Backbone bond-length RMS errors decrease in all three cohorts.
+
+These results show that 25 bounded guidance applications within the final 259
+SDE updates are sufficient for a *modest* improvement across these cohorts
+under this fixed setting. They do not establish that 25 applications or a
+0.02 Å cap are optimal, or that geometry is solved: mean guided all-atom lDDT
+remains below 0.54 on CASP15/16. A stronger or denser schedule would require a separate
+predefined comparison with TM-score and backbone safeguards. CASP14 was
+inspected during development; CASP15/16 are post-freeze checks of this guidance
+setting, subject to the exposure limits in the manuscript.
 
 The current energy does not enforce all stereochemical constraints, including
 chirality and sidechain torsions. A lower clash count alone is not evidence of
