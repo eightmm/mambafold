@@ -48,7 +48,7 @@ from mambafold.data.constants import (  # noqa: E402
 from mambafold.data.sequence_cache import sequence_embedding_path  # noqa: E402
 from mambafold.data.types import ProteinExample  # noqa: E402
 from mambafold.losses.geometry import stereochemical_losses  # noqa: E402
-from mambafold.sampling import prepare_inference_batch, sample  # noqa: E402
+from mambafold.sampling import LateGeometryGuidance, prepare_inference_batch, sample  # noqa: E402
 from mambafold.structure_io import write_pdb  # noqa: E402
 from mambafold.train.trainer import build_model  # noqa: E402
 
@@ -227,6 +227,14 @@ def main() -> int:
     ap.add_argument("--sde_tau", type=float, default=0.01)
     ap.add_argument("--sde_eps", type=float, default=0.01)
     ap.add_argument("--sde_w_cutoff", type=float, default=0.99)
+    ap.add_argument("--geometry-guide-props", type=Path)
+    ap.add_argument("--geometry-guide-start", type=float, default=0.90)
+    ap.add_argument("--geometry-guide-every", type=int, default=10)
+    ap.add_argument("--geometry-guide-max-step-A", type=float, default=0.0)
+    ap.add_argument("--geometry-guide-bond-weight", type=float, default=1.0)
+    ap.add_argument("--geometry-guide-angle-weight", type=float, default=1.0)
+    ap.add_argument("--geometry-guide-clash-weight", type=float, default=1.0)
+    ap.add_argument("--geometry-guide-backbone-scale", type=float, default=0.1)
     ap.add_argument(
         "--sde_log_timesteps",
         action=argparse.BooleanOptionalAction,
@@ -241,6 +249,17 @@ def main() -> int:
     )
     ap.add_argument("--use_ema", action=argparse.BooleanOptionalAction, default=True)
     args = ap.parse_args()
+    guidance = LateGeometryGuidance(
+        props_path=args.geometry_guide_props,
+        start_t=args.geometry_guide_start,
+        every_n_steps=args.geometry_guide_every,
+        max_step_A=args.geometry_guide_max_step_A,
+        bond_weight=args.geometry_guide_bond_weight,
+        angle_weight=args.geometry_guide_angle_weight,
+        clash_weight=args.geometry_guide_clash_weight,
+        backbone_scale=args.geometry_guide_backbone_scale,
+    )
+    guidance.validate()
 
     config_path = Path(args.config)
     checkpoint_path = Path(args.checkpoint)
@@ -346,6 +365,7 @@ def main() -> int:
             sde_w_cutoff=args.sde_w_cutoff,
             sde_log_timesteps=args.sde_log_timesteps,
             return_trunk_latent=confidence_head is not None,
+            geometry_guidance=guidance if guidance.max_step_A > 0.0 else None,
         )
         batch_plddt = None
         if confidence_head is not None:
@@ -429,6 +449,17 @@ def main() -> int:
         "sde_eps": args.sde_eps,
         "sde_w_cutoff": args.sde_w_cutoff,
         "sde_log_timesteps": args.sde_log_timesteps,
+        "geometry_guidance": {
+            "props": str(guidance.props_path) if guidance.props_path else None,
+            "props_sha256": file_sha256(guidance.props_path) if guidance.max_step_A > 0.0 else None,
+            "start_t": guidance.start_t,
+            "every_n_steps": guidance.every_n_steps,
+            "max_step_A": guidance.max_step_A,
+            "bond_weight": guidance.bond_weight,
+            "angle_weight": guidance.angle_weight,
+            "clash_weight": guidance.clash_weight,
+            "backbone_scale": guidance.backbone_scale,
+        },
         "max_batch_residues": args.max_batch_residues,
         "targets": len(targets),
         "sampled": len(results),

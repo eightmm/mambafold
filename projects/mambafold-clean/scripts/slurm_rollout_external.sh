@@ -22,8 +22,29 @@ N_STEPS="${MF_BENCHMARK_STEPS:-500}"
 SDE_TAU="${MF_BENCHMARK_SDE_TAU:-0.01}"
 SEED="${MF_BENCHMARK_SEED:-42}"
 LIMIT="${MF_BENCHMARK_LIMIT:-0}"
+TARGET_IDS_ARGS=()
+if [[ -n "${MF_BENCHMARK_TARGET_IDS:-}" ]]; then
+  test -s "$MF_BENCHMARK_TARGET_IDS"
+  TARGET_IDS_ARGS=(--target_ids "$MF_BENCHMARK_TARGET_IDS")
+fi
 PLDDT_CHECKPOINT="${MF_PLDDT_CHECKPOINT:-}"
 OUT_ROOT="${MF_BENCHMARK_OUT_ROOT:-outputs/benchmarks/run-a-final}"
+GUIDE_MAX_STEP_A="${MF_GEOMETRY_GUIDE_MAX_STEP_A:-0}"
+GUIDE_ARGS=()
+if [[ "$GUIDE_MAX_STEP_A" != "0" ]]; then
+  OST_ROOT="$(dirname "$(dirname "$OPENSTRUCTURE_OST")")"
+  GUIDE_ARGS=(
+    --geometry-guide-props "$OST_ROOT/share/openstructure/stereo_chemical_props.txt"
+    --geometry-guide-start "${MF_GEOMETRY_GUIDE_START:-0.90}"
+    --geometry-guide-every "${MF_GEOMETRY_GUIDE_EVERY:-10}"
+    --geometry-guide-max-step-A "$GUIDE_MAX_STEP_A"
+    --geometry-guide-bond-weight "${MF_GEOMETRY_GUIDE_BOND_WEIGHT:-1.0}"
+    --geometry-guide-angle-weight "${MF_GEOMETRY_GUIDE_ANGLE_WEIGHT:-1.0}"
+    --geometry-guide-clash-weight "${MF_GEOMETRY_GUIDE_CLASH_WEIGHT:-1.0}"
+    --geometry-guide-backbone-scale "${MF_GEOMETRY_GUIDE_BACKBONE_SCALE:-0.1}"
+  )
+  test -s "${GUIDE_ARGS[1]}"
+fi
 case "$DATASET" in
   casp14) FASTA="benchmarks/external_testsets/casp14_70.fasta" ;;
   casp15) FASTA="benchmarks/external_testsets/casp15_single_chain_22.fasta" ;;
@@ -59,6 +80,8 @@ exec "$MFCLEAN_PYTHON" scripts/rollout.py \
   --sde_eps 0.01 \
   --sde_w_cutoff 0.99 \
   --sde_log_timesteps \
+  "${GUIDE_ARGS[@]}" \
   --max_batch_residues 2048 \
   --limit "$LIMIT" \
+  "${TARGET_IDS_ARGS[@]}" \
   --use_ema
