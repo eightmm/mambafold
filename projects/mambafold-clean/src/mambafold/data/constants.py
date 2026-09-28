@@ -1,0 +1,149 @@
+"""Canonical amino acid and atom constants for protein structure prediction."""
+
+import numpy as np
+
+# 20 standard amino acids (3-letter → 1-letter → index)
+AA_3TO1 = {
+    "ALA": "A",
+    "ARG": "R",
+    "ASN": "N",
+    "ASP": "D",
+    "CYS": "C",
+    "GLN": "Q",
+    "GLU": "E",
+    "GLY": "G",
+    "HIS": "H",
+    "ILE": "I",
+    "LEU": "L",
+    "LYS": "K",
+    "MET": "M",
+    "PHE": "F",
+    "PRO": "P",
+    "SER": "S",
+    "THR": "T",
+    "TRP": "W",
+    "TYR": "Y",
+    "VAL": "V",
+}
+
+AA_TO_ID = {aa: i for i, aa in enumerate(sorted(AA_3TO1.keys()))}
+AA_TO_ID["UNK"] = 20
+
+ID_TO_AA = {v: k for k, v in AA_TO_ID.items()}
+
+# Maximum heavy atoms per residue. TRP is the largest standard residue at 14
+# heavy atoms, and no entry in RESIDUE_ATOMS below carries OXT, so the old
+# 15-slot layout reserved a slot that nothing ever wrote: it padded every
+# atom-axis tensor by 1/15 and made the slot mixer a 15x15 map over 14 real
+# slots. If a terminal OXT is ever added it has to be added to RESIDUE_ATOMS,
+# the atom-name vocabulary, and the (residue, atom) pair vocabulary — reserving
+# an empty slot here does not make it reachable.
+MAX_ATOMS_PER_RES = 14
+
+# Canonical heavy atom names per residue type (atom14 layout).
+# Order: N, CA, C, O, CB, then side-chain specific.
+CA_ATOM_ID = 1
+
+# Per-residue heavy atom slot table
+# Each residue maps to a list of atom names in canonical order (up to 14 slots)
+# Slot index corresponds to atom_type encoding
+RESIDUE_ATOMS = {
+    "ALA": ["N", "CA", "C", "O", "CB"],
+    "ARG": ["N", "CA", "C", "O", "CB", "CG", "CD", "NE", "CZ", "NH1", "NH2"],
+    "ASN": ["N", "CA", "C", "O", "CB", "CG", "OD1", "ND2"],
+    "ASP": ["N", "CA", "C", "O", "CB", "CG", "OD1", "OD2"],
+    "CYS": ["N", "CA", "C", "O", "CB", "SG"],
+    "GLN": ["N", "CA", "C", "O", "CB", "CG", "CD", "OE1", "NE2"],
+    "GLU": ["N", "CA", "C", "O", "CB", "CG", "CD", "OE1", "OE2"],
+    "GLY": ["N", "CA", "C", "O"],
+    "HIS": ["N", "CA", "C", "O", "CB", "CG", "ND1", "CD2", "CE1", "NE2"],
+    "ILE": ["N", "CA", "C", "O", "CB", "CG1", "CG2", "CD1"],
+    "LEU": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2"],
+    "LYS": ["N", "CA", "C", "O", "CB", "CG", "CD", "CE", "NZ"],
+    "MET": ["N", "CA", "C", "O", "CB", "CG", "SD", "CE"],
+    "PHE": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ"],
+    "PRO": ["N", "CA", "C", "O", "CB", "CG", "CD"],
+    "SER": ["N", "CA", "C", "O", "CB", "OG"],
+    "THR": ["N", "CA", "C", "O", "CB", "OG1", "CG2"],
+    "TRP": [
+        "N",
+        "CA",
+        "C",
+        "O",
+        "CB",
+        "CG",
+        "CD1",
+        "CD2",
+        "NE1",
+        "CE2",
+        "CE3",
+        "CZ2",
+        "CZ3",
+        "CH2",
+    ],
+    "TYR": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "OH"],
+    "VAL": ["N", "CA", "C", "O", "CB", "CG1", "CG2"],
+    "UNK": ["N", "CA", "C", "O", "CB"],
+}
+
+# Build atom name → slot index mapping per residue
+RESIDUE_ATOM_TO_SLOT = {
+    res: {atom: i for i, atom in enumerate(atoms)} for res, atoms in RESIDUE_ATOMS.items()
+}
+
+# Atom type vocabulary (unique atom names across all residues)
+_all_atoms = sorted(set(a for atoms in RESIDUE_ATOMS.values() for a in atoms))
+ATOM_NAME_TO_ID = {name: i for i, name in enumerate(_all_atoms)}
+ATOM_NAME_TO_ID["PAD"] = len(_all_atoms)
+
+# Coordinate normalization
+COORD_SCALE = 16.0  # Angstrom -> normalized (SimpleFold processor scale)
+
+# (residue, atom) pair vocabulary — unique chemical identity per atom slot
+# Sorted by residue name then slot order for determinism.
+RESIDUE_ATOM_PAIRS: list[tuple[str, str]] = [
+    (res, atom) for res in sorted(RESIDUE_ATOMS.keys()) for atom in RESIDUE_ATOMS[res]
+]
+PAIR_TO_ID: dict[tuple[str, str], int] = {p: i for i, p in enumerate(RESIDUE_ATOM_PAIRS)}
+PAIR_PAD_ID: int = len(RESIDUE_ATOM_PAIRS)  # index for empty/padding slots
+NUM_PAIR_TYPES: int = len(RESIDUE_ATOM_PAIRS) + 1  # +1 for PAD
+
+# ── Boltz npz structured array dtypes ────────────────────────────────────────
+
+BOLTZ_RESIDUES_DTYPE = np.dtype(
+    [
+        ("name", "<U5"),
+        ("res_type", "i1"),
+        ("res_idx", "<i4"),
+        ("atom_idx", "<i4"),
+        ("atom_num", "<i4"),
+        ("atom_center", "<i4"),
+        ("atom_disto", "<i4"),
+        ("is_standard", "?"),
+        ("is_present", "?"),
+    ]
+)
+BOLTZ_ATOMS_DTYPE = np.dtype(
+    [
+        ("name", "i1", (4,)),
+        ("element", "i1"),
+        ("charge", "i1"),
+        ("coords", "<f4", (3,)),
+        ("conformer", "<f4", (3,)),
+        ("is_present", "?"),
+        ("chirality", "i1"),
+    ]
+)
+BOLTZ_CHAINS_DTYPE = np.dtype(
+    [
+        ("name", "<U5"),
+        ("mol_type", "i1"),
+        ("entity_id", "<i4"),
+        ("sym_id", "<i4"),
+        ("asym_id", "<i4"),
+        ("atom_idx", "<i4"),
+        ("atom_num", "<i4"),
+        ("res_idx", "<i4"),
+        ("res_num", "<i4"),
+    ]
+)

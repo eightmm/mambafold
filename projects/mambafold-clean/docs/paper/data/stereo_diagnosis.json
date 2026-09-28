@@ -1,0 +1,804 @@
+{
+  "schema_version": 1,
+  "checkpoint_sha256": "8ad6079edff800912e3c6b175e896221344cb4bb6b866bd7b3dd7e474b325f1e",
+  "scorer": "OpenStructure 2.9.1",
+  "no_stereocheck_flag": "--lddt-no-stereochecks",
+  "datasets": {
+    "casp15": {
+      "schema_version": 1,
+      "dataset": "casp15",
+      "manifest_sha256": "0c8002191cb86b7a4616ec38e892bd4a4c0594553fc65cc86b14c6ccaf0879cd",
+      "target_count": 19,
+      "reference_pair_count": 28,
+      "aggregation": "mapped-residue-weighted within target, unweighted across targets",
+      "means": {
+        "mambafold": {
+          "default_lddt": 0.5159270523213714,
+          "no_stereocheck_lddt": 0.6701848564056312,
+          "penalty": 0.1542578040842597,
+          "bad_bonds": 0.5263157894736842,
+          "bad_angles": 0.21052631578947367,
+          "clashes": 349.7894736842105
+        },
+        "simplefold_360m": {
+          "default_lddt": 0.658783338494365,
+          "no_stereocheck_lddt": 0.6727158485837035,
+          "penalty": 0.013932510089338507,
+          "bad_bonds": 3.5789473684210527,
+          "bad_angles": 0.42105263157894735,
+          "clashes": 10.052631578947368
+        }
+      },
+      "targets": [
+        {
+          "target_id": "t1104",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.372,
+            "no_stereocheck_lddt": 0.512,
+            "penalty": 0.14,
+            "bad_bonds": 0.0,
+            "bad_angles": 1.0,
+            "clashes": 56.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.696,
+            "no_stereocheck_lddt": 0.695,
+            "penalty": -0.0010000000000000009,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1106s1",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.31,
+            "no_stereocheck_lddt": 0.627,
+            "penalty": 0.317,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 132.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.583,
+            "no_stereocheck_lddt": 0.583,
+            "penalty": 0.0,
+            "bad_bonds": 1.0,
+            "bad_angles": 1.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1120",
+          "reference_pairs": 2,
+          "mambafold": {
+            "default_lddt": 0.6446842105263157,
+            "no_stereocheck_lddt": 0.7330438596491229,
+            "penalty": 0.08835964912280704,
+            "bad_bonds": 2.0,
+            "bad_angles": 2.0,
+            "clashes": 25.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.7421140350877193,
+            "no_stereocheck_lddt": 0.7533508771929825,
+            "penalty": 0.011236842105263167,
+            "bad_bonds": 3.0,
+            "bad_angles": 1.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1129s2",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.026,
+            "no_stereocheck_lddt": 0.172,
+            "penalty": 0.146,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 2032.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.141,
+            "no_stereocheck_lddt": 0.176,
+            "penalty": 0.035,
+            "bad_bonds": 19.0,
+            "bad_angles": 0.0,
+            "clashes": 65.0
+          }
+        },
+        {
+          "target_id": "t1137s1",
+          "reference_pairs": 2,
+          "mambafold": {
+            "default_lddt": 0.5474615384615384,
+            "no_stereocheck_lddt": 0.6772307692307692,
+            "penalty": 0.12976923076923078,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 136.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.6629230769230768,
+            "no_stereocheck_lddt": 0.6752307692307692,
+            "penalty": 0.012307692307692318,
+            "bad_bonds": 11.0,
+            "bad_angles": 6.0,
+            "clashes": 2.0
+          }
+        },
+        {
+          "target_id": "t1137s2",
+          "reference_pairs": 2,
+          "mambafold": {
+            "default_lddt": 0.6120408163265306,
+            "no_stereocheck_lddt": 0.7833848396501458,
+            "penalty": 0.1713440233236152,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 106.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.7004548104956269,
+            "no_stereocheck_lddt": 0.77200583090379,
+            "penalty": 0.07155102040816322,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 77.0
+          }
+        },
+        {
+          "target_id": "t1137s3",
+          "reference_pairs": 2,
+          "mambafold": {
+            "default_lddt": 0.6173578274760384,
+            "no_stereocheck_lddt": 0.8081437699680512,
+            "penalty": 0.19078594249201286,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 491.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.784670926517572,
+            "no_stereocheck_lddt": 0.8122811501597444,
+            "penalty": 0.027610223642172495,
+            "bad_bonds": 12.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1137s4",
+          "reference_pairs": 3,
+          "mambafold": {
+            "default_lddt": 0.32401647058823535,
+            "no_stereocheck_lddt": 0.6521223529411765,
+            "penalty": 0.3281058823529411,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 625.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.6442305882352941,
+            "no_stereocheck_lddt": 0.6442305882352941,
+            "penalty": 0.0,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1137s5",
+          "reference_pairs": 2,
+          "mambafold": {
+            "default_lddt": 0.6516759776536313,
+            "no_stereocheck_lddt": 0.7437625698324022,
+            "penalty": 0.09208659217877097,
+            "bad_bonds": 2.0,
+            "bad_angles": 0.0,
+            "clashes": 127.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.6855782122905029,
+            "no_stereocheck_lddt": 0.6961452513966481,
+            "penalty": 0.01056703910614526,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 2.0
+          }
+        },
+        {
+          "target_id": "t1137s6",
+          "reference_pairs": 2,
+          "mambafold": {
+            "default_lddt": 0.5489949874686716,
+            "no_stereocheck_lddt": 0.7022556390977444,
+            "penalty": 0.15326065162907268,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 368.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.6508847117794487,
+            "no_stereocheck_lddt": 0.6706942355889723,
+            "penalty": 0.01980952380952376,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 11.0
+          }
+        },
+        {
+          "target_id": "t1137s7",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.548,
+            "no_stereocheck_lddt": 0.779,
+            "penalty": 0.23099999999999998,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 918.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.693,
+            "no_stereocheck_lddt": 0.728,
+            "penalty": 0.03500000000000003,
+            "bad_bonds": 10.0,
+            "bad_angles": 0.0,
+            "clashes": 8.0
+          }
+        },
+        {
+          "target_id": "t1137s8",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.834,
+            "no_stereocheck_lddt": 0.834,
+            "penalty": 0.0,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.824,
+            "no_stereocheck_lddt": 0.824,
+            "penalty": 0.0,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1137s9",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.675,
+            "no_stereocheck_lddt": 0.748,
+            "penalty": 0.07299999999999995,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 16.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.798,
+            "no_stereocheck_lddt": 0.798,
+            "penalty": 0.0,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1139",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.43,
+            "no_stereocheck_lddt": 0.537,
+            "penalty": 0.10700000000000004,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 239.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.574,
+            "no_stereocheck_lddt": 0.577,
+            "penalty": 0.0030000000000000027,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1145",
+          "reference_pairs": 2,
+          "mambafold": {
+            "default_lddt": 0.34338216560509555,
+            "no_stereocheck_lddt": 0.5345684713375797,
+            "penalty": 0.19118630573248407,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 690.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.4990270700636943,
+            "no_stereocheck_lddt": 0.5116624203821656,
+            "penalty": 0.012635350318471348,
+            "bad_bonds": 2.0,
+            "bad_angles": 0.0,
+            "clashes": 6.0
+          }
+        },
+        {
+          "target_id": "t1150",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.531,
+            "no_stereocheck_lddt": 0.697,
+            "penalty": 0.16599999999999993,
+            "bad_bonds": 2.0,
+            "bad_angles": 1.0,
+            "clashes": 147.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.711,
+            "no_stereocheck_lddt": 0.716,
+            "penalty": 0.0050000000000000044,
+            "bad_bonds": 2.0,
+            "bad_angles": 0.0,
+            "clashes": 1.0
+          }
+        },
+        {
+          "target_id": "t1180",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.7710000000000001,
+            "no_stereocheck_lddt": 0.79,
+            "penalty": 0.019000000000000017,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 14.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.7930000000000001,
+            "no_stereocheck_lddt": 0.7990000000000002,
+            "penalty": 0.006000000000000006,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 1.0
+          }
+        },
+        {
+          "target_id": "t1188",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.551,
+            "no_stereocheck_lddt": 0.728,
+            "penalty": 0.17699999999999994,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 448.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.67,
+            "no_stereocheck_lddt": 0.686,
+            "penalty": 0.016000000000000014,
+            "bad_bonds": 5.0,
+            "bad_angles": 0.0,
+            "clashes": 18.0
+          }
+        },
+        {
+          "target_id": "t1194",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.4650000000000001,
+            "no_stereocheck_lddt": 0.675,
+            "penalty": 0.21000000000000002,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 76.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.664,
+            "no_stereocheck_lddt": 0.664,
+            "penalty": 0.0,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        }
+      ]
+    },
+    "casp16": {
+      "schema_version": 1,
+      "dataset": "casp16",
+      "manifest_sha256": "9e50bca7e205cb036a79903c5e7721bf5e2d26f14b69b962b5bb909132462e81",
+      "target_count": 18,
+      "reference_pair_count": 18,
+      "aggregation": "mapped-residue-weighted within target, unweighted across targets",
+      "means": {
+        "mambafold": {
+          "default_lddt": 0.4735555555555556,
+          "no_stereocheck_lddt": 0.6078888888888889,
+          "penalty": 0.1343333333333333,
+          "bad_bonds": 1.5555555555555556,
+          "bad_angles": 0.6666666666666666,
+          "clashes": 157.66666666666666
+        },
+        "simplefold_360m": {
+          "default_lddt": 0.579388888888889,
+          "no_stereocheck_lddt": 0.5946666666666667,
+          "penalty": 0.015277777777777776,
+          "bad_bonds": 8.722222222222221,
+          "bad_angles": 1.7222222222222223,
+          "clashes": 2.6666666666666665
+        }
+      },
+      "targets": [
+        {
+          "target_id": "t1208s1",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.53,
+            "no_stereocheck_lddt": 0.683,
+            "penalty": 0.15300000000000002,
+            "bad_bonds": 3.0,
+            "bad_angles": 0.0,
+            "clashes": 173.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.678,
+            "no_stereocheck_lddt": 0.696,
+            "penalty": 0.017999999999999905,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 9.0
+          }
+        },
+        {
+          "target_id": "t1208s2",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.509,
+            "no_stereocheck_lddt": 0.667,
+            "penalty": 0.15800000000000003,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 166.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.655,
+            "no_stereocheck_lddt": 0.657,
+            "penalty": 0.0020000000000000018,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 4.0
+          }
+        },
+        {
+          "target_id": "t1212",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.41000000000000003,
+            "no_stereocheck_lddt": 0.602,
+            "penalty": 0.19200000000000003,
+            "bad_bonds": 1.0,
+            "bad_angles": 2.0,
+            "clashes": 505.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.599,
+            "no_stereocheck_lddt": 0.603,
+            "penalty": 0.0040000000000000036,
+            "bad_bonds": 1.0,
+            "bad_angles": 1.0,
+            "clashes": 1.0
+          }
+        },
+        {
+          "target_id": "t1226",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.202,
+            "no_stereocheck_lddt": 0.34,
+            "penalty": 0.138,
+            "bad_bonds": 2.0,
+            "bad_angles": 0.0,
+            "clashes": 77.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.412,
+            "no_stereocheck_lddt": 0.412,
+            "penalty": 0.0,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1228v1",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.631,
+            "no_stereocheck_lddt": 0.706,
+            "penalty": 0.07499999999999996,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 111.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.712,
+            "no_stereocheck_lddt": 0.718,
+            "penalty": 0.006000000000000005,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 4.0
+          }
+        },
+        {
+          "target_id": "t1231",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.082,
+            "no_stereocheck_lddt": 0.279,
+            "penalty": 0.197,
+            "bad_bonds": 2.0,
+            "bad_angles": 1.0,
+            "clashes": 176.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.259,
+            "no_stereocheck_lddt": 0.289,
+            "penalty": 0.029999999999999975,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 4.0
+          }
+        },
+        {
+          "target_id": "t1239v1",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.52,
+            "no_stereocheck_lddt": 0.619,
+            "penalty": 0.09899999999999998,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 342.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.606,
+            "no_stereocheck_lddt": 0.614,
+            "penalty": 0.008000000000000007,
+            "bad_bonds": 6.0,
+            "bad_angles": 0.0,
+            "clashes": 3.0
+          }
+        },
+        {
+          "target_id": "t1244s1",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.763,
+            "no_stereocheck_lddt": 0.808,
+            "penalty": 0.04500000000000004,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 2.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.72,
+            "no_stereocheck_lddt": 0.72,
+            "penalty": 0.0,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1245s1",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.134,
+            "no_stereocheck_lddt": 0.402,
+            "penalty": 0.268,
+            "bad_bonds": 1.0,
+            "bad_angles": 1.0,
+            "clashes": 308.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.551,
+            "no_stereocheck_lddt": 0.551,
+            "penalty": 0.0,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1246",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.656,
+            "no_stereocheck_lddt": 0.769,
+            "penalty": 0.11299999999999999,
+            "bad_bonds": 2.0,
+            "bad_angles": 1.0,
+            "clashes": 20.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.75,
+            "no_stereocheck_lddt": 0.754,
+            "penalty": 0.0040000000000000036,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 1.0
+          }
+        },
+        {
+          "target_id": "t1267s1",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.459,
+            "no_stereocheck_lddt": 0.591,
+            "penalty": 0.13199999999999995,
+            "bad_bonds": 2.0,
+            "bad_angles": 1.0,
+            "clashes": 131.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.6079999999999999,
+            "no_stereocheck_lddt": 0.617,
+            "penalty": 0.009000000000000008,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 4.0
+          }
+        },
+        {
+          "target_id": "t1267s2",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.528,
+            "no_stereocheck_lddt": 0.68,
+            "penalty": 0.15200000000000002,
+            "bad_bonds": 2.0,
+            "bad_angles": 2.0,
+            "clashes": 124.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.694,
+            "no_stereocheck_lddt": 0.699,
+            "penalty": 0.0050000000000000044,
+            "bad_bonds": 2.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1271s3",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.267,
+            "no_stereocheck_lddt": 0.453,
+            "penalty": 0.18599999999999997,
+            "bad_bonds": 1.0,
+            "bad_angles": 1.0,
+            "clashes": 502.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.498,
+            "no_stereocheck_lddt": 0.501,
+            "penalty": 0.0030000000000000027,
+            "bad_bonds": 1.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1272s4",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.683,
+            "no_stereocheck_lddt": 0.716,
+            "penalty": 0.03299999999999992,
+            "bad_bonds": 4.0,
+            "bad_angles": 1.0,
+            "clashes": 9.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.615,
+            "no_stereocheck_lddt": 0.727,
+            "penalty": 0.11199999999999999,
+            "bad_bonds": 82.0,
+            "bad_angles": 17.0,
+            "clashes": 6.0
+          }
+        },
+        {
+          "target_id": "t1272s5",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.636,
+            "no_stereocheck_lddt": 0.694,
+            "penalty": 0.05799999999999994,
+            "bad_bonds": 4.0,
+            "bad_angles": 1.0,
+            "clashes": 45.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.624,
+            "no_stereocheck_lddt": 0.683,
+            "penalty": 0.05900000000000005,
+            "bad_bonds": 60.0,
+            "bad_angles": 12.0,
+            "clashes": 11.0
+          }
+        },
+        {
+          "target_id": "t1276",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.541,
+            "no_stereocheck_lddt": 0.697,
+            "penalty": 0.15599999999999992,
+            "bad_bonds": 2.0,
+            "bad_angles": 1.0,
+            "clashes": 78.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.321,
+            "no_stereocheck_lddt": 0.321,
+            "penalty": 0.0,
+            "bad_bonds": 0.0,
+            "bad_angles": 1.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1284",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.238,
+            "no_stereocheck_lddt": 0.445,
+            "penalty": 0.20700000000000002,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 65.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.38,
+            "no_stereocheck_lddt": 0.379,
+            "penalty": -0.0010000000000000009,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 0.0
+          }
+        },
+        {
+          "target_id": "t1299",
+          "reference_pairs": 1,
+          "mambafold": {
+            "default_lddt": 0.735,
+            "no_stereocheck_lddt": 0.791,
+            "penalty": 0.05600000000000005,
+            "bad_bonds": 2.0,
+            "bad_angles": 0.0,
+            "clashes": 4.0
+          },
+          "simplefold_360m": {
+            "default_lddt": 0.747,
+            "no_stereocheck_lddt": 0.763,
+            "penalty": 0.016000000000000014,
+            "bad_bonds": 0.0,
+            "bad_angles": 0.0,
+            "clashes": 1.0
+          }
+        }
+      ]
+    }
+  }
+}
