@@ -6,6 +6,7 @@ This is a research draft and its auditable result package. The claim is bounded 
 - `reproducibility.md`: fixed checkpoint, sampler, target selection, reference/scorer contract, and commands.
 - `data/simplefold_360m_*_admitted.json`: target-level SimpleFold-360M scores recomputed on the exact admitted target IDs, with source-summary and ID-list SHA-256 hashes.
 - `data/matched_results.json`: machine-readable summary of all confirmed comparisons, generated after scoring.
+- `data/stereo_diagnosis.json`: matched CASP15/16 standard and no-stereocheck lDDT, plus stereochemical violation counts; the no-check scores are diagnostic only.
 
 CASP14 and CAMEO22 were inspected during development and serve as exploratory/diagnostic evidence. CASP15/16 were newly scored after this Run A checkpoint and SDE sampler were fixed, but the research team had seen these target families in an earlier project; this is a post-freeze check, not a fully blind prospective test. The coordinate-training homology screen is stricter than exact matching; it does not audit ESMC-6B pretraining exposure.
 
