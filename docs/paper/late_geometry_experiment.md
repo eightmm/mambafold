@@ -80,3 +80,38 @@ The current energy does not enforce all stereochemical constraints, including
 chirality and sidechain torsions. A lower clash count alone is not evidence of
 an accurate sidechain; the primary acceptance criterion is higher **default**
 OpenStructure all-atom lDDT without material loss of TM-score or backbone lDDT.
+
+The seed-0 named-atom chirality and coarse χ1/peptide-ω screen finds no Cα or
+Thr/Ile Cβ inversions in either arm on admitted CASP15/16 targets. It flags
+13→14 χ1 three-state deviations on CASP15 and 9→8 on CASP16; the numerators
+are small relative to 5,737 and 4,520 checked sidechains, respectively. This
+simple screen does not assess distal χ torsions or formal rotamer-library
+outliers. Mean experimental-reference χ1 agreement within 30° stays near
+0.68 on CASP15 and 0.67 on CASP16 in both arms. Full definitions and
+per-target counts are in
+[`data/late_geometry_local_geometry_seed0.json`](data/late_geometry_local_geometry_seed0.json).
+
+## Seed-1 sensitivity check
+
+Both baseline and guided samplers were rerun at seed 1 on the same admitted
+CASP15/16 target sets, checkpoint, references, and 500-step SDE settings.
+Rollout jobs 86488–86491 and scoring jobs 86492–86495 all exited 0. The
+paired machine-readable result, including OpenStructure violation counts,
+is [`data/late_geometry_seed1.json`](data/late_geometry_seed1.json).
+
+| Cohort | Targets / reference pairs | All-atom lDDT baseline → guided | Backbone lDDT baseline → guided | TM-score baseline → guided | Reported clashes per target baseline → guided |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CASP15 | 19 / 28 | 0.5124 → 0.5315 (+0.0191) | 0.7394 → 0.7395 | 0.6402 → 0.6401 | 377.9 → 310.5 |
+| CASP16 | 18 / 18 | 0.4772 → 0.5001 (+0.0229) | 0.6788 → 0.6791 | 0.5895 → 0.5869 | 152.8 → 120.4 |
+
+The lDDT gain appears on 17/19 CASP15 and 18/18 CASP16 targets, while
+CASP16 t1284 loses 0.048 TM-score despite gaining 0.018 all-atom lDDT.
+OpenStructure's mean reported bad bonds also rise from 0.68 to 1.00 on
+CASP15, as they did slightly at seed 0. Thus the current correction improves
+some all-atom geometry and scoring outcomes but does not guarantee fold
+preservation or improve every stereochemical check. The seed-1 local geometry
+screen finds no Cα or Thr/Ile Cβ inversions in either arm; target-level
+counts and experimental-reference χ1 agreement are in
+[`data/late_geometry_local_geometry_seed1.json`](data/late_geometry_local_geometry_seed1.json).
+This is a within-model sampler sensitivity check, not a new SimpleFold
+comparison or an independent training replicate.
