@@ -25,6 +25,12 @@ The SimpleFold-360M baseline originates from locally generated seed-0 prediction
 
 The SimpleFold comparison differs in pretrained PLM, corpus (SimpleFold additionally used AFESM), crop/training schedule, and optimization. Its score gap cannot be assigned to the SSM versus attention mixer. We have no matched-transformer control arm.
 
+## Stereochemistry diagnostic
+
+The same 28 admitted CASP15 domain/EU pairs and 18 CASP16 whole-chain pairs were rescored for both models with the same OpenStructure 2.9.1 command plus `--lddt-no-stereochecks`. The reference file SHA-256 matched between models for every pair. The script `benchmarks/diagnose_lddt_stereo.py` verifies that the original scores had stereochemistry checks enabled, verifies each no-check run succeeded, and uses the original mapped-residue weights within CASP15 targets. Its compact result is `data/stereo_diagnosis.json`; full per-pair scorer JSON is under the ignored `outputs/diagnostics/lddt-stereo-{casp15,casp16}/` directories. CPU-only Slurm jobs 86186 and 86187 completed with exit code 0. The diagnostic changes the scoring rule only; it neither fixes the structures nor replaces the reported benchmark lDDT.
+
+The prior geometry fine-tune comparison uses the same 62 CASP14 and 68 CAMEO22 admitted targets, with OpenStructure 2.9.1 standard scores under `outputs/benchmarks/{run-a-final,run-a-geo-clash-v2}/{casp14,cameo22}/scores-admitted/`. The geo checkpoint is `out/run-a-geo-clash-v2/ckpt_0010000.pt`. Violation counts are lengths of each raw scorer's `model_clashes` array, averaged across admitted targets; these are unnormalized counts, so only within-cohort, paired-run comparisons are meaningful.
+
 ## Reproduction commands
 
 Run heavy inference on a GPU compute node through Slurm; run scoring on `cpu_only`. The reference root below is the prepared official CASP dataset directory with `primary_reference_manifest.tsv` and `references/`.
