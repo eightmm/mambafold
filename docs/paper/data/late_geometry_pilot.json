@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "role": "selected CASP14 development pilot, not cohort estimate",
+  "target_ids_sha256": "5c6de8795a04574208b55c3c7b2a19b1e8af468955d2c0030cc3fa345f3c2ae5",
+  "checkpoint_sha256": "8ad6079edff800912e3c6b175e896221344cb4bb6b866bd7b3dd7e474b325f1e",
+  "sampler": {
+    "method": "sde",
+    "steps": 500,
+    "tau": 0.01,
+    "seed": 0
+  },
+  "guidance": {
+    "props": "OpenStructure 2.9.1 share/openstructure/stereo_chemical_props.txt",
+    "props_sha256": "24510899eeb49167cffedec8fa45363a4d08279c0c637a403b452f7d0ac09451",
+    "start_t": 0.9,
+    "every_n_steps": 10,
+    "max_step_A": 0.02,
+    "bond_weight": 1.0,
+    "angle_weight": 1.0,
+    "clash_weight": 1.0,
+    "backbone_scale": 0.1
+  },
+  "scorer": "OpenStructure 2.9.1 standard lDDT",
+  "rows": [
+    {
+      "target_id": "t1034",
+      "baseline": {
+        "lddt": 0.719,
+        "tm_score": 0.927,
+        "bb_lddt": 0.869,
+        "model_clashes": 46,
+        "model_bad_bonds": 0,
+        "model_bad_angles": 0
+      },
+      "guided": {
+        "lddt": 0.739,
+        "tm_score": 0.927,
+        "bb_lddt": 0.868,
+        "model_clashes": 34,
+        "model_bad_bonds": 0,
+        "model_bad_angles": 0
+      }
+    },
+    {
+      "target_id": "t1047s1",
+      "baseline": {
+        "lddt": 0.443,
+        "tm_score": 0.488,
+        "bb_lddt": 0.709,
+        "model_clashes": 196,
+        "model_bad_bonds": 4,
+        "model_bad_angles": 1
+      },
+      "guided": {
+        "lddt": 0.455,
+        "tm_score": 0.488,
+        "bb_lddt": 0.71,
+        "model_clashes": 161,
+        "model_bad_bonds": 0,
+        "model_bad_angles": 1
+      }
+    },
+    {
+      "target_id": "t1049",
+      "baseline": {
+        "lddt": 0.06,
+        "tm_score": 0.35,
+        "bb_lddt": 0.322,
+        "model_clashes": 294,
+        "model_bad_bonds": 0,
+        "model_bad_angles": 0
+      },
+      "guided": {
+        "lddt": 0.075,
+        "tm_score": 0.352,
+        "bb_lddt": 0.322,
+        "model_clashes": 237,
+        "model_bad_bonds": 0,
+        "model_bad_angles": 0
+      }
+    },
+    {
+      "target_id": "t1064",
+      "baseline": {
+        "lddt": 0.062,
+        "tm_score": 0.271,
+        "bb_lddt": 0.281,
+        "model_clashes": 248,
+        "model_bad_bonds": 0,
+        "model_bad_angles": 0
+      },
+      "guided": {
+        "lddt": 0.07,
+        "tm_score": 0.254,
+        "bb_lddt": 0.281,
+        "model_clashes": 202,
+        "model_bad_bonds": 0,
+        "model_bad_angles": 0
+      }
+    }
+  ]
+}

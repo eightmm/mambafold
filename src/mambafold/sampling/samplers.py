@@ -17,6 +17,7 @@ from torch import Tensor
 
 from mambafold.data.constants import CA_ATOM_ID, COORD_SCALE, PAIR_PAD_ID
 from mambafold.data.types import ProteinBatch, ProteinExample
+from mambafold.sampling.geometry_guidance import LateGeometryGuidance, guide_clean_estimate
 from mambafold.utils.geometry import masked_centroid
 
 _T_END = 0.99
@@ -271,6 +272,7 @@ def sample(
     sde_w_cutoff: float = 0.99,
     sde_log_timesteps: bool = True,
     return_trunk_latent: bool = True,
+    geometry_guidance: LateGeometryGuidance | None = None,
 ) -> SampleResult:
     """Sample one independent trajectory per batch row.
 
@@ -290,6 +292,10 @@ def sample(
         raise ValueError("sde_tau must be non-negative")
     if sde_eps <= 0.0:
         raise ValueError("sde_eps must be positive")
+    if geometry_guidance is not None:
+        geometry_guidance.validate()
+        if geometry_guidance.max_step_A > 0.0 and method != "sde":
+            raise ValueError("late geometry guidance currently requires SDE sampling")
 
     model.eval()
     device = static_batch.device
@@ -330,7 +336,19 @@ def sample(
         )
         with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=amp_enabled):
             velocity = model(batch)["v_atom"] * atom_mask_f
-        x_self_cond = ((x + (1.0 - time) * velocity) * atom_mask_f).detach()
+        clean_estimate = (x + (1.0 - time) * velocity) * atom_mask_f
+        correction = None
+        if (
+            geometry_guidance is not None
+            and geometry_guidance.max_step_A > 0.0
+            and time >= geometry_guidance.start_t
+            and step % geometry_guidance.every_n_steps == 0
+        ):
+            correction = guide_clean_estimate(
+                clean_estimate, static_batch, geometry_guidance, time=time
+            )
+            clean_estimate = clean_estimate + correction
+        x_self_cond = clean_estimate.detach()
 
         if method == "sde":
             weight = 0.0 if time >= sde_w_cutoff else (1.0 - time) / (time + sde_eps)
@@ -348,6 +366,8 @@ def sample(
                 x = (x + noise_scale * _center_per_example(noise, atom_mask)) * atom_mask_f
         else:
             x = (x + delta_t * velocity) * atom_mask_f
+        if correction is not None:
+            x = (x + correction) * atom_mask_f
         x = _center_per_example(x, atom_mask)
 
     final_time = float(schedule_cpu[-1])
