@@ -58,6 +58,10 @@ streams, length-similar proteins per update, single-process input/LR audits
 not recorded. Reading: distinct proteins help backbone/global fold, not AA at
 10k. Long eight-GPU production still needs explicit user confirmation.
 
+CI: .github/workflows/check.yml runs syntax-only `python -m compileall -q
+scripts src benchmarks tests` on push/PR (seconds). The test suite needs
+torch/CUDA and runs only as Slurm jobs on the cluster, never in CI.
+
 ## Current: flat_fine6 selected by seed replicates (2026-10-28)
 
 The user authorized five scratch WSD10k single-GPU runs to test whether
