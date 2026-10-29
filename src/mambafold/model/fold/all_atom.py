@@ -8,12 +8,16 @@ Outputs:
     v_atom        [B, L, A, 3]   — all-atom FM velocity
     trunk_latent  [B, L, d_res]  — residue representation for downstream heads
 
-The model is intentionally single-path: no separate coarse path and no
-recycling loop. The mainline reasons at three SSM levels — atom → token → atom:
-an atom-level BiMamba encoder pools each residue's atoms into a token, a
-pair-free BiMamba residue trunk does global inter-residue reasoning, and an
-atom-level BiMamba decoder reads the residue latent back out into per-atom
-velocities (see `atom_mamba.py`).
+The main path is atom → residue → atom. The Run A and latent recipes mix
+intra-residue atom slots with MLP blocks and run BiMamba along backbone atom
+streams before pooling and after residue-to-atom decoding. The residue trunk
+is pair-free BiMamba. An intra-residue BiMamba mixer is also supported by
+`atom_mixer=mamba` (see `atom_mamba.py`).
+
+An optional latent residual compresses consecutive residue groups, mixes
+them with BiMamba and restores residue-specific updates, either at the trunk
+midpoint or after the full trunk. It preserves the full-resolution path and is
+disabled for Run A.
 
 There is no attention and no pair stack, and neither is reachable by config.
 Both were removed rather than switched off: an O(L²) triangle-update path that
@@ -27,10 +31,11 @@ model and is not part of this model.
 
 from __future__ import annotations
 
-import math
+from contextlib import nullcontext
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 
 from mambafold.data.constants import AA_TO_ID, CA_ATOM_ID, MAX_ATOMS_PER_RES
@@ -39,37 +44,16 @@ from mambafold.model.bimamba3 import MambaStack
 from mambafold.model.embeddings import (
     CoordinateFourierEmbedder,
     SequenceFourierEmbedder,
+    TimeEmbedding,
 )
 from mambafold.model.fold.atom_mamba import AtomDecoder, AtomEncoder, FiLM
+from mambafold.model.fold.latent_mamba import (
+    LatentMambaResidual,
+    ResidueLatentRefiner,
+    SharedTrunkRefiner,
+)
 
 NUM_RES_TYPES = len(AA_TO_ID)  # 21 (20 AAs + UNK)
-
-
-class TimeEmbedding(nn.Module):
-    """Sinusoidal embedding of the FM time t ∈ [0, 1] → MLP → [B, d_out].
-
-    Replaces the previous single-scalar `t` feature so the noise level is a rich
-    vector the trunk and atom blocks can be modulated by (see FiLM).
-    """
-
-    def __init__(self, d_out: int, n_freqs: int = 64):
-        super().__init__()
-        self.register_buffer(
-            "freqs",
-            torch.exp(torch.linspace(0.0, math.log(1000.0), n_freqs)),
-            persistent=False,
-        )
-        self.mlp = nn.Sequential(
-            nn.Linear(2 * n_freqs, d_out),
-            nn.SiLU(),
-            nn.Linear(d_out, d_out),
-        )
-
-    def forward(self, t: Tensor) -> Tensor:
-        t = t.reshape(t.shape[0], 1).to(self.freqs.dtype)  # [B, 1]
-        ang = t * self.freqs  # [B, n_freqs]
-        emb = torch.cat([torch.sin(ang), torch.cos(ang)], dim=-1)
-        return self.mlp(emb)  # [B, d_out]
 
 
 class MambaFoldAllAtom(nn.Module):
@@ -90,6 +74,31 @@ class MambaFoldAllAtom(nn.Module):
         expand: Mamba inner-dim multiplier. Default 2.
         headdim: Mamba head dim. Default 64.
         bidirectional: BiMamba (default True) vs causal Mamba.
+        latent_compression: Residues per latent (4, 8 or 16); 0 disables the branch.
+        d_latent: Width of the optional compressed latent stream.
+        n_latent_layers: Number of independent latent BiMamba blocks.
+        latent_loops: Passes through the shared latent stack at fixed FM time.
+        latent_loop_mode: Plain recurrence or normalized, input-injected,
+            continuously depth-conditioned recurrence.
+        latent_position: "midpoint" (after n_trunk // 2 blocks) or "post"
+            (after the whole trunk, directly before the atom decoder).
+        latent_supervision: "final" or training-only LiFT velocity readouts.
+        residue_refiner: Add an identity-initialized shared correction after
+            the complete trunk. Both residue/latent stacks use d_latent width;
+            pretrained trunk conditioning and normalization stay unchanged.
+        shared_trunk_layers: Move a full-width suffix into the recurrent core.
+            n_trunk then denotes executed full-width depth at configured K;
+            the independent prelude has n_trunk - K * shared_trunk_layers blocks.
+        latent_hierarchy: Keep the fine latent blocks and add two coarse blocks
+            after the first n_latent_layers // 2, with initially zero residual
+            restoration.
+        latent_coarse_width: Coarse hierarchy width; 0 uses d_latent.
+        atom_recycling: "none" preserves the original path. "reset" and "carry"
+            run full atom/residue/latent passes, differing only in whether each
+            pass reads the initial or preceding decoded hidden atom state.
+        recycle_policy: "legacy" preserves the original recurrence. "fixed2",
+            "fixed4" and "sampled16_tail2" reinject the live initial residue/PLM
+            state; only the sampled policy truncates recurrent gradients.
     """
 
     def __init__(
@@ -128,8 +137,83 @@ class MambaFoldAllAtom(nn.Module):
         n_atom_cross_layers: int = 1,
         n_backbone_streams: int = 5,
         self_conditioning: bool = False,
+        latent_compression: int = 0,
+        d_latent: int = 256,
+        n_latent_layers: int = 2,
+        latent_loops: int = 2,
+        latent_loop_mode: str = "conditioned",
+        latent_position: str = "post",
+        latent_supervision: str = "final",
+        residue_refiner: bool = False,
+        atom_recurrence: bool = False,
+        shared_trunk_layers: int = 0,
+        latent_hierarchy: bool = False,
+        latent_coarse_width: int = 0,
+        atom_recycling: str = "none",
+        recycle_policy: str = "legacy",
     ):
         super().__init__()
+        if latent_loop_mode not in ("plain", "conditioned"):
+            raise ValueError("latent_loop_mode must be plain or conditioned")
+        if type(latent_loops) is not int or latent_loops < 1:
+            raise ValueError("latent_loops must be a positive integer")
+        if latent_compression not in (0, 4, 8, 16):
+            raise ValueError("latent_compression must be 0, 4, 8 or 16")
+        if latent_position not in ("midpoint", "post"):
+            raise ValueError("latent_position must be midpoint or post")
+        if latent_compression and latent_position == "midpoint" and n_trunk < 2:
+            raise ValueError("latent residual requires at least two trunk blocks")
+        if latent_supervision not in ("final", "lift"):
+            raise ValueError("latent_supervision must be final or lift")
+        if latent_supervision == "lift" and (
+            not latent_compression or latent_position != "post" or latent_loop_mode != "conditioned"
+        ):
+            raise ValueError("LiFT requires an enabled post-trunk conditioned latent branch")
+        if type(residue_refiner) is not bool:
+            raise ValueError("residue_refiner must be a boolean")
+        if residue_refiner and (not latent_compression or latent_position != "post"
+                                or latent_loop_mode != "conditioned"):
+            raise ValueError("residue_refiner requires a post conditioned latent branch")
+        if type(atom_recurrence) is not bool or (atom_recurrence and not residue_refiner):
+            raise ValueError("atom_recurrence requires residue_refiner")
+        if (type(shared_trunk_layers) is not int or shared_trunk_layers < 0
+                or shared_trunk_layers * latent_loops >= n_trunk and shared_trunk_layers):
+            raise ValueError("shared trunk must leave a positive independent prelude")
+        if shared_trunk_layers and (not residue_refiner or atom_recurrence):
+            raise ValueError("shared trunk requires residue_refiner without atom recurrence")
+        if atom_recycling not in ("none", "reset", "carry"):
+            raise ValueError("atom_recycling must be none, reset or carry")
+        if atom_recycling != "none" and (
+                not residue_refiner or atom_recurrence
+                or shared_trunk_layers <= 0 or shared_trunk_layers % 2):
+            raise ValueError("atom_recycling requires residue_refiner, positive even shared "
+                             "trunk layers and no atom_recurrence")
+        if type(latent_hierarchy) is not bool or (latent_hierarchy and not shared_trunk_layers):
+            raise ValueError("latent hierarchy requires a shared trunk")
+        if latent_hierarchy and latent_compression != 4:
+            raise ValueError("latent hierarchy requires r4 compression")
+        if type(latent_coarse_width) is not int or latent_coarse_width < 0 or (
+                latent_coarse_width and not latent_hierarchy):
+            raise ValueError("latent_coarse_width must be 0 or a positive hierarchy width")
+        if recycle_policy not in ("legacy", "fixed2", "fixed4", "sampled16_tail2"):
+            raise ValueError("recycle_policy must be legacy, fixed2, fixed4 or sampled16_tail2")
+        if recycle_policy != "legacy" and (
+                atom_recycling != "carry" or latent_loops != 2
+                or latent_supervision != "lift"):
+            raise ValueError("recycle_policy requires atom_recycling=carry, nominal K=2 and LiFT")
+        self.shared_trunk_layers = shared_trunk_layers
+        # n_trunk retains the nominal executed full-width depth at training K.
+        prelude_layers = n_trunk - shared_trunk_layers * latent_loops
+        self.backbone_parameter_prefixes = (
+            ("latent_residual.residue_stack.",) if shared_trunk_layers else ()
+        )
+        self.residue_refiner = residue_refiner
+        self.atom_recurrence = atom_recurrence
+        self.atom_recycling = atom_recycling
+        self.recycle_policy = recycle_policy
+        self.refinement_training_loops = None
+        self.latent_position = latent_position
+        self.latent_supervision = latent_supervision
         self.d_res = d_res
         self.use_plm = use_plm
         self.d_plm = d_plm
@@ -180,10 +264,8 @@ class MambaFoldAllAtom(nn.Module):
         )
         self.film_trunk = FiLM(d_res, d_temb)
 
-        # Atom-level encoder: BiMamba over each residue's atom slots, then pool to
-        # a residue token. Replaces a flat atom-coordinate projection so the trunk
-        # token already carries intra-residue (side-chain) structure. Reuses the
-        # trunk's SSM hyperparameters.
+        # Local atom mixing and backbone-stream scans precede residue pooling.
+        # Atom SSM state/rank are independent of the full-resolution trunk.
         self.atom_encoder = AtomEncoder(
             d_atom,
             d_ca_emb,
@@ -234,10 +316,11 @@ class MambaFoldAllAtom(nn.Module):
 
         # ── Sequence trunk ──────────────────────────────────────────────
         # Roughly the one-third and two-thirds marks.
-        self.plm_inject_at = tuple(sorted({n_trunk // 3, (2 * n_trunk) // 3})) if n_trunk else ()
+        original_inject_at = tuple(sorted({n_trunk // 3, (2 * n_trunk) // 3})) if n_trunk else ()
+        self.plm_inject_at = tuple(i for i in original_inject_at if i < prelude_layers)
         self.residue_trunk = MambaStack(
             d_res,
-            n_trunk,
+            prelude_layers,
             d_state=d_state,
             mimo_rank=mimo_rank,
             expand=expand,
@@ -246,10 +329,31 @@ class MambaFoldAllAtom(nn.Module):
             d_temb=d_temb,
             bimamba_share=bimamba_share,
         )
+        latent_class = ResidueLatentRefiner if residue_refiner else LatentMambaResidual
+        if shared_trunk_layers:
+            latent_class = SharedTrunkRefiner
+        self.latent_residual = (
+            latent_class(
+                d_res, latent_compression, d_latent, n_latent_layers,
+                n_loops=latent_loops,
+                loop_mode=latent_loop_mode,
+                d_temb=d_temb, d_state=d_state, mimo_rank=mimo_rank,
+                expand=expand, headdim=headdim, bimamba_share=bimamba_share,
+                **({'d_atom': d_atom} if residue_refiner and atom_recurrence else {}),
+                **(dict(shared_layers=shared_trunk_layers, prelude_layers=prelude_layers,
+                        plm_inject_at=original_inject_at, hierarchy=latent_hierarchy,
+                        coarse_width=latent_coarse_width or None)
+                   if shared_trunk_layers else {}),
+            )
+            if latent_compression else None
+        )
+        if recycle_policy == "fixed4":
+            # Construction K still defines the prelude and PLM injection map.
+            # Execution depth changes without adding layers or consuming RNG.
+            self.latent_residual.n_loops = 4
 
         # ── all-atom output decoder ─────────────────────────────────────
-        # BiMamba over atom slots, conditioned on the trunk residue latent and
-        # skipping in the encoder's per-atom representation, → per-atom velocity.
+        # Atom-specific residue context and the encoder skip feed the decoder.
         self.atom_decoder = AtomDecoder(
             d_res,
             d_atom,
@@ -407,6 +511,60 @@ class MambaFoldAllAtom(nn.Module):
             "trunk_latent": res,
         }
 
+    def _recycle_atoms(
+        self, batch: ProteinBatch, res: Tensor, atom_token: Tensor,
+        atom_repr: Tensor, temb: Tensor, depths: Tensor, *, trajectory: bool,
+        reinject: Tensor | None,
+    ) -> dict:
+        """Recycle hidden state at fixed coordinates/time within one velocity call."""
+        branch = self.latent_residual
+        initial_atoms = atom_repr
+        predictions = [self._decode(batch, res, initial_atoms, temb)["v_atom"]] if trajectory else []
+        atom_mask = batch.atom_mask.unsqueeze(-1)
+        res_mask = batch.res_mask.unsqueeze(-1)
+        loops = depths.shape[1]
+        reinject_initial = self.recycle_policy != "legacy"
+        initial_res = (
+            (res if reinject is None else res + reinject).masked_fill(~res_mask, 0)
+            if reinject_initial else None
+        )
+        prefix = max(0, loops - 2) if trajectory and self.recycle_policy == "sampled16_tail2" else 0
+        for index in range(loops):
+            if prefix and index == prefix:
+                res, atom_repr = res.detach(), atom_repr.detach()
+            # Training coordinates were sampled before entering this context.
+            # Only the prefix activations are discarded; live initialization
+            # remains available to every supervised pass after the boundary.
+            with torch.no_grad() if index < prefix else nullcontext():
+                condition = temb + branch.depth_embed(depths[:, index:index + 1].float())
+                condition = F.rms_norm(condition, (condition.shape[-1],), eps=1e-6)
+                incoming = initial_atoms if self.atom_recycling == "reset" else atom_repr
+                token, atoms = self.atom_encoder.remix(incoming, batch, condition)
+                if reinject_initial:
+                    res = F.rms_norm(res, (res.shape[-1],), eps=1e-6) + initial_res
+                # Reuse the original atom-token projection without another bias.
+                feedback = F.linear(token - atom_token, self.trunk_proj.weight[:, :token.shape[-1]])
+                res = (res + feedback.tanh()).masked_fill(~res_mask, 0)
+                res = branch.refine_interleaved_once(
+                    res, batch.res_mask, condition, index=index, inject=reinject,
+                )
+                velocity, atom_repr = self.atom_decoder(
+                    res, atoms, batch, condition, return_features=True,
+                    predict_velocity=trajectory or index + 1 == loops,
+                    head_temb=temb,
+                )
+                if velocity is not None:
+                    velocity = velocity * atom_mask.to(velocity.dtype)
+                    if trajectory:
+                        predictions.append(velocity)
+        output = {"v_atom": velocity, "trunk_latent": res}
+        if trajectory:
+            output["v_atom_steps"] = tuple(predictions)
+            output["latent_depths"] = depths
+            if reinject_initial:
+                output["latent_supervised_steps"] = tuple(range(prefix + 1, loops + 1))
+        return output
+
     # ── forward ─────────────────────────────────────────────────────────
 
     def forward(
@@ -418,12 +576,15 @@ class MambaFoldAllAtom(nn.Module):
         Returns keys:
             v_atom       [B, L, A, 3]
             trunk_latent [B, L, d_res]
+        LiFT training additionally returns initial/recurrent v_atom_steps and
+        their latent_depths. Eval and no-grad calls only decode the last state.
         """
         temb = self.time_embed(batch.t)  # [B, d_temb]
         n_res = batch.res_mask.sum(dim=1, keepdim=True).clamp(min=1)
         temb = temb + self.length_embed(torch.log(n_res.to(temb.dtype)))
         coord_emb, ca_feat = self._atom_coord_embed(batch)  # [B,L,A,d], [B,L,d]
-        atom_token, atom_repr = self.atom_encoder(coord_emb, batch, temb)  # token [B,L,d_atom]
+        encoder_kwargs = {"safe_padding": True} if self.atom_recycling != "none" else {}
+        atom_token, atom_repr = self.atom_encoder(coord_emb, batch, temb, **encoder_kwargs)
         plm = self._embed_plm(batch, atom_token.dtype)
 
         res = self._compose_residue_input(batch, atom_token, ca_feat, plm)
@@ -434,6 +595,56 @@ class MambaFoldAllAtom(nn.Module):
             else None
         )
         res = self.residue_trunk(
-            res, batch.res_mask, temb, inject=reinject, inject_at=self.plm_inject_at
+            res, batch.res_mask, temb, inject=reinject, inject_at=self.plm_inject_at,
+            midpoint_residual=(
+                self.latent_residual if self.latent_position == "midpoint" else None
+            ),
         )
+        if self.latent_residual is not None and self.latent_position == "post":
+            branch = self.latent_residual
+            training_rollout = self.training and torch.is_grad_enabled()
+            training_loops = self.refinement_training_loops if self.training else None
+            if self.training and self.recycle_policy == "fixed4" and training_loops is None:
+                training_loops = 4
+            if self.training and self.recycle_policy != "legacy" and training_loops is not None:
+                if (type(training_loops) is not int or not 1 <= training_loops <= 16
+                        or self.recycle_policy == "fixed2" and training_loops != 2
+                        or self.recycle_policy == "fixed4" and training_loops != 4):
+                    raise ValueError("recycle policy received an incompatible runtime training K")
+            # Both objectives use the same training grids so the objective is
+            # the only difference. Sampling and no-grad self-conditioning use
+            # a uniform grid and only evaluate the final decoder.
+            depths = branch.depth_grid(
+                res.shape[0], res.device,
+                randomize=training_rollout and branch.loop_mode == "conditioned",
+                n_loops=training_loops,
+            )
+            trajectory = training_rollout and self.latent_supervision == "lift"
+            if self.atom_recycling != "none":
+                return self._recycle_atoms(
+                    batch, res, atom_token, atom_repr, temb, depths,
+                    trajectory=trajectory, reinject=reinject,
+                )
+            atom_kwargs = (
+                dict(atom_repr=atom_repr, atom_mask=batch.atom_mask)
+                if self.atom_recurrence else {}
+            )
+            if self.shared_trunk_layers:
+                atom_kwargs['inject'] = reinject
+            states = branch(res, batch.res_mask, temb, depths=depths,
+                            return_states=trajectory, **atom_kwargs)
+            if trajectory:
+                predictions = tuple(
+                    self._decode(batch, state.residue, state.atoms, temb)
+                    if self.atom_recurrence else self._decode(batch, state, atom_repr, temb)
+                    for state in states
+                )
+                output = predictions[-1]
+                output["v_atom_steps"] = tuple(pred["v_atom"] for pred in predictions)
+                output["latent_depths"] = depths
+                return output
+            if self.atom_recurrence:
+                res, atom_repr = states
+            else:
+                res = states
         return self._decode(batch, res, atom_repr, temb)

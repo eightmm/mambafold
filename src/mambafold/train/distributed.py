@@ -166,6 +166,20 @@ def distributed_max_int(value: int, device: torch.device | str) -> int:
     return int(result.item())
 
 
+def distributed_batch_info(
+    length: int | None, device: torch.device | str,
+) -> tuple[bool, int]:
+    """Agree on missing batches and padded length with one collective/readback.
+
+    A missing local batch still participates before any rank enters the model.
+    The maximum length is ignored when any rank is missing its batch.
+    """
+    info = torch.tensor([int(length is None), length or 0], device=device, dtype=torch.int64)
+    dist.all_reduce(info, op=dist.ReduceOp.MAX)
+    missing, maximum = info.tolist()
+    return bool(missing), maximum
+
+
 class GPUMonitor:
     """백그라운드 스레드에서 주기적으로 GPU 상태를 출력/로깅."""
 

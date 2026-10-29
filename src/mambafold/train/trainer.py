@@ -1,13 +1,31 @@
 """Model construction, LR scheduler, checkpoint I/O, and seeding."""
 
+import gc
 import math
 import os
 import random
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
+
+
+@contextmanager
+def freeze_training_setup():
+    """Keep persistent setup objects out of full GC scans during training.
+
+    New batch/graph objects still participate in normal cyclic collection.
+    The standalone training entrypoint owns the process's permanent generation;
+    all frozen objects are thawed on exit, including interpreter startup roots.
+    """
+    gc.collect()
+    gc.freeze()
+    try:
+        yield gc.get_freeze_count()
+    finally:
+        gc.unfreeze()
 
 
 def seed_all(seed: int):
@@ -16,6 +34,30 @@ def seed_all(seed: int):
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def sample_refinement_loops(step: int, seed: int) -> int:
+    """Rank-independent K=1/2/3 draw (1:2:1) without consuming training RNG.
+
+    Identical optimizer-step counters and run seeds give every rank and all
+    accumulated microbatches the same budget, including after checkpoint resume.
+    """
+    draw = random.Random(f"refinement-depth:{seed}:{step}").randrange(4)
+    return (1, 2, 2, 3)[draw]
+
+
+def sample_recycle_loops(step: int, seed: int) -> int:
+    """Sample K=1..16 with probability proportional to 1/K, without shared RNG.
+
+    Sampling once per optimizer step gives every rank and accumulated
+    microbatch the same budget, including after checkpoint resume.
+    """
+    if type(step) is not int or step < 0 or type(seed) is not int:
+        raise ValueError("recycle sampling requires a nonnegative integer step and integer seed")
+    depths = tuple(range(1, 17))
+    return random.Random(f"atom-recycle-depth:{seed}:{step}").choices(
+        depths, weights=tuple(1 / depth for depth in depths), k=1,
+    )[0]
 
 
 def capture_rng_state() -> dict:
@@ -48,6 +90,20 @@ def build_model(cfg: dict, device: str = "cpu"):
     return MambaFoldAllAtom(
         d_res=cfg.get("d_res", 256),
         n_trunk=cfg.get("n_trunk", 6),
+        latent_compression=cfg.get("latent_compression", 0),
+        d_latent=cfg.get("d_latent", 256),
+        n_latent_layers=cfg.get("n_latent_layers", 2),
+        latent_loops=cfg.get("latent_loops", 2),
+        latent_loop_mode=cfg.get("latent_loop_mode", "conditioned"),
+        latent_position=cfg.get("latent_position", "post"),
+        latent_supervision=cfg.get("latent_supervision", "final"),
+        residue_refiner=cfg.get("residue_refiner", False),
+        atom_recurrence=cfg.get("atom_recurrence", False),
+        atom_recycling=cfg.get("atom_recycling", "none"),
+        recycle_policy=cfg.get("recycle_policy", "legacy"),
+        shared_trunk_layers=cfg.get("shared_trunk_layers", 0),
+        latent_hierarchy=cfg.get("latent_hierarchy", False),
+        latent_coarse_width=cfg.get("latent_coarse_width", 0),
         d_res_type=cfg.get("d_res_type", 32),
         d_res_pos=cfg.get("d_res_pos", 64),
         d_plm=cfg.get("d_plm", 1536),
@@ -71,6 +127,89 @@ def build_model(cfg: dict, device: str = "cpu"):
     ).to(torch.device(device))
 
 
+
+def initialize_residue_refiner(model, source_state: dict, source_config: dict,
+                               target_config: dict) -> dict:
+    """Copy the complete learned backbone into a fresh additive refiner.
+
+    The reference function is the source folding backbone with its old latent
+    branch bypassed. That replaced branch is explicitly excluded, not reshaped.
+    This is a weights-only initialization and never restores optimizer state.
+    """
+    from mambafold.model.fold.latent_mamba import ResidueLatentRefiner
+
+    if not isinstance(model.latent_residual, ResidueLatentRefiner):
+        raise ValueError("target must enable the residue refiner")
+    shared_config = (
+        "d_res", "n_trunk", "d_temb", "d_ca_emb", "d_res_type", "d_res_pos",
+        "d_plm", "d_plm_proj", "use_plm", "d_state", "mimo_rank", "expand", "headdim",
+        "bimamba_share", "d_atom", "n_atom_layers", "atom_mixer", "atom_d_state",
+        "atom_mimo_rank", "n_atom_cross_layers", "n_backbone_streams", "self_conditioning",
+    )
+    mismatches = [key for key in shared_config
+                  if key in source_config and key in target_config
+                  and source_config[key] != target_config[key]]
+    if mismatches:
+        raise ValueError("backbone configuration differs: " + ", ".join(mismatches))
+    prefix = "latent_residual."
+    own = model.state_dict()
+    source_keys = {key for key in source_state if not key.startswith(prefix)}
+    target_keys = {key for key in own if not key.startswith(prefix)}
+    if source_keys != target_keys:
+        raise ValueError("backbone tensors differ; truncation or partial migration is forbidden")
+    if any(own[key].shape != source_state[key].shape for key in target_keys):
+        raise ValueError("backbone tensor shapes differ")
+    if any(layer.stable for layer in model.residue_trunk.layers):
+        raise ValueError("pretrained trunk normalization must stay unchanged")
+    count = model.residue_trunk.n_layers
+    if model.plm_inject_at != tuple(sorted({count // 3, 2 * count // 3})):
+        raise ValueError("pretrained PLM reinjection schedule differs")
+    if torch.count_nonzero(model.latent_residual.output_proj.weight).item():
+        raise ValueError("refiner readout must be fresh and zero-initialized")
+    atom_refiner = model.latent_residual.atom_refiner
+    if atom_refiner is not None and any(
+        torch.count_nonzero(layer.weight).item()
+        for layer in (atom_refiner.atom_out, atom_refiner.res_out)
+    ):
+        raise ValueError("atom refiner readouts must be fresh and zero-initialized")
+    # Complete validation precedes copying: failed admission cannot partially
+    # replace a caller's model. No learned suffix is remapped into a new norm.
+    own.update({key: source_state[key] for key in target_keys})
+    model.load_state_dict(own, strict=True)
+    return {
+        "reference": "source backbone with old latent branch bypassed",
+        "copied": sorted(target_keys),
+        "initialized": sorted(set(own) - target_keys),
+        "excluded_source": sorted(set(source_state) - source_keys),
+        "plm_inject_at": list(model.plm_inject_at),
+        "optimizer": "fresh; weights-only initialization",
+    }
+
+
+def initialize_refiner_from_checkpoint(model, path, config: dict) -> dict:
+    """Load only EMA backbone weights; legacy optimizer/data/EMA state is unused."""
+    import hashlib
+
+    path = Path(path)
+    state = torch.load(path, map_location="cpu", mmap=True, weights_only=False)
+    from mambafold.model.bimamba3 import mamba3_runtime_info
+
+    source_runtime = state.get("mamba3_runtime")
+    current_runtime = mamba3_runtime_info()
+    if not isinstance(source_runtime, dict) or any(
+        source_runtime.get(key) != current_runtime[key]
+        for key in ("revision", "module_sha256", "decay")
+    ):
+        raise ValueError("refiner initialization requires the same recorded Mamba3 runtime")
+    receipt = initialize_residue_refiner(model, state["ema"], state["args"], config)
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    receipt.update(checkpoint_step=int(state["step"]), weight_source="ema",
+                   checkpoint_sha256=digest.hexdigest())
+    return receipt
+
 def linear_warmup_lr(
     optimizer,
     warmup_steps: int,
@@ -81,28 +220,20 @@ def linear_warmup_lr(
 ):
     """SimpleFold's `LinearWarmup`, plus an optional cosine cooldown.
 
-    The reference schedule ramps min_lr → max_lr and then holds max_lr for the
-    whole run, with no decay; `cooldown_steps=0` reproduces that exactly. A
-    declared deviation is available because the trunk is not a transformer:
-    attention tolerates a flat rate to the last step, while a selective SSM
-    carries learned discretisation parameters that keep moving at 1e-4, and
-    with EMA 0.999 the reported model is an average over only the final ~1000
-    steps — i.e. an average taken at the noise floor. The cooldown costs
-    nothing if the flat rate was fine and rescues the ending if it was not.
-
-    There is no decay phase. The reference schedule
-    (`utils/lr_scheduler.py::LinearWarmup`) interpolates linearly from `min_lr`
-    to `max_lr` across `warmup_steps` and returns `max_lr` for every step after,
-    for the whole run. A cosine tail would be a different training recipe, and
-    this project changes the trunk and nothing else.
+    With a shared peak LR, cooldown_steps=0 reproduces the reference's linear
+    ramp from min_lr to max_lr followed by a constant rate. The optional cosine
+    tail is a separate recipe choice whose folding benefit is unmeasured.
+    Each group uses its own peak LR times the same schedule multiplier, so a
+    separate Muon LR retains its ratio to AdamW throughout the run. The group's
+    warmup start and cooldown floor are its peak LR times min_lr / max_lr.
     """
     if warmup_steps < 0:
         raise ValueError("warmup_steps must be non-negative")
     if not (0.0 < min_lr <= max_lr):
         raise ValueError("require 0 < min_lr <= max_lr")
 
-    # LambdaLR multiplies the optimizer's own lr, which is max_lr, so express the
-    # reference schedule as a fraction of it.
+    # Apply the same multiplier to each group's peak LR. Separate Muon/AdamW
+    # rates keep their ratio through warmup and cooldown; min_lr anchors AdamW.
     floor = min_lr / max_lr
 
     if cooldown_steps < 0 or cooldown_steps > max(0, total_steps - warmup_steps):
@@ -146,6 +277,8 @@ def prewarm_sequence_kernels(model, batch_size: int, max_length: int, length_bin
     if length_bin <= 0:
         raise ValueError("prewarm requires a positive length_bin; see the config note")
     lengths = list(range(length_bin, max_length + 1, length_bin))
+    if max_length > 0 and max_length % length_bin:
+        lengths.append(max_length)
     if not lengths:
         return []
     torch_device = torch.device(device)
@@ -155,10 +288,12 @@ def prewarm_sequence_kernels(model, batch_size: int, max_length: int, length_bin
     warmed = []
     for length in lengths:
         batch = _synthetic_batch(batch_size, length, MAX_ATOMS_PER_RES, d_plm, torch_device)
+        out = predictions = None
         try:
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 out = model(batch)
-            out["v_atom"].float().sum().backward()
+            predictions = out.get('v_atom_steps', (out['v_atom'],))
+            sum(value.float().sum() for value in predictions).backward()
             model.zero_grad(set_to_none=True)
             warmed.append(length)
         except torch.cuda.OutOfMemoryError:
@@ -167,7 +302,8 @@ def prewarm_sequence_kernels(model, batch_size: int, max_length: int, length_bin
             print(f"[prewarm] out of memory at L={length}; stopping", flush=True)
             break
         finally:
-            del batch
+            # LiFT's intermediate graphs must not survive into the next shape.
+            del out, predictions, batch
             model.zero_grad(set_to_none=True)
             torch.cuda.empty_cache()
     if not was_training:
@@ -263,6 +399,8 @@ def save_checkpoint(
     rng_states: list[dict] | None = None,
     data_state: dict | None = None,
 ):
+    from mambafold.model.bimamba3 import mamba3_runtime_info
+
     try:
         import wandb
     except ImportError:
@@ -277,6 +415,7 @@ def save_checkpoint(
     torch.save(
         {
             "checkpoint_version": 2,
+            "mamba3_runtime": mamba3_runtime_info(raw_model),
             "step": step,
             "model": raw_model.state_dict(),
             "ema": ema.state_dict(),

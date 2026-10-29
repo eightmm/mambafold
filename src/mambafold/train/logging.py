@@ -94,12 +94,27 @@ def log_metrics(step, total_steps, avgs, lr, world_size, batch_size, copies, gra
 
     fm = avgs["fm_atom"]
     lddt = avgs["lddt_atom"]
+    rate_text = f"lr={lr:.2e}"
+    if "lr_muon_backbone" in avgs:
+        rate_text = (
+            f"muon_bb/ref={avgs['lr_muon_backbone']:.2e}/{avgs['lr_muon_refiner']:.2e}"
+            f" adamw_bb/ref={avgs['lr_adamw_backbone']:.2e}/{avgs['lr_adamw_refiner']:.2e}"
+        )
+    lift = ""
+    if "fm_prelude" in avgs:
+        endpoints = [avgs["fm_prelude"]] + [
+            avgs[key] for key in sorted(
+                (k for k in avgs if k.startswith("fm_endpoint_k")),
+                key=lambda k: int(k.removeprefix("fm_endpoint_k")),
+            )
+        ]
+        lift = " | fm_by_depth=" + "/".join(f"{value:.4f}" for value in endpoints)
     print(
         f"  step {step:>7d}/{total_steps} ({progress:.1f}%) | "
         f"loss={avgs['loss']:.4f} | fm={fm:.4f} | "
         f"lddt={lddt:.4f} | t={avgs['t_mean']:.3f} | "
-        f"gnorm={avgs['grad_norm']:.2f} | lr={lr:.2e}{vram}"
-        f"{throughput}{data_timing}{geometry}",
+        f"gnorm={avgs['grad_norm']:.2f} | {rate_text}{vram}"
+        f"{throughput}{data_timing}{geometry}{lift}",
         flush=True,
     )
     if wandb.run is not None:

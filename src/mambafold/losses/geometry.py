@@ -214,7 +214,7 @@ def _bond_angle_loss_one(
     flat_pred = pred_A.reshape(length * atoms, 3)
     flat_true = true_A.reshape(length * atoms, 3)
     flat_valid = valid_mask.reshape(-1)
-    residue_base = torch.arange(length, device=pred_A.device)[:, None] * atoms
+    residue_base = torch.arange(length, device=pred_A.device) * atoms
 
     bond_slots = tables["bond_slots"][res_type]
     bond_topology_mask = tables["bond_mask"][res_type]

@@ -16,6 +16,7 @@ batch's real content.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -89,15 +90,46 @@ def _cache_path(dataset: RCSBDataset, cache_dir: Path) -> Path:
     h.update(str(len(dataset.files)).encode())
     # File identities are hashed relative to the resolved data_dir, for the same
     # reason: an absolute and a relative spelling of the same corpus must hash
-    # the same. `relative_to` is attempted rather than assumed so a file list
-    # pointing outside data_dir still contributes something stable.
+    # the same. Targets outside data_dir retain their absolute identity.
     root = Path(cfg["data_dir"])
-    def _rel(f: Path) -> str:
-        f = Path(f).resolve()
+    resolved_parents = {}
+
+    def _resolve_file(path: Path, seen=frozenset()) -> Path:
+        if os.name != "posix":
+            return path.resolve()
+        path = path.absolute()
+        if path.name in ("", os.curdir, os.pardir):
+            return path.resolve()
+        parent = resolved_parents.get(path.parent)
+        if parent is None:
+            parent = path.parent.resolve()
+            resolved_parents[path.parent] = parent
+        leaf = parent / path.name
+        if leaf in seen:
+            return path.resolve()  # Preserve pathlib's symlink-loop error.
         try:
-            return str(f.relative_to(root))
+            target = leaf.readlink()
+        except OSError as exc:
+            if exc.errno in (errno.EINVAL, errno.ENOENT, errno.ENOTDIR):
+                return leaf
+            return path.resolve()
+        return _resolve_file(
+            target if target.is_absolute() else parent / target, seen | {leaf},
+        )
+
+    def _rel(f: Path) -> str:
+        # The frozen farm shares a few parent directories. Resolving every
+        # component for every file causes millions of NFS metadata operations.
+        # Cache parents only within this fingerprint; still follow every leaf
+        # symlink so retargeting a structure invalidates the existing cache key.
+        f = _resolve_file(Path(f))
+        try:
+            relative = os.path.relpath(f, root)
         except ValueError:
             return str(f)
+        if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+            return str(f)
+        return relative
     h.update("\n".join(_rel(f) for f in dataset.files).encode())
     name = Path(cfg["data_dir"]).name
     cache_name = (

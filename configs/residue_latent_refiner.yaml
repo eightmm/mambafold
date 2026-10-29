@@ -1,0 +1,98 @@
+# Preserve the complete learned trunk; fresh shared correction starts as identity.
+# 15 trunk blocks + (3 residue + 4 latent blocks at width512) x K.
+# Fixed K=2 with LiFT's random interior depth; retain the validated LR split.
+residue_refiner: true
+train_sources:
+- name: rcsb
+  data_dir: data/rcsb_train
+  esm_dir: data/rcsb_esmc6b
+  file_list: data/splits/admitted_all.txt
+- name: afdb_v4
+  data_dir: data/afdb_swissprot_v4/npz
+  esm_dir: data/afdb_esmc6b
+extract_monomer_chains: true
+single_chain_only: false
+dedup_homomer_chains: true
+min_obs_ratio: 0.0
+max_length: 1024
+length_bucketing: true
+length_bin: 64
+num_workers: 8
+prefetch_factor: 4
+loader_timeout: 600.0
+length_cache_workers: 16
+use_plm: true
+d_plm: 2560
+d_res: 1024
+n_trunk: 15
+expand: 2
+headdim: 64
+d_atom: 128
+n_atom_layers: 4
+atom_d_state: 64
+atom_mimo_rank: 2
+atom_mixer: mlp
+n_atom_cross_layers: 1
+n_backbone_streams: 5
+d_res_type: 32
+d_res_pos: 64
+d_plm_proj: 1024
+d_ca_emb: 128
+d_temb: 256
+d_state: 64
+mimo_rank: 4
+bimamba_share: false
+w_fm: 1.0
+w_lddt_atom: 1.0
+alpha_mode: const
+use_rigid_align: true
+lddt_cutoff_A: 15.0
+lddt_pair_chunk_size: 512
+total_steps: 300000
+lr: 0.0001
+muon_lr: 0.003
+backbone_lr_scale: 0.1
+muon_adjust_lr_fn: original
+warmup_steps: 5000
+grad_clip: 2.0
+lr_cooldown_steps: 50000
+weight_decay: 0.0
+min_lr: 1.0e-06
+ema_decay: 0.999
+t_schedule: logit_normal
+t_uniform_weight: 0.1
+seed: 0
+self_conditioning: false
+self_condition_prob: 0.0
+batch_size: 1
+# Preserve 16 noise copies/rank while leaving headroom for K3 and DDP on 48GB GPUs.
+copies_per_protein: 4
+grad_accum_steps: 4
+accum_same_protein: true
+ckpt_interval: 5000
+keep_last_checkpoints: 3
+keep_checkpoint_steps: [5000, 10000, 20000]
+log_interval: 200
+wandb_project: mambafold-mamba3-allatom
+wandb_name: residue-latent-r4-k2-lift-low-backbone-lr
+wandb_tags:
+- mamba3
+- pure-ssm
+- no-attention
+- crop1024
+- atom14
+- esmc6b
+- simplefold-contract
+- residue-latent-r4-k2
+- backbone-lr-0.1
+- muon
+optimizer: muon
+latent_compression: 4
+d_latent: 512
+n_latent_layers: 4
+latent_loops: 2
+latent_loop_sampling: false
+atom_recurrence: false
+latent_loop_mode: conditioned
+latent_position: post
+latent_supervision: lift

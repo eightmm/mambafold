@@ -11,7 +11,6 @@ from typing import Literal
 
 import torch
 from torch import Tensor
-from torch.utils.checkpoint import checkpoint
 
 from mambafold.data.constants import COORD_SCALE
 
@@ -27,15 +26,41 @@ def _reduce_losses(losses: Tensor, reduction: _Reduction) -> Tensor:
     raise ValueError(f"unsupported reduction: {reduction!r}")
 
 
-def _soft_pair_score(
-    distance_error_normalized: Tensor,
-    thresholds_A: tuple[float, ...],
-) -> Tensor:
-    """Return SimpleFold's smooth lDDT score for normalized distance errors."""
-    distance_error_A = distance_error_normalized * COORD_SCALE
-    return sum(torch.sigmoid(threshold_A - distance_error_A) for threshold_A in thresholds_A) / len(
-        thresholds_A
-    )
+def _pair_values(pred, row, column, true_distance, thresholds):
+    delta = pred.index_select(0, row) - pred.index_select(0, column)
+    distance = torch.linalg.vector_norm(delta, dim=-1)
+    error = distance - true_distance
+    scores = torch.sigmoid(thresholds - error.abs().unsqueeze(-1) * COORD_SCALE)
+    return delta, distance, error, scores
+
+
+class _PairScoreSum(torch.autograd.Function):
+    """Recompute bounded pair work without a checkpoint graph per row chunk.
+
+    Only the coordinates, indices and reference distances survive forward.
+    The analytic derivative matches norm/abs/sigmoid autograd, including zero
+    derivative for coincident predicted atoms and zero distance error.
+    """
+
+    @staticmethod
+    def forward(ctx, pred, row, column, true_distance, thresholds):
+        ctx.save_for_backward(pred, row, column, true_distance, thresholds)
+        scores = _pair_values(pred, row, column, true_distance, thresholds)[-1]
+        return scores.mean(dim=-1).sum()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        pred, row, column, true_distance, thresholds = ctx.saved_tensors
+        delta, distance, error, scores = _pair_values(
+            pred, row, column, true_distance, thresholds,
+        )
+        slope = (scores * (1 - scores)).mean(dim=-1)
+        slope = slope * (-COORD_SCALE) * error.sign() * grad_output
+        direction = delta / distance.clamp_min(torch.finfo(distance.dtype).tiny).unsqueeze(-1)
+        pair_grad = direction * slope.unsqueeze(-1)
+        grad = torch.zeros_like(pred).index_add_(0, row, pair_grad)
+        grad.index_add_(0, column, -pair_grad)
+        return grad, None, None, None, None
 
 
 def _select_valid_atoms(
@@ -76,22 +101,7 @@ def _exact_soft_lddt_single(
     column_index = torch.arange(num_atoms, device=true.device).unsqueeze(0)
     score_sum = pred.sum() * 0.0
     pair_count = 0
-
-    def score_pairs(
-        all_pred: Tensor,
-        pair_row: Tensor,
-        pair_column: Tensor,
-        true_pair_distance: Tensor,
-    ) -> Tensor:
-        pred_pair_distance = torch.linalg.vector_norm(
-            all_pred.index_select(0, pair_row) - all_pred.index_select(0, pair_column),
-            dim=-1,
-        )
-        score = _soft_pair_score(
-            (pred_pair_distance - true_pair_distance).abs(),
-            thresholds_A,
-        )
-        return score.sum()
+    thresholds = pred.new_tensor(thresholds_A)
 
     for start in range(0, num_atoms, pair_chunk_size):
         stop = min(start + pair_chunk_size, num_atoms)
@@ -108,16 +118,12 @@ def _exact_soft_lddt_single(
             continue
         pair_row = local_row + start
         if torch.is_grad_enabled() and pred.requires_grad:
-            block_score = checkpoint(
-                score_pairs,
-                pred,
-                pair_row,
-                pair_column,
-                true_pair_distance,
-                use_reentrant=False,
+            block_score = _PairScoreSum.apply(
+                pred, pair_row, pair_column, true_pair_distance, thresholds,
             )
         else:
-            block_score = score_pairs(pred, pair_row, pair_column, true_pair_distance)
+            scores = _pair_values(pred, pair_row, pair_column, true_pair_distance, thresholds)[-1]
+            block_score = scores.mean(dim=-1).sum()
         score_sum = score_sum + block_score
         pair_count += pair_row.numel()
 

@@ -9,6 +9,29 @@ from torch import Tensor
 from mambafold.data.constants import COORD_SCALE
 
 
+class TimeEmbedding(nn.Module):
+    """Continuous scalar embedding shared by FM time and recurrent depth."""
+
+    def __init__(self, d_out: int, n_freqs: int = 64):
+        super().__init__()
+        self.register_buffer(
+            "freqs",
+            torch.exp(torch.linspace(0.0, math.log(1000.0), n_freqs)),
+            persistent=False,
+        )
+        self.mlp = nn.Sequential(
+            nn.Linear(2 * n_freqs, d_out),
+            nn.SiLU(),
+            nn.Linear(d_out, d_out),
+        )
+
+    def forward(self, t: Tensor) -> Tensor:
+        t = t.reshape(t.shape[0], 1).to(self.freqs.dtype)
+        ang = t * self.freqs
+        emb = torch.cat([torch.sin(ang), torch.cos(ang)], dim=-1)
+        return self.mlp(emb)
+
+
 class CoordinateFourierEmbedder(nn.Module):
     """Fourier embedding of 3D coordinates over an explicit Angstrom band.
 

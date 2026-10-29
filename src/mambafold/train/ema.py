@@ -19,8 +19,17 @@ class EMA:
     @torch.no_grad()
     def update(self, model: nn.Module):
         """Update shadow params: shadow = decay * shadow + (1-decay) * model."""
+        groups = {}
         for s_param, m_param in zip(self.shadow.parameters(), model.parameters()):
-            s_param.data.mul_(self.decay).add_(m_param.data, alpha=1 - self.decay)
+            key = (s_param.device, s_param.dtype, m_param.device, m_param.dtype)
+            shadow, current = groups.setdefault(key, ([], []))
+            shadow.append(s_param)
+            current.append(m_param)
+        for shadow, current in groups.values():
+            # Preserve the two-operation rounding and parameter-only checkpoint
+            # contract; batching avoids two CUDA launches for every parameter.
+            torch._foreach_mul_(shadow, self.decay)
+            torch._foreach_add_(shadow, current, alpha=1 - self.decay)
 
     def state_dict(self):
         return self.shadow.state_dict()

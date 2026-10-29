@@ -105,11 +105,8 @@ class ProteinBatch:
     def to(self, device: torch.device) -> "ProteinBatch":
         """Move all tensor fields to `device`; non-tensors pass through.
 
-        `non_blocking=True` is safe and useful here because the loader sets
-        `pin_memory=True`: the copies are queued on the current stream and every
-        consumer is on that same stream, so ordering holds while the transfer
-        overlaps whatever the GPU is still finishing. It is a small win — about
-        15 MB per micro-step at crop 1024 with 8 copies — but it is free.
+        The loader calls ``pin_memory`` on this custom batch. Copies and their
+        consumers use the same CUDA stream, preserving transfer ordering.
         """
         moved = {
             f.name: v.to(device, non_blocking=True)
@@ -117,6 +114,17 @@ class ProteinBatch:
             if isinstance(v := getattr(self, f.name), torch.Tensor)
         }
         return replace(self, **moved)
+
+    def pin_memory(self) -> "ProteinBatch":
+        """Implement DataLoader's custom-batch protocol for asynchronous copies."""
+        pinned = {
+            # Expanded sequence indices can have zero strides; the pinned copy
+            # must own non-overlapping storage before PyTorch copies into it.
+            f.name: value.contiguous().pin_memory()
+            for f in fields(self)
+            if isinstance(value := getattr(self, f.name), torch.Tensor)
+        }
+        return replace(self, **pinned)
 
     def pad_to_length(self, max_L: int) -> "ProteinBatch":
         """Right-pad every residue-axis tensor to ``max_L``.
@@ -129,20 +137,21 @@ class ProteinBatch:
         current = self.max_len
         if current >= max_L:
             return self
-        pad_rows = max_L - current
         padded = {}
         for f in fields(self):
             value = getattr(self, f.name)
             if f.name == "t" or not isinstance(value, torch.Tensor):
                 continue
             shape = list(value.shape)
-            shape[1] = pad_rows
+            shape[1] = max_L
             fill_value = PAIR_PAD_ID if f.name == "pair_type" else 0
-            extra = torch.full(
+            expanded = torch.full(
                 shape,
                 fill_value,
                 dtype=value.dtype,
                 device=value.device,
+                pin_memory=value.is_pinned() if value.device.type == "cpu" else False,
             )
-            padded[f.name] = torch.cat((value, extra), dim=1)
+            expanded[:, :current].copy_(value)
+            padded[f.name] = expanded
         return replace(self, **padded)

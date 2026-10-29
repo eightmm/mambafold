@@ -1,18 +1,9 @@
-"""Atom-level BiMamba encoder/decoder (intra-residue SSM).
+"""Atom encoder/decoder with local slot mixing and backbone-stream BiMamba.
 
-The direct all-atom model reasons at three levels, all SSM-based so the
-"MambaFold" identity holds end to end:
-
-    atom  →  AtomEncoder (BiMamba over the A atom slots of each residue) → pool
-    token →  pair-free residue trunk (Bi-Mamba, no attention)           ← global
-    atom  →  AtomDecoder (BiMamba over the A atom slots) → per-atom velocity
-
-Atom attention is intentionally avoided: the canonical atom ordering within a
-residue (N, CA, C, O, CB, CG, …) gives a meaningful 1-D scan, the per-residue
-sequence is tiny (A = MAX_ATOMS_PER_RES = 14), and a masked SSM scan never
-produces NaNs on fully-padded rows (unlike a softmax over an all-masked set).
-Inter-residue reasoning is the token trunk's job; these blocks only own
-intra-residue (side-chain) geometry.
+The configured slot mixer is either an MLP-Mixer (Run A and the latent recipe)
+or BiMamba. Backbone streams additionally mix across residues before encoder
+pooling and after decoder context injection. Both choices remain attention-free
+and preserve the per-atom encoder skip into the velocity decoder.
 """
 
 from __future__ import annotations
@@ -24,7 +15,7 @@ from torch import Tensor
 
 from mambafold.data.constants import ATOM_NAME_TO_ID, MAX_ATOMS_PER_RES, NUM_PAIR_TYPES
 from mambafold.data.types import ProteinBatch
-from mambafold.model.bimamba3 import AdaLNZero, MambaStack, SwiGLU
+from mambafold.model.bimamba3 import AdaLNZero, MambaStack, RMSNorm, SwiGLU
 
 NUM_ATOM_TYPES = len(ATOM_NAME_TO_ID)  # 37 (36 atom names + PAD)
 
@@ -50,6 +41,47 @@ class FiLM(nn.Module):
             scale = scale.unsqueeze(1)
             shift = shift.unsqueeze(1)
         return x * (1 + scale.to(x.dtype)) + shift.to(x.dtype)
+
+
+class AtomRecurrentRefiner(nn.Module):
+    """Small shared atom-state update with parallel residue feedback.
+
+    Both readouts start at zero and receive gradients directly; neither sits
+    behind another zero gate. Learned encoder/decoder normalization is intact.
+    Coordinates and FM time stay fixed while hidden atom states recur.
+    """
+
+    def __init__(self, d_res: int, d_atom: int, d_temb: int):
+        super().__init__()
+        width = min(64, d_atom)
+        self.atom_norm = RMSNorm(d_atom)
+        self.res_norm = RMSNorm(d_res)
+        self.atom_in = nn.Linear(d_atom, width, bias=False)
+        self.res_in = nn.Linear(d_res, width, bias=False)
+        self.condition = nn.Linear(d_temb, width, bias=False)
+        self.slot_mix = nn.Linear(MAX_ATOMS_PER_RES, MAX_ATOMS_PER_RES, bias=False)
+        self.channels = SwiGLU(width, 2 * width)
+        self.output_norm = RMSNorm(width)
+        self.atom_out = nn.Linear(width, d_atom, bias=False)
+        self.res_out = nn.Linear(width, d_res, bias=False)
+        nn.init.zeros_(self.atom_out.weight)
+        nn.init.zeros_(self.res_out.weight)
+
+    def forward(self, res: Tensor, atoms: Tensor, atom_mask: Tensor,
+                condition: Tensor) -> tuple[Tensor, Tensor]:
+        mask = atom_mask.unsqueeze(-1)
+        h = self.atom_in(self.atom_norm(atoms.masked_fill(~mask, 0)))
+        h = h + self.res_in(self.res_norm(res)).unsqueeze(2)
+        h = h + self.condition(condition).tanh()[:, None, None, :]
+        h = h.masked_fill(~mask, 0)
+        mixed = self.slot_mix(h.transpose(-1, -2)).transpose(-1, -2)
+        h = (h + mixed.tanh()).masked_fill(~mask, 0)
+        h = h + self.channels(F.rms_norm(h, (h.shape[-1],))).tanh()
+        h = F.silu(self.output_norm(h)).masked_fill(~mask, 0)
+        atoms = (atoms.masked_fill(~mask, 0) + self.atom_out(h).tanh()).masked_fill(~mask, 0)
+        pooled = h.sum(2) / atom_mask.sum(2).clamp_min(1).unsqueeze(-1).to(h.dtype)
+        res = res + self.res_out(pooled).tanh()
+        return res, atoms
 
 
 class AtomTupleMixer(nn.Module):
@@ -97,10 +129,11 @@ class AtomTupleMixer(nn.Module):
         ):
             # Zero the padded slots before mixing so they contribute nothing,
             # and again after so the block's output stays exactly zero there.
-            h, gate = adaln(slot_norm(x), temb, branch=0, repeat=temb_repeat)
+            modulation = adaln.project(temb)
+            h, gate = adaln.modulate(slot_norm(x), modulation, branch=0, repeat=temb_repeat)
             h = (h * m).transpose(1, 2)                     # [N, d, A]
             x = (x + gate * slot_mix(h).transpose(1, 2)) * m
-            h, gate = adaln(chan_norm(x), temb, branch=1, repeat=temb_repeat)
+            h, gate = adaln.modulate(chan_norm(x), modulation, branch=1, repeat=temb_repeat)
             x = (x + gate * chan_mix(h)) * m
         return x
 
@@ -241,11 +274,11 @@ class AtomEncoder(nn.Module):
         self.out_norm = nn.LayerNorm(d_atom)
 
     def forward(
-        self, coord_emb: Tensor, batch: ProteinBatch, temb: Tensor
+        self, coord_emb: Tensor, batch: ProteinBatch, temb: Tensor, *,
+        safe_padding: bool = False,
     ) -> tuple[Tensor, Tensor]:
         """coord_emb: [B, L, A, d_ca_emb], temb: [B, d_temb].
         Returns (token [B,L,d_atom], atom_repr [B,L,A,d_atom])."""
-        B, L, A, _ = coord_emb.shape
         a = self.coord_proj(coord_emb)
         a = (
             a
@@ -254,21 +287,40 @@ class AtomEncoder(nn.Module):
         )
         a = self.film(self.in_norm(a), temb)
 
-        m = batch.atom_mask  # [B, L, A] bool
+        a = self.mix(a, batch, temb)
+        return self.pool(a, batch.atom_mask, safe_padding=safe_padding), a
+
+    def mix(self, a: Tensor, batch: ProteinBatch, temb: Tensor) -> Tensor:
+        """Run the shared slot and backbone mixers on an existing atom state."""
+        B, L, A, _ = a.shape
+        m = batch.atom_mask
         a = self.mamba(a.reshape(B * L, A, -1), m.reshape(B * L, A), temb, L)
         a = a.reshape(B, L, A, -1)
         if self.cross is not None:
             a = self.cross(a, batch.res_mask, temb) * m.unsqueeze(-1).to(a.dtype)
+        return a
 
+    def remix(self, a: Tensor, batch: ProteinBatch, temb: Tensor) -> tuple[Tensor, Tensor]:
+        """Mix and pool recurrent hidden atoms without re-embedding coordinates."""
+        a = self.mix(a.masked_fill(~batch.atom_mask.unsqueeze(-1), 0), batch, temb)
+        return self.pool(a, batch.atom_mask, safe_padding=True), a
+
+    def pool(self, a: Tensor, m: Tensor, *, safe_padding: bool = False) -> Tensor:
         # Gated masked-mean pool over atoms → residue token. Fully-padded
         # residues softmax to zero weight (nan_to_num), so the token is 0.
         w = self.pool_gate(a).squeeze(-1).masked_fill(~m, float("-inf"))  # [B, L, A]
-        w = torch.nan_to_num(torch.softmax(w, dim=-1))
+        if safe_padding:
+            # Avoid an all--inf softmax backward on recycled padded residues;
+            # the default path retains legacy arithmetic and checkpoint parity.
+            w = w.masked_fill(~m.any(dim=-1, keepdim=True), 0)
+            w = torch.softmax(w, dim=-1).masked_fill(~m, 0)
+        else:
+            w = torch.nan_to_num(torch.softmax(w, dim=-1))
         gated = (a * w.unsqueeze(-1)).sum(dim=2)  # [B, L, d_atom]
         mf = m.unsqueeze(-1).to(a.dtype)
         mean = (a * mf).sum(dim=2) / mf.sum(dim=2).clamp(min=1.0)
         tok = self.pool_proj(torch.cat([gated, mean], dim=-1))
-        return self.out_norm(tok), a
+        return self.out_norm(tok)
 
 
 class AtomDecoder(nn.Module):
@@ -345,10 +397,17 @@ class AtomDecoder(nn.Module):
         nn.init.zeros_(self.out.bias)
 
     def forward(
-        self, res_latent: Tensor, atom_repr: Tensor, batch: ProteinBatch, temb: Tensor
-    ) -> Tensor:
+        self, res_latent: Tensor, atom_repr: Tensor, batch: ProteinBatch, temb: Tensor,
+        *, return_features: bool = False, predict_velocity: bool = True,
+        head_temb: Tensor | None = None,
+    ) -> Tensor | tuple[Tensor | None, Tensor]:
         """res_latent: [B,L,d_res], atom_repr: [B,L,A,d_atom], temb: [B,d_temb].
-        Returns v_atom [B,L,A,3]."""
+        Returns v_atom [B,L,A,3], optionally paired with masked atom features.
+        Recycling can condition the body on depth while keeping the velocity
+        head on the original FM embedding, and skip intermediate velocity heads.
+        """
+        if not predict_velocity and not return_features:
+            raise ValueError("skipping the velocity head requires return_features")
         B, L, A, _ = atom_repr.shape
         if A > self.n_slots:
             raise RuntimeError(f"AtomDecoder built for {self.n_slots} slots, got {A}.")
@@ -359,6 +418,16 @@ class AtomDecoder(nn.Module):
         a = a.reshape(B, L, A, -1)
         if self.cross is not None:
             a = self.cross(a, batch.res_mask, temb) * m.unsqueeze(-1).to(a.dtype)
+        velocity = (
+            self.readout(a, temb if head_temb is None else head_temb)
+            if predict_velocity else None
+        )
+        if return_features:
+            return velocity, a.masked_fill(~m.unsqueeze(-1), 0)
+        return velocity
+
+    def readout(self, a: Tensor, temb: Tensor) -> Tensor:
+        """Apply the shared prediction head without rerunning atom mixing."""
         scale, shift = self.out_mod(F.silu(temb)).chunk(2, dim=-1)  # [B, d_atom]
         scale = scale.to(a.dtype)[:, None, None, :]
         shift = shift.to(a.dtype)[:, None, None, :]

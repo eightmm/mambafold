@@ -82,16 +82,18 @@ def try_case(d_model: int, d_state: int, mimo_rank: int, headdim: int,
         # training does. Casting the module wholesale also casts the bias
         # tensors the Mamba-3 kernels require in fp32, which fails for a reason
         # that has nothing to do with the limit being probed.
+        d_temb = 128
         block = BiMamba3Block(
             d_model=d_model, d_state=d_state, mimo_rank=mimo_rank,
-            expand=2, headdim=headdim,
+            expand=2, headdim=headdim, d_temb=d_temb,
         ).cuda()
         x = torch.randn(batch, length, d_model, device="cuda", dtype=torch.float32,
                         requires_grad=True)
         mask = torch.ones(batch, length, device="cuda", dtype=torch.bool)
+        temb = torch.randn(batch, d_temb, device="cuda", dtype=torch.float32)
 
         with torch.autocast("cuda", dtype=dtype, enabled=dtype != torch.float32):
-            out = block(x, mask)
+            out = block(x, mask, temb)
         result["forward"] = "ok"
         out.float().pow(2).mean().backward()
         torch.cuda.synchronize()
